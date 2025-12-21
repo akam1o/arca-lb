@@ -164,6 +164,8 @@ jobs:
 
       - name: Install protoc
         uses: arduino/setup-protoc@v1
+        with:
+          version: '6.33.2'
 
       - name: Install protoc-gen-go
         run: |

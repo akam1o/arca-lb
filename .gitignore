@@ -34,8 +34,6 @@ vendor/
 
 # Build artifacts
 bin/
-arcalb-agent
-arcalb-controller
 dist/
 build/
 default.etcd/

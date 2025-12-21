@@ -58,9 +58,7 @@ temp/
 docker-compose.override.yml
 
 # Generated files
-pkg/grpc/*.pb.go
-api/proto/*.pb.go
-api/proto/**/*.pb.go
+# (protobuf outputs are tracked)
 
 # OS specific
 Thumbs.db

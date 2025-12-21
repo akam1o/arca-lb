@@ -1,6 +1,6 @@
 # arca-lb
 
-**arca-lb** is a centralized load balancer management system that controls the VPP (Vector Packet Processing) Layer 4 Load Balancer plugin.
+**arca-lb** is a centralized control plane for VPP-based Layer 4 load balancing, designed for environments that demand line-rate performance, operational simplicity, and horizontal scalability.
 
 ## Features
 

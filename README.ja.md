@@ -1,6 +1,6 @@
 # arca-lb
 
-**arca-lb** は、VPP (Vector Packet Processing) の Layer 4 Load Balancer プラグインを制御する、中央集約型のロードバランサー管理システムです。
+**arca-lb** は、VPP (Vector Packet Processing) の Layer 4 Load Balancer プラグインを制御する、中央集約型のロードバランサー管理システムです。シンプルな操作、VPP によるワイヤーレート、ECMP による水平スケーリングを実現します。
 
 ## 特徴
 

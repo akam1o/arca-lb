@@ -5,9 +5,11 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  release:
+    types: [ published ]
 
 env:
-  GO_VERSION: '1.23'
+  GO_VERSION: '1.25'
   DOCKER_BUILDKIT: 1
 
 jobs:
@@ -85,6 +87,7 @@ jobs:
   docker:
     name: Build Docker Images
     runs-on: ubuntu-latest
+    if: github.event_name == 'release'
     needs: [lint, test]
     steps:
       - name: Checkout code
@@ -149,6 +152,13 @@ jobs:
           labels: ${{ steps.meta-agent.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Attach Dockerfiles to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            deploy/docker/Dockerfile.controller
+            deploy/docker/Dockerfile.agent
 
   proto:
     name: Generate Protobuf

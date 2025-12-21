@@ -4,7 +4,7 @@
 # or run in a container with VPP pre-installed
 
 # Stage 1: Build
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make gcc musl-dev
@@ -70,4 +70,3 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 # Use ARCA_AGENT_CONFIG environment variable for config path
 ENV ARCA_AGENT_CONFIG=/app/config/agent.yaml
 ENTRYPOINT ["/app/arcalb-agent"]
-

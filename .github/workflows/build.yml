@@ -22,14 +22,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
 
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v3
-        with:
-          version: latest
+      - name: Download dependencies
+        run: make deps
 
       - name: Run golangci-lint
-        run: make lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: v1.64.8
+          args: --timeout=10m --out-format=colored-line-number
 
   test:
     name: Test
@@ -178,4 +180,3 @@ jobs:
             git diff
             exit 1
           fi
-

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +64,7 @@ func TestCreateVIP(t *testing.T) {
 				"port":     443,
 				"protocol": "TCP",
 				"health_check": map[string]interface{}{
-					"type":    "HTTP",
+					"type":     "HTTP",
 					"interval": "10s",
 					"timeout":  "5s",
 				},
@@ -160,6 +161,7 @@ func TestCreateVIP(t *testing.T) {
 
 func TestListVIPs(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	// Create test VIPs
 	vip1 := &models.VIP{
@@ -175,8 +177,8 @@ func TestListVIPs(t *testing.T) {
 		Protocol: models.ProtocolTCP,
 	}
 
-	mockDS.CreateVIP(nil, vip1)
-	mockDS.CreateVIP(nil, vip2)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip1))
+	require.NoError(t, mockDS.CreateVIP(ctx, vip2))
 
 	tests := []struct {
 		name           string
@@ -227,6 +229,7 @@ func TestListVIPs(t *testing.T) {
 
 func TestGetVIP(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	vip := &models.VIP{
 		ID:       "vip-1",
@@ -234,7 +237,7 @@ func TestGetVIP(t *testing.T) {
 		Port:     80,
 		Protocol: models.ProtocolTCP,
 	}
-	mockDS.CreateVIP(nil, vip)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
 
 	tests := []struct {
 		name           string
@@ -287,6 +290,7 @@ func TestGetVIP(t *testing.T) {
 
 func TestUpdateVIP(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	vip := &models.VIP{
 		ID:       "vip-1",
@@ -294,7 +298,7 @@ func TestUpdateVIP(t *testing.T) {
 		Port:     80,
 		Protocol: models.ProtocolTCP,
 	}
-	mockDS.CreateVIP(nil, vip)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
 
 	tests := []struct {
 		name           string
@@ -305,7 +309,7 @@ func TestUpdateVIP(t *testing.T) {
 	}{
 		{
 			name:  "success",
-			vipID:  "vip-1",
+			vipID: "vip-1",
 			requestBody: map[string]interface{}{
 				"port": 8080,
 			},
@@ -313,7 +317,7 @@ func TestUpdateVIP(t *testing.T) {
 		},
 		{
 			name:  "not found",
-			vipID:  "vip-nonexistent",
+			vipID: "vip-nonexistent",
 			requestBody: map[string]interface{}{
 				"port": 8080,
 			},
@@ -321,7 +325,7 @@ func TestUpdateVIP(t *testing.T) {
 		},
 		{
 			name:  "invalid input",
-			vipID:  "vip-1",
+			vipID: "vip-1",
 			requestBody: map[string]interface{}{
 				"port": 70000,
 			},
@@ -329,7 +333,7 @@ func TestUpdateVIP(t *testing.T) {
 		},
 		{
 			name:  "datastore error",
-			vipID:  "vip-1",
+			vipID: "vip-1",
 			requestBody: map[string]interface{}{
 				"port": 8080,
 			},
@@ -370,6 +374,7 @@ func TestUpdateVIP(t *testing.T) {
 
 func TestDeleteVIP(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	vip := &models.VIP{
 		ID:       "vip-1",
@@ -377,7 +382,7 @@ func TestDeleteVIP(t *testing.T) {
 		Port:     80,
 		Protocol: models.ProtocolTCP,
 	}
-	mockDS.CreateVIP(nil, vip)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
 
 	// Create backend for this VIP
 	backend := &models.Backend{
@@ -385,19 +390,19 @@ func TestDeleteVIP(t *testing.T) {
 		IP:     "10.0.0.1",
 		Weight: 10,
 	}
-	mockDS.AddBackend(nil, backend)
+	require.NoError(t, mockDS.AddBackend(ctx, backend))
 
 	tests := []struct {
-		name           string
-		vipID          string
-		expectedStatus int
-		setupMock      func()
+		name                 string
+		vipID                string
+		expectedStatus       int
+		setupMock            func()
 		verifyBackendDeleted bool
 	}{
 		{
-			name:           "success",
-			vipID:          "vip-1",
-			expectedStatus: http.StatusOK,
+			name:                 "success",
+			vipID:                "vip-1",
+			expectedStatus:       http.StatusOK,
 			verifyBackendDeleted: true,
 		},
 		{
@@ -418,8 +423,8 @@ func TestDeleteVIP(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Recreate VIP and backend for each test
-			mockDS.CreateVIP(nil, vip)
-			mockDS.AddBackend(nil, backend)
+			require.NoError(t, mockDS.CreateVIP(ctx, vip))
+			require.NoError(t, mockDS.AddBackend(ctx, backend))
 
 			if tt.setupMock != nil {
 				tt.setupMock()
@@ -434,7 +439,7 @@ func TestDeleteVIP(t *testing.T) {
 
 			if tt.verifyBackendDeleted && tt.expectedStatus == http.StatusOK {
 				// Verify backend is also deleted
-				_, err := mockDS.GetBackend(nil, backend.ID)
+				_, err := mockDS.GetBackend(ctx, backend.ID)
 				assert.Error(t, err)
 				assert.Equal(t, datastore.ErrNotFound, err)
 			}

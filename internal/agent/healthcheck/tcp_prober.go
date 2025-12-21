@@ -95,7 +95,14 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	defer conn.Close()
 
 	// Set deadline for the entire operation
-	conn.SetDeadline(startTime.Add(p.timeout))
+	if err := conn.SetDeadline(startTime.Add(p.timeout)); err != nil {
+		return ProbeResult{
+			Success:   false,
+			Latency:   time.Since(startTime),
+			Error:     fmt.Errorf("failed to set deadline: %w", err),
+			Timestamp: startTime,
+		}
+	}
 
 	// If no send/expect, just successful connection is enough
 	if p.send == "" && p.expect == "" {

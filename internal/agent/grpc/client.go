@@ -166,7 +166,7 @@ func (c *Client) connect() error {
 	}
 
 	// Add timeout
-	opts = append(opts, grpc.WithBlock())
+	opts = append(opts, grpc.WithBlock()) // nolint:staticcheck // WithBlock is required for blocking dial until connection or timeout
 	if c.dialContext != nil {
 		opts = append(opts, grpc.WithContextDialer(c.dialContext))
 	}
@@ -178,7 +178,7 @@ func (c *Client) connect() error {
 	for attempt := 1; attempt <= c.config.Controller.MaxRetries; attempt++ {
 		// Use c.ctx as parent to support immediate cancellation on Stop()
 		ctx, cancel := context.WithTimeout(c.ctx, c.config.Controller.Timeout)
-		conn, err := grpc.DialContext(ctx, c.config.Controller.Address, opts...)
+		conn, err := grpc.DialContext(ctx, c.config.Controller.Address, opts...) // nolint:staticcheck // DialContext retained for compatibility with grpc 1.x clients
 		cancel()
 
 		if err == nil {
@@ -649,11 +649,4 @@ func (c *Client) isConnected() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.connected
-}
-
-// setConnected sets the connection status
-func (c *Client) setConnected(connected bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.connected = connected
 }

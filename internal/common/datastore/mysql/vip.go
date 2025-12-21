@@ -423,17 +423,6 @@ func (ds *MySQLDataStore) incrementRevisionInTx(tx *gorm.DB) (int64, error) {
 	return newRevision, nil
 }
 
-// logChange logs a change event to the change_log table
-// Note: This should be called AFTER incrementRevisionInTx to use the correct revision
-func (ds *MySQLDataStore) logChange(tx *gorm.DB, eventType string, vipID, backendID string) error {
-	revision, err := ds.getRevisionInTx(tx)
-	if err != nil {
-		return err
-	}
-
-	return ds.logChangeWithRevision(tx, eventType, vipID, backendID, revision)
-}
-
 // logChangeWithRevision logs a change event with a specific revision
 func (ds *MySQLDataStore) logChangeWithRevision(tx *gorm.DB, eventType string, vipID, backendID string, revision int64) error {
 	changeLog := map[string]interface{}{
@@ -455,17 +444,3 @@ func (ds *MySQLDataStore) logChangeWithRevision(tx *gorm.DB, eventType string, v
 
 	return nil
 }
-
-// getRevisionInTx gets revision within a transaction
-func (ds *MySQLDataStore) getRevisionInTx(tx *gorm.DB) (int64, error) {
-	var revision int64
-	if err := tx.Table("system_metadata").
-		Select("revision").
-		Limit(1).
-		Scan(&revision).Error; err != nil {
-		return 0, fmt.Errorf("failed to get revision: %w", err)
-	}
-
-	return revision, nil
-}
-

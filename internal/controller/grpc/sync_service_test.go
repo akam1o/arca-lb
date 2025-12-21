@@ -39,7 +39,7 @@ func setupTestServer(t *testing.T, mockDS *testutil.MockDataStore) (*bufconn.Lis
 		}
 	}()
 
-	conn, err := grpc.DialContext(context.Background(), "bufconn",
+	conn, err := grpc.DialContext(context.Background(), "bufconn", // nolint:staticcheck // DialContext is adequate for bufconn-based test dialer
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return lis.Dial()
 		}),

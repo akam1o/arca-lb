@@ -28,7 +28,7 @@ type Connection struct {
 	started bool
 	stopCh  chan struct{}
 	doneCh  chan struct{}
-	
+
 	// Metrics (optional)
 	metricsRecorder MetricsRecorder
 }
@@ -36,10 +36,10 @@ type Connection struct {
 // NewConnection creates a new VPP connection manager
 func NewConnection(cfg *config.VPPConfig, logger *logrus.Logger) *Connection {
 	return &Connection{
-		config:  cfg,
-		logger:  logger,
-		stopCh:  make(chan struct{}),
-		doneCh:  make(chan struct{}),
+		config: cfg,
+		logger: logger,
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
 	}
 }
 
@@ -296,11 +296,6 @@ func (c *Connection) reconnectWithLock(attempts *int) error {
 		recorder.RecordReconnect()
 	}
 	return nil
-}
-
-// reconnect attempts to reconnect to VPP (legacy method, prefer reconnectWithLock)
-func (c *Connection) reconnect(attempts *int) error {
-	return c.reconnectWithLock(attempts)
 }
 
 // GetConnection returns the current VPP connection

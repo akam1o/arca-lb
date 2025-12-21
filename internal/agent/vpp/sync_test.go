@@ -44,20 +44,6 @@ type mockChannel struct{}
 
 func (m *mockChannel) Close() {}
 
-// mockMetricsRecorder is a mock metrics recorder for testing
-type mockMetricsRecorder struct {
-	errors     []string
-	reconnects int
-}
-
-func (m *mockMetricsRecorder) RecordError(component, operation string) {
-	m.errors = append(m.errors, component+":"+operation)
-}
-
-func (m *mockMetricsRecorder) RecordReconnect() {
-	m.reconnects++
-}
-
 func TestSyncer_SyncVIP(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 
 func TestCreateBackend(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	// Create a VIP first
 	vip := &models.VIP{
@@ -23,7 +25,7 @@ func TestCreateBackend(t *testing.T) {
 		Port:     80,
 		Protocol: models.ProtocolTCP,
 	}
-	mockDS.CreateVIP(nil, vip)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
 
 	tests := []struct {
 		name           string
@@ -82,7 +84,7 @@ func TestCreateBackend(t *testing.T) {
 			// Reset mock if needed
 			if tt.setupMock != nil {
 				// Recreate VIP
-				mockDS.CreateVIP(nil, vip)
+				require.NoError(t, mockDS.CreateVIP(ctx, vip))
 				tt.setupMock()
 			}
 
@@ -108,6 +110,7 @@ func TestCreateBackend(t *testing.T) {
 
 func TestListBackends(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	// Create VIP and backends
 	vip := &models.VIP{
@@ -116,7 +119,7 @@ func TestListBackends(t *testing.T) {
 		Port:     80,
 		Protocol: models.ProtocolTCP,
 	}
-	mockDS.CreateVIP(nil, vip)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
 
 	backend1 := &models.Backend{
 		VIPID:  "vip-1",
@@ -129,8 +132,8 @@ func TestListBackends(t *testing.T) {
 		Weight: 20,
 	}
 
-	mockDS.AddBackend(nil, backend1)
-	mockDS.AddBackend(nil, backend2)
+	require.NoError(t, mockDS.AddBackend(ctx, backend1))
+	require.NoError(t, mockDS.AddBackend(ctx, backend2))
 
 	tests := []struct {
 		name           string
@@ -187,6 +190,7 @@ func TestListBackends(t *testing.T) {
 
 func TestGetBackend(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	// Create VIP and backend
 	vip := &models.VIP{
@@ -195,14 +199,14 @@ func TestGetBackend(t *testing.T) {
 		Port:     80,
 		Protocol: models.ProtocolTCP,
 	}
-	mockDS.CreateVIP(nil, vip)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
 
 	backend := &models.Backend{
 		VIPID:  "vip-1",
 		IP:     "10.0.0.1",
 		Weight: 10,
 	}
-	mockDS.AddBackend(nil, backend)
+	require.NoError(t, mockDS.AddBackend(ctx, backend))
 
 	tests := []struct {
 		name           string
@@ -242,6 +246,7 @@ func TestGetBackend(t *testing.T) {
 
 func TestUpdateBackend(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	// Create VIP and backend
 	vip := &models.VIP{
@@ -250,14 +255,14 @@ func TestUpdateBackend(t *testing.T) {
 		Port:     80,
 		Protocol: models.ProtocolTCP,
 	}
-	mockDS.CreateVIP(nil, vip)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
 
 	backend := &models.Backend{
 		VIPID:  "vip-1",
 		IP:     "10.0.0.1",
 		Weight: 10,
 	}
-	mockDS.AddBackend(nil, backend)
+	require.NoError(t, mockDS.AddBackend(ctx, backend))
 
 	tests := []struct {
 		name           string
@@ -307,6 +312,7 @@ func TestUpdateBackend(t *testing.T) {
 
 func TestDeleteBackend(t *testing.T) {
 	server, mockDS := setupTestServer()
+	ctx := context.TODO()
 
 	// Create VIP and backend
 	vip := &models.VIP{
@@ -315,14 +321,14 @@ func TestDeleteBackend(t *testing.T) {
 		Port:     80,
 		Protocol: models.ProtocolTCP,
 	}
-	mockDS.CreateVIP(nil, vip)
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
 
 	backend := &models.Backend{
 		VIPID:  "vip-1",
 		IP:     "10.0.0.1",
 		Weight: 10,
 	}
-	mockDS.AddBackend(nil, backend)
+	require.NoError(t, mockDS.AddBackend(ctx, backend))
 
 	tests := []struct {
 		name           string

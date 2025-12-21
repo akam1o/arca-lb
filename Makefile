@@ -6,6 +6,11 @@ BIN_DIR := bin
 CONTROLLER_BIN := $(BIN_DIR)/arcalb-controller
 AGENT_BIN := $(BIN_DIR)/arcalb-agent
 
+GOCACHE_DIR := $(CURDIR)/.gocache
+GOMODCACHE_DIR := $(CURDIR)/.gomodcache
+GOTMP_DIR := $(CURDIR)/.gotmp
+GO_ENV := GOCACHE=$(GOCACHE_DIR) GOMODCACHE=$(GOMODCACHE_DIR) GOTMPDIR=$(GOTMP_DIR)
+
 PROTO_SRC := api/proto
 PROTO_OUT := pkg/grpc
 
@@ -22,20 +27,24 @@ endef
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_\-]+:.*##/ {printf "\033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
+.PHONY: goenv
+goenv: ## Prepare local Go cache directories
+	@mkdir -p $(GOCACHE_DIR) $(GOMODCACHE_DIR) $(GOTMP_DIR)
+
 .PHONY: build
-build: ## Build controller and agent binaries
+build: goenv ## Build controller and agent binaries
 	@mkdir -p $(BIN_DIR)
-	go build -o $(CONTROLLER_BIN) ./cmd/arcalb-controller
-	go build -o $(AGENT_BIN) ./cmd/arcalb-agent
+	$(GO_ENV) go build -o $(CONTROLLER_BIN) ./cmd/arcalb-controller
+	$(GO_ENV) go build -o $(AGENT_BIN) ./cmd/arcalb-agent
 
 .PHONY: test
-test: ## Run unit tests with race detector and coverage
-	go test -v -race -coverprofile=coverage.out ./...
+test: goenv ## Run unit tests with race detector and coverage
+	$(GO_ENV) go test -v -race -coverprofile=coverage.out ./...
 
 .PHONY: lint
-lint: ## Run golangci-lint
+lint: goenv ## Run golangci-lint
 	$(call ensure_tool,golangci-lint)
-	golangci-lint run
+	$(GO_ENV) golangci-lint run --timeout=5m
 
 .PHONY: proto
 proto: ## Generate gRPC code from protobuf
@@ -61,13 +70,13 @@ clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) coverage.out
 
 .PHONY: fmt
-fmt: ## Format code
-	go fmt ./...
+fmt: goenv ## Format code
+	$(GO_ENV) go fmt ./...
 
 .PHONY: vet
-vet: ## Run go vet
-	go vet ./...
+vet: goenv ## Run go vet
+	$(GO_ENV) go vet ./...
 
 .PHONY: deps
-deps: ## Download dependencies
-	go mod download
+deps: goenv ## Download dependencies
+	$(GO_ENV) go mod download

@@ -237,7 +237,8 @@ func TestManager_StopHealthCheck(t *testing.T) {
 	assert.True(t, exists)
 
 	// Stop health check
-	manager.StopHealthCheck("vip-1")
+	err = manager.StopHealthCheck("vip-1")
+	require.NoError(t, err)
 
 	// Verify prober removed
 	manager.mu.RLock()

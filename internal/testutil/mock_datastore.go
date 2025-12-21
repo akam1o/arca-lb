@@ -32,19 +32,19 @@ type MockDataStore struct {
 	watchChannel chan datastore.WatchEvent
 
 	// Error injection
-	createVIPError     error
-	getVIPError        error
-	listVIPsError      error
-	updateVIPError     error
-	deleteVIPError     error
-	createBackendError error
-	getBackendError    error
-	listBackendsError  error
-	updateBackendError error
-	deleteBackendError error
-	getRevisionError   error
+	createVIPError         error
+	getVIPError            error
+	listVIPsError          error
+	updateVIPError         error
+	deleteVIPError         error
+	createBackendError     error
+	getBackendError        error
+	listBackendsError      error
+	updateBackendError     error
+	deleteBackendError     error
+	getRevisionError       error
 	incrementRevisionError error
-	getConfigError     error
+	getConfigError         error
 }
 
 // NewMockDataStore creates a new mock datastore
@@ -401,7 +401,7 @@ func (m *MockDataStore) GetConfig(ctx context.Context) (*models.Config, error) {
 	vipConfigs := make([]models.VIPConfig, 0, len(m.vips))
 	for _, vip := range m.vips {
 		// Get backends for this VIP
-		backendIDs, _ := m.vipBackends[vip.ID]
+		backendIDs := m.vipBackends[vip.ID]
 		backends := make([]models.Backend, 0, len(backendIDs))
 		for _, backendID := range backendIDs {
 			if backend, exists := m.backends[backendID]; exists {
@@ -433,12 +433,12 @@ func (m *MockDataStore) GetConfig(ctx context.Context) (*models.Config, error) {
 func (m *MockDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEvent, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	// Return the watch channel if set, otherwise return a closed channel
 	if m.watchChannel != nil {
 		return m.watchChannel, nil
 	}
-	
+
 	ch := make(chan datastore.WatchEvent)
 	close(ch)
 	return ch, nil
@@ -536,4 +536,3 @@ func generateID() string {
 func GenerateUUID() string {
 	return uuid.New().String()
 }
-

@@ -126,7 +126,8 @@ func TestHTTPProber_Probe(t *testing.T) {
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/health" {
 					w.WriteHeader(http.StatusOK)
-					w.Write([]byte("OK"))
+					_, err := w.Write([]byte("OK"))
+					require.NoError(t, err)
 				} else {
 					w.WriteHeader(http.StatusNotFound)
 				}
@@ -197,6 +198,7 @@ func TestHTTPProber_Probe(t *testing.T) {
 				// Connection refused test
 				target = "127.0.0.1"
 				port = 9999
+				tt.hc.Config["port"] = port
 			}
 
 			prober, err := NewHTTPProber(tt.hc, false, logger)

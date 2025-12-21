@@ -273,7 +273,9 @@ func TestReconcileAddVIP(t *testing.T) {
 		},
 	}
 
-	r.OnConfigChange(newConfig)
+	if err := r.OnConfigChange(newConfig); err != nil {
+		t.Fatalf("OnConfigChange returned error: %v", err)
+	}
 
 	// Wait for reconciliation
 	time.Sleep(200 * time.Millisecond)
@@ -333,7 +335,9 @@ func TestReconcileDeleteVIP(t *testing.T) {
 		VIPs:     []models.VIPConfig{},
 	}
 
-	r.OnConfigChange(emptyConfig)
+	if err := r.OnConfigChange(emptyConfig); err != nil {
+		t.Fatalf("OnConfigChange returned error: %v", err)
+	}
 
 	// Wait for reconciliation
 	time.Sleep(200 * time.Millisecond)
@@ -411,7 +415,9 @@ func TestReconcileAddBackend(t *testing.T) {
 		},
 	}
 
-	r.OnConfigChange(newConfig)
+	if err := r.OnConfigChange(newConfig); err != nil {
+		t.Fatalf("OnConfigChange returned error: %v", err)
+	}
 
 	// Wait for reconciliation
 	time.Sleep(200 * time.Millisecond)
@@ -463,7 +469,9 @@ func TestReconcileError(t *testing.T) {
 		},
 	}
 
-	r.OnConfigChange(newConfig)
+	if err := r.OnConfigChange(newConfig); err != nil {
+		t.Fatalf("OnConfigChange returned error: %v", err)
+	}
 
 	// Wait for reconciliation attempt
 	time.Sleep(200 * time.Millisecond)

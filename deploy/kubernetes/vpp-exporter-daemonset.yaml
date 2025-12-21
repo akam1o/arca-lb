@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vpp-exporter
+  namespace: arca-lb
+  labels:
+    app: vpp-exporter
+spec:
+  selector:
+    matchLabels:
+      app: vpp-exporter
+  template:
+    metadata:
+      labels:
+        app: vpp-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9482"
+        prometheus.io/path: "/metrics"
+    spec:
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: vpp-exporter
+        image: prometheuscommunity/vpp-exporter:v0.3.0
+        ports:
+        - name: metrics
+          containerPort: 9482
+          protocol: TCP
+        volumeMounts:
+        - name: vpp-stats
+          mountPath: /run/vpp/stats.sock
+          readOnly: true
+        - name: vpp-api
+          mountPath: /run/vpp/api.sock
+          readOnly: true
+        command:
+        - "/vpp-exporter"
+        - "--stats-socket=/run/vpp/stats.sock"
+        - "--api-socket=/run/vpp/api.sock"
+        - "--listen-address=0.0.0.0:9482"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: vpp-stats
+        hostPath:
+          path: /run/vpp/stats.sock
+          type: Socket
+      - name: vpp-api
+        hostPath:
+          path: /run/vpp/api.sock
+          type: Socket
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vpp-exporter
+  namespace: arca-lb
+  labels:
+    app: vpp-exporter
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 9482
+    targetPort: 9482
+    protocol: TCP
+  selector:
+    app: vpp-exporter
+

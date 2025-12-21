@@ -1,0 +1,73 @@
+# Multi-stage build for arcalb-agent
+# Note: Agent requires VPP to be available at runtime
+# This Dockerfile builds the agent binary, but VPP must be installed separately
+# or run in a container with VPP pre-installed
+
+# Stage 1: Build
+FROM golang:1.23-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git make gcc musl-dev
+
+# Set working directory
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the agent binary
+# Note: govpp requires CGO for VPP API communication
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s" \
+    -o /build/bin/arcalb-agent \
+    ./cmd/arcalb-agent
+
+# Stage 2: Runtime
+# Use a base image that can support VPP if needed
+# For production, consider using a VPP-enabled base image
+FROM alpine:3.19
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates tzdata
+
+# Install VPP runtime libraries (if available in Alpine)
+# Note: VPP typically requires a custom build or specific distribution
+# This is a placeholder - adjust based on your VPP deployment strategy
+# RUN apk add --no-cache vpp vpp-dev || echo "VPP must be installed separately"
+
+# Create non-root user
+RUN addgroup -g 1000 arcalb && \
+    adduser -D -u 1000 -G arcalb arcalb
+
+# Set working directory
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/bin/arcalb-agent /app/arcalb-agent
+
+# Copy configuration example (optional)
+COPY --from=builder /build/deploy/config/agent.example.yaml /app/config/agent.example.yaml
+
+# Create directory for VPP socket (if needed)
+RUN mkdir -p /run/vpp && \
+    chown -R arcalb:arcalb /app /run/vpp
+
+# Switch to non-root user
+USER arcalb
+
+# Expose metrics port
+EXPOSE 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:9090/metrics || exit 1
+
+# Run the agent
+# Use ARCA_AGENT_CONFIG environment variable for config path
+ENV ARCA_AGENT_CONFIG=/app/config/agent.yaml
+ENTRYPOINT ["/app/arcalb-agent"]
+

@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package arcalb.v1;
+
+option go_package = "github.com/akam1o/arca-lb/pkg/grpc/v1;arcalbv1";
+
+import "google/protobuf/timestamp.proto";
+
+// Protocol represents the transport protocol (TCP or UDP)
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_TCP = 1;
+  PROTOCOL_UDP = 2;
+}
+
+// LBMethod represents the load balancing method
+enum LBMethod {
+  LB_METHOD_UNSPECIFIED = 0;
+  LB_METHOD_ROUND_ROBIN = 1;
+  LB_METHOD_LEAST_CONN = 2;
+  LB_METHOD_MAGLEV = 3;
+}
+
+// HCType represents the health check type
+enum HCType {
+  HC_TYPE_UNSPECIFIED = 0;
+  HC_TYPE_HTTP = 1;
+  HC_TYPE_HTTPS = 2;
+  HC_TYPE_TCP = 3;
+  HC_TYPE_PING = 4;
+}
+
+// VIP represents a Virtual IP configuration
+message VIP {
+  string id = 1;
+  string vip = 2;
+  int32 port = 3;
+  Protocol protocol = 4;
+  LBMethod lb_method = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+// HealthCheck represents health check configuration for a VIP
+message HealthCheck {
+  string id = 1;
+  string vip_id = 2;
+  HCType type = 3;
+  int32 interval_sec = 4;
+  int32 timeout_sec = 5;
+  int32 rise_count = 6;
+  int32 fall_count = 7;
+  // config is a JSON string containing type-specific configuration
+  // For HTTP/HTTPS: {"path": "/health", "method": "GET", "headers": {...}, "skip_verify": false}
+  // For TCP: {"port": 80}
+  // For Ping: {}
+  string config = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+// Backend represents a backend server
+message Backend {
+  string id = 1;
+  string vip_id = 2;
+  string ip = 3;
+  int32 weight = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// VIPConfig represents a complete VIP configuration with health check and backends
+message VIPConfig {
+  VIP vip = 1;
+  HealthCheck health_check = 2;
+  repeated Backend backends = 3;
+}
+
+// ConfigSnapshot represents a complete configuration snapshot for agent distribution
+message ConfigSnapshot {
+  int64 revision = 1;
+  repeated VIPConfig vips = 2;
+}

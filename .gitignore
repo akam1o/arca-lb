@@ -1,0 +1,66 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+.cache/
+.gocache/
+.gomodcache/
+.gotmp/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+bin/
+arcalb-agent
+arcalb-controller
+dist/
+build/
+default.etcd/
+
+# Environment variables
+.env
+.env.local
+*.local
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Docker volumes
+docker-compose.override.yml
+
+# Generated files
+pkg/grpc/*.pb.go
+api/proto/*.pb.go
+api/proto/**/*.pb.go
+
+# OS specific
+Thumbs.db

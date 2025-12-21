@@ -1,0 +1,109 @@
+version: "3.9"
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.10
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    environment:
+      ETCD_NAME: etcd0
+      ETCD_ADVERTISE_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://0.0.0.0:2380
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_CLUSTER: etcd0=http://0.0.0.0:2380
+      ETCD_INITIAL_CLUSTER_STATE: new
+      ETCD_INITIAL_CLUSTER_TOKEN: arcalb-etcd-cluster
+    volumes:
+      - etcd_data:/etcd-data
+    networks:
+      - arcalb-net
+
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: arcalb
+      MYSQL_USER: arcalb
+      MYSQL_PASSWORD: arcalbpass
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -prootpass"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arcalb-net
+
+  controller:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.controller
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      CONFIG_PATH: /app/config/controller.yaml
+    volumes:
+      - ../../deploy/config/controller.example.yaml:/app/config/controller.yaml:ro
+    depends_on:
+      - etcd
+    networks:
+      - arcalb-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # agent:
+  #   build:
+  #     context: ../../
+  #     dockerfile: deploy/docker/Dockerfile.agent
+  #   privileged: true
+  #   network_mode: "host"
+  #   volumes:
+  #     - /run/vpp/api.sock:/run/vpp/api.sock:ro
+  #     - /run/vpp/stats.sock:/run/vpp/stats.sock:ro
+  #     - ../../deploy/config/agent.example.yaml:/app/config/agent.yaml:ro
+  #   environment:
+  #     ARCA_AGENT_CONFIG: /app/config/agent.yaml
+  #   depends_on:
+  #     - controller
+  #   # Note: Agent requires VPP to be running on the host
+  #   # For development, run VPP separately or use a VPP-enabled base image
+
+  # vpp-exporter: VPP statistics exporter for Prometheus
+  # Note: This service should run on the same host as VPP
+  # Mount VPP stats socket and API socket from host
+  vpp-exporter:
+    image: prometheuscommunity/vpp-exporter:v0.3.0
+    ports:
+      - "9482:9482"  # Prometheus metrics endpoint
+    volumes:
+      # Mount VPP stats socket (read-only)
+      - /run/vpp/stats.sock:/run/vpp/stats.sock:ro
+      # Mount VPP API socket (read-only)
+      - /run/vpp/api.sock:/run/vpp/api.sock:ro
+    command:
+      - "--stats-socket=/run/vpp/stats.sock"
+      - "--api-socket=/run/vpp/api.sock"
+      - "--listen-address=0.0.0.0:9482"
+    networks:
+      - arcalb-net
+    # Note: This service requires VPP to be running on the host
+    # For development, you may need to run this on the host directly
+    # or use host network mode if VPP is in a container
+
+networks:
+  arcalb-net:
+    driver: bridge
+
+volumes:
+  etcd_data:
+  mysql_data:

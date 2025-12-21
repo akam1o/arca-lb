@@ -1,0 +1,154 @@
+package etcd
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/akam1o/arca-lb/internal/common/datastore"
+	"github.com/akam1o/arca-lb/internal/common/models"
+	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
+)
+
+// CreateVIP creates a new VIP in etcd
+func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	// Generate UUID if not set
+	if vip.ID == "" {
+		vip.ID = uuid.New().String()
+	}
+
+	// Set timestamps
+	now := time.Now()
+	if vip.CreatedAt.IsZero() {
+		vip.CreatedAt = now
+	}
+	vip.UpdatedAt = now
+
+	// Set default LB method if not specified
+	if vip.LBMethod == "" {
+		vip.LBMethod = models.LBMethodMaglev
+	}
+
+	// Serialize VIP to JSON
+	data, err := json.Marshal(vip)
+	if err != nil {
+		return fmt.Errorf("failed to marshal VIP: %w", err)
+	}
+
+	// Store in etcd
+	key := ds.vipKey(vip.ID)
+	_, err = ds.client.Put(ctx, key, string(data))
+	if err != nil {
+		return fmt.Errorf("failed to put VIP to etcd: %w", err)
+	}
+
+	// Increment revision
+	if _, err := ds.IncrementRevision(ctx); err != nil {
+		return fmt.Errorf("failed to increment revision: %w", err)
+	}
+
+	return nil
+}
+
+// GetVIP retrieves a VIP by ID from etcd
+func (ds *EtcdDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, error) {
+	key := ds.vipKey(id)
+	resp, err := ds.client.Get(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get VIP from etcd: %w", err)
+	}
+
+	if len(resp.Kvs) == 0 {
+		return nil, datastore.ErrNotFound
+	}
+
+	var vip models.VIP
+	if err := json.Unmarshal(resp.Kvs[0].Value, &vip); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal VIP: %w", err)
+	}
+
+	return &vip, nil
+}
+
+// ListVIPs retrieves all VIPs from etcd
+func (ds *EtcdDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
+	prefix := ds.vipPrefix()
+	resp, err := ds.client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("failed to list VIPs from etcd: %w", err)
+	}
+
+	vips := make([]models.VIP, 0, len(resp.Kvs))
+	for _, kv := range resp.Kvs {
+		var vip models.VIP
+		if err := json.Unmarshal(kv.Value, &vip); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal VIP: %w", err)
+		}
+		vips = append(vips, vip)
+	}
+
+	return vips, nil
+}
+
+// UpdateVIP updates an existing VIP in etcd
+func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip.ID == "" {
+		return fmt.Errorf("VIP ID is required")
+	}
+
+	// Check if VIP exists
+	existing, err := ds.GetVIP(ctx, vip.ID)
+	if err != nil {
+		return fmt.Errorf("VIP not found: %w", err)
+	}
+
+	// Preserve CreatedAt
+	vip.CreatedAt = existing.CreatedAt
+	vip.UpdatedAt = time.Now()
+
+	// Serialize VIP to JSON
+	data, err := json.Marshal(vip)
+	if err != nil {
+		return fmt.Errorf("failed to marshal VIP: %w", err)
+	}
+
+	// Update in etcd
+	key := ds.vipKey(vip.ID)
+	_, err = ds.client.Put(ctx, key, string(data))
+	if err != nil {
+		return fmt.Errorf("failed to update VIP in etcd: %w", err)
+	}
+
+	// Increment revision
+	if _, err := ds.IncrementRevision(ctx); err != nil {
+		return fmt.Errorf("failed to increment revision: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteVIP deletes a VIP and its associated backends from etcd
+func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
+	// Delete VIP
+	vipKey := ds.vipKey(id)
+	_, err := ds.client.Delete(ctx, vipKey)
+	if err != nil {
+		return fmt.Errorf("failed to delete VIP from etcd: %w", err)
+	}
+
+	// Delete all associated backends
+	backendPrefix := ds.backendPrefix(id)
+	_, err = ds.client.Delete(ctx, backendPrefix, clientv3.WithPrefix())
+	if err != nil {
+		return fmt.Errorf("failed to delete backends from etcd: %w", err)
+	}
+
+	// Increment revision
+	if _, err := ds.IncrementRevision(ctx); err != nil {
+		return fmt.Errorf("failed to increment revision: %w", err)
+	}
+
+	return nil
+}

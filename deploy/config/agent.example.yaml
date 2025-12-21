@@ -1,0 +1,120 @@
+# arca-lb Agent Configuration Example
+
+agent:
+  # Unique agent identifier (defaults to hostname if not specified)
+  id: "agent-01"
+
+  # Agent metadata for identification and grouping
+  metadata:
+    region: "us-west-1"
+    datacenter: "dc1"
+    rack: "rack-a"
+
+  # How often to check for configuration drift
+  reconcile_interval: 30s
+
+  # How often to send heartbeats to controller
+  heartbeat_interval: 10s
+
+controller:
+  # Controller gRPC endpoint
+  address: "controller.example.com:50051"
+
+  # gRPC call timeout
+  timeout: 10s
+
+  # Connection retry settings
+  max_retries: 5
+  retry_backoff: 1s
+  max_retry_backoff: 30s
+
+  # TLS settings
+  tls:
+    enabled: false
+    cert_file: "/etc/arca-lb/certs/agent.crt"
+    key_file: "/etc/arca-lb/certs/agent.key"
+    ca_file: "/etc/arca-lb/certs/ca.crt"
+    insecure_skip_verify: false
+
+vpp:
+  # Path to VPP API socket
+  socket_path: "/run/vpp/api.sock"
+
+  # Connection timeout
+  connect_timeout: 5s
+
+  # Reconnection settings
+  reconnect_interval: 5s
+  max_reconnect_attempts: 0  # 0 = infinite retries
+
+  # Load balancer configuration
+  lb:
+    # Encapsulation type: GRE4, GRE6, L3DSR, NAT4, NAT6
+    encap_type: "GRE4"
+
+    # DSCP value for encapsulated packets (0-63)
+    dscp: 0
+
+    # Load balancer service type: CLUSTERIP, NODEPORT
+    type: "CLUSTERIP"
+
+    # Flow table size for new connections
+    new_flows_table_length: 1024
+
+    # Fail VIP creation if all backends are down
+    fail_on_all_backends_down: false
+
+frr:
+  # Enable FRR integration for BGP announcements
+  enabled: false
+
+  # Path to vtysh command
+  vtysh: "/usr/bin/vtysh"
+
+  # FRR configuration file
+  config_file: "/etc/frr/frr.conf"
+
+health_check:
+  # Number of concurrent health check workers
+  worker_count: 4
+
+  # Default timeout for health checks
+  default_timeout: 3s
+
+  # Maximum concurrent checks per worker
+  max_concurrent_checks: 100
+
+log:
+  # Log level: debug, info, warn, error
+  level: "info"
+
+  # Log format: json, text
+  format: "json"
+
+  # Log output: stdout, stderr, or file path
+  output: "stdout"
+
+# Metrics collection and export
+metrics:
+  # Enable Prometheus metrics collection
+  enabled: false
+
+  # Address to listen on for metrics endpoint (port 9090 is Prometheus standard)
+  listen_address: "0.0.0.0:9090"
+
+  # HTTP path for metrics endpoint
+  path: "/metrics"
+
+  # Timeout for metrics HTTP server operations
+  timeout: 10s
+
+# Environment variable overrides:
+# ARCA_AGENT_ID                - Agent ID
+# ARCA_CONTROLLER_ADDRESS      - Controller address
+# ARCA_VPP_SOCKET              - VPP socket path
+# ARCA_LOG_LEVEL               - Log level
+# ARCA_LOG_FORMAT              - Log format
+# ARCA_TLS_ENABLED             - Enable TLS (true/false)
+# ARCA_TLS_CERT                - TLS certificate file
+# ARCA_TLS_KEY                 - TLS key file
+# ARCA_TLS_CA                  - TLS CA file

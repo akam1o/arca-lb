@@ -1,0 +1,123 @@
+syntax = "proto3";
+
+package arcalb.v1;
+
+option go_package = "github.com/akam1o/arca-lb/pkg/grpc/v1;arcalbv1";
+
+import "config.proto";
+
+// ConfigSync service provides configuration synchronization between Controller and Agents
+service ConfigSync {
+  // GetConfig retrieves the current complete configuration snapshot
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+
+  // WatchConfig streams configuration changes to agents
+  rpc WatchConfig(WatchConfigRequest) returns (stream WatchConfigResponse);
+
+  // RegisterAgent registers an agent with the controller
+  rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
+
+  // Heartbeat sends periodic heartbeat from agent to controller
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// GetConfigRequest requests the current configuration snapshot
+message GetConfigRequest {
+  // Optional: request only if revision is newer than this
+  int64 current_revision = 1;
+}
+
+// GetConfigResponse returns the current configuration snapshot
+message GetConfigResponse {
+  ConfigSnapshot config = 1;
+  // If current_revision in request matches, config may be empty
+  bool unchanged = 2;
+}
+
+// WatchConfigRequest initiates a configuration watch stream
+message WatchConfigRequest {
+  // Agent ID
+  string agent_id = 1;
+
+  // Current revision the agent has
+  int64 current_revision = 2;
+}
+
+// WatchConfigResponse streams configuration updates
+message WatchConfigResponse {
+  // Type of update
+  UpdateType type = 1;
+
+  // Updated configuration snapshot
+  ConfigSnapshot config = 2;
+
+  // Error message if any
+  string error = 3;
+}
+
+// UpdateType represents the type of configuration update
+enum UpdateType {
+  UPDATE_TYPE_UNSPECIFIED = 0;
+  UPDATE_TYPE_FULL = 1;      // Full configuration snapshot
+  UPDATE_TYPE_INCREMENTAL = 2; // Incremental update
+  UPDATE_TYPE_HEARTBEAT = 3;  // Heartbeat/keepalive
+}
+
+// RegisterAgentRequest registers an agent
+message RegisterAgentRequest {
+  // Agent hostname or identifier
+  string agent_id = 1;
+
+  // Agent version
+  string version = 2;
+
+  // Agent metadata (e.g., IP address, region, etc.)
+  map<string, string> metadata = 3;
+}
+
+// RegisterAgentResponse acknowledges agent registration
+message RegisterAgentResponse {
+  bool success = 1;
+  string message = 2;
+
+  // Initial configuration snapshot
+  ConfigSnapshot config = 3;
+}
+
+// HeartbeatRequest sends agent heartbeat
+message HeartbeatRequest {
+  string agent_id = 1;
+  int64 current_revision = 2;
+
+  // Agent status information
+  AgentStatus status = 3;
+}
+
+// HeartbeatResponse acknowledges heartbeat
+message HeartbeatResponse {
+  bool success = 1;
+
+  // If configuration has changed, new_revision will be set
+  int64 new_revision = 2;
+
+  // Controller may request agent to re-sync
+  bool resync_required = 3;
+}
+
+// AgentStatus represents the current status of an agent
+message AgentStatus {
+  // Number of active VIPs
+  int32 active_vips = 1;
+
+  // Number of active backends
+  int32 active_backends = 2;
+
+  // VPP status
+  bool vpp_connected = 3;
+
+  // FRR status
+  bool frr_connected = 4;
+
+  // Error count
+  int32 error_count = 5;
+}

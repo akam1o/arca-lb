@@ -1,0 +1,125 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arcalb-agent-config
+  namespace: arca-lb
+data:
+  agent.yaml: |
+    controller:
+      grpc:
+        address: "arcalb-controller.arca-lb.svc.cluster.local:50051"
+    vpp:
+      socket_path: "/run/vpp/api.sock"
+      connect_timeout: "10s"
+      reconnect_interval: "30s"
+      max_reconnect_attempts: 0
+    frr:
+      enabled: false
+    health_check:
+      enabled: true
+      interval: "10s"
+      timeout: "5s"
+    metrics:
+      enabled: true
+      listen_address: "0.0.0.0:9090"
+    log:
+      level: "info"
+      format: "json"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: arcalb-agent
+  namespace: arca-lb
+  labels:
+    app: arcalb-agent
+spec:
+  selector:
+    matchLabels:
+      app: arcalb-agent
+  template:
+    metadata:
+      labels:
+        app: arcalb-agent
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: agent
+        image: arcalb-agent:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+              - NET_ADMIN
+              - SYS_ADMIN
+        ports:
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: vpp-api
+          mountPath: /run/vpp/api.sock
+        - name: vpp-stats
+          mountPath: /run/vpp/stats.sock
+        env:
+        - name: ARCA_AGENT_CONFIG
+          value: /app/config/agent.yaml
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: metrics
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: metrics
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: arcalb-agent-config
+      - name: vpp-api
+        hostPath:
+          path: /run/vpp/api.sock
+          type: Socket
+      - name: vpp-stats
+        hostPath:
+          path: /run/vpp/stats.sock
+          type: Socket
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: arcalb-agent
+  namespace: arca-lb
+  labels:
+    app: arcalb-agent
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app: arcalb-agent
+

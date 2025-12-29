@@ -516,3 +516,5 @@ func TestHCType_Constants(t *testing.T) {
 	assert.Equal(t, HCType("ping"), HCTypePing)
 }
 
+
+

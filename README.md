@@ -21,7 +21,7 @@
 ┌─────────────────────────────────────────┐
 │      Controller (REST + gRPC)           │
 │  - VIP/Backend management               │
-│  - MySQL database                       │
+│  - Datastore (etcd/MySQL)               │
 │  - Config delivery to Agents            │
 └────────────┬────────────────────────────┘
              │ gRPC
@@ -60,10 +60,11 @@ arca-lb/
 
 ## Requirements
 
-- **Go**: 1.25+ (development)
+- **Go**: 1.24+ (development)
 - **VPP**: 22.02+ (Agent runtime)
 - **FRRouting**: 8.0+ (Agent runtime)
-- **MySQL**: 8.0+ (Controller)
+- **etcd**: 3.5+ (Controller, optional)
+- **MySQL**: 8.0+ (Controller, optional)
 - **Docker**: 20.10+ (optional)
 
 ## Quickstart
@@ -81,12 +82,20 @@ cd arca-lb
 make deps
 ```
 
-3. Start MySQL (Docker Compose)
+3. Prepare configuration files
 ```bash
-docker compose -f deploy/docker-compose/docker-compose.dev.yml up -d
+cp deploy/config/controller.example.yaml deploy/config/controller.yaml
+cp deploy/config/agent.example.yaml deploy/config/agent.yaml
 ```
 
-4. Build
+4. Start a datastore (Docker Compose)
+```bash
+docker compose -f deploy/docker-compose/docker-compose.dev.yml up -d etcd
+# or
+docker compose -f deploy/docker-compose/docker-compose.dev.yml up -d mysql
+```
+
+5. Build
 ```bash
 make build
 ```
@@ -94,22 +103,23 @@ make build
 ### Start the Controller
 
 ```bash
-./bin/arcalb-controller --config config/controller.yaml
+./bin/arcalb-controller --config deploy/config/controller.yaml
 ```
 
 ### Start the Agent
 
 ```bash
-export ARCA_AGENT_CONFIG=config/agent.yaml
+export ARCA_AGENT_CONFIG=deploy/config/agent.yaml
 sudo ./bin/arcalb-agent
 ```
 
-**Note**: The Agent reads the config path from the `ARCA_AGENT_CONFIG` environment variable, not from a `--config` flag.
+**Note**: The Agent reads the config path from the `ARCA_AGENT_CONFIG` environment variable (default: `/etc/arca-lb/agent.yaml`), not from a `--config` flag.
 
 ## Makefile Targets
 
 ```bash
 make help          # Show available targets
+make deps          # Download dependencies
 make build         # Build binaries
 make test          # Run tests
 make lint          # Run linters

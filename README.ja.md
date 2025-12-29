@@ -21,7 +21,7 @@
 ┌─────────────────────────────────────────┐
 │      Controller (REST + gRPC)           │
 │  - VIP/Backend 管理                      │
-│  - MySQL データベース                     │
+│  - データストア (etcd/MySQL)              │
 │  - Agent への設定配信                     │
 └────────────┬────────────────────────────┘
              │ gRPC
@@ -60,10 +60,11 @@ arca-lb/
 
 ## 必要要件
 
-- **Go**: 1.25+ (開発環境)
+- **Go**: 1.24+ (開発環境)
 - **VPP**: 22.02+ (Agent 実行環境)
 - **FRRouting**: 8.0+ (Agent 実行環境)
-- **MySQL**: 8.0+ (Controller)
+- **etcd**: 3.5+ (Controller, オプション)
+- **MySQL**: 8.0+ (Controller, オプション)
 - **Docker**: 20.10+ (オプション)
 
 ## クイックスタート
@@ -81,12 +82,20 @@ cd arca-lb
 make deps
 ```
 
-3. MySQL の起動 (Docker Compose)
+3. 設定ファイルの準備
 ```bash
-docker compose -f deploy/docker-compose/docker-compose.dev.yml up -d
+cp deploy/config/controller.example.yaml deploy/config/controller.yaml
+cp deploy/config/agent.example.yaml deploy/config/agent.yaml
 ```
 
-4. ビルド
+4. データストアの起動 (Docker Compose)
+```bash
+docker compose -f deploy/docker-compose/docker-compose.dev.yml up -d etcd
+# または
+docker compose -f deploy/docker-compose/docker-compose.dev.yml up -d mysql
+```
+
+5. ビルド
 ```bash
 make build
 ```
@@ -94,22 +103,23 @@ make build
 ### Controller の起動
 
 ```bash
-./bin/arcalb-controller --config config/controller.yaml
+./bin/arcalb-controller --config deploy/config/controller.yaml
 ```
 
 ### Agent の起動
 
 ```bash
-export ARCA_AGENT_CONFIG=config/agent.yaml
+export ARCA_AGENT_CONFIG=deploy/config/agent.yaml
 sudo ./bin/arcalb-agent
 ```
 
-**注意**: Agent は `--config` フラグではなく、`ARCA_AGENT_CONFIG` 環境変数で設定ファイルのパスを指定します。
+**注意**: Agent は `--config` フラグではなく、`ARCA_AGENT_CONFIG` 環境変数で設定ファイルのパスを指定します（デフォルト: `/etc/arca-lb/agent.yaml`）。
 
 ## Makefile ターゲット
 
 ```bash
 make help          # 使用可能なターゲットを表示
+make deps          # 依存関係をダウンロード
 make build         # バイナリをビルド
 make test          # テストを実行
 make lint          # コード品質チェック

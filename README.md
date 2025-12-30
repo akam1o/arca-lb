@@ -151,7 +151,7 @@ For detailed documentation, see the `docs/` directory:
 
 ## Contact
 
-For inquiries, email `arca-projects@ark-networks.net` or open an issue on GitHub.
+For inquiries, email `arca-project@ark-networks.net` or open an issue on GitHub.
 
 ## License
 

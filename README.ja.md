@@ -151,7 +151,7 @@ make clean         # ビルド成果物を削除
 
 ## お問い合わせ
 
-お問い合わせは `arca-projects@ark-networks.net` までメール、または GitHub Issues で Issue を作成してください。
+お問い合わせは `arca-project@ark-networks.net` までメール、または GitHub Issues で Issue を作成してください。
 
 ## ライセンス
 

@@ -89,6 +89,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     needs: [lint, test]
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -135,27 +137,62 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Controller image
+      - name: Build controller image tar (linux/amd64)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: deploy/docker/Dockerfile.controller
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
           tags: ${{ steps.meta-controller.outputs.tags }}
           labels: ${{ steps.meta-controller.outputs.labels }}
+          outputs: type=docker,dest=dist/arca-lb-controller-image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build and push Agent image
+      - name: Push controller tags
+        run: |
+          set -euo pipefail
+          docker load -i dist/arca-lb-controller-image.tar
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            docker push "${tag}"
+          done <<< "${{ steps.meta-controller.outputs.tags }}"
+
+      - name: Build agent image tar (linux/amd64)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: deploy/docker/Dockerfile.agent
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
           tags: ${{ steps.meta-agent.outputs.tags }}
           labels: ${{ steps.meta-agent.outputs.labels }}
+          outputs: type=docker,dest=dist/arca-lb-agent-image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Push agent tags
+        run: |
+          set -euo pipefail
+          docker load -i dist/arca-lb-agent-image.tar
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            docker push "${tag}"
+          done <<< "${{ steps.meta-agent.outputs.tags }}"
+
+      - name: Package image archives
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.release.tag_name }}"
+          mkdir -p dist/out
+
+          CONTROLLER_ARCHIVE="arca-lb-controller-${VERSION}-linux-amd64-image.tar.gz"
+          AGENT_ARCHIVE="arca-lb-agent-${VERSION}-linux-amd64-image.tar.gz"
+
+          gzip -c dist/arca-lb-controller-image.tar > "dist/out/${CONTROLLER_ARCHIVE}"
+          gzip -c dist/arca-lb-agent-image.tar > "dist/out/${AGENT_ARCHIVE}"
+
+          (cd dist/out && sha256sum "${CONTROLLER_ARCHIVE}" > "${CONTROLLER_ARCHIVE}.sha256")
+          (cd dist/out && sha256sum "${AGENT_ARCHIVE}" > "${AGENT_ARCHIVE}.sha256")
 
       - name: Attach Dockerfiles to release
         uses: softprops/action-gh-release@v2
@@ -163,6 +200,8 @@ jobs:
           files: |
             deploy/docker/Dockerfile.controller
             deploy/docker/Dockerfile.agent
+            dist/out/*.tar.gz
+            dist/out/*.sha256
 
   release-artifacts:
     name: Attach Binaries to Release
@@ -194,59 +233,6 @@ jobs:
             dist/*.tar.gz
             dist/*.sha256
 
-  release-containers:
-    name: Attach Container Images to Release
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    needs: [lint, test]
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build images (linux/amd64)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: deploy/docker/Dockerfile.controller
-          load: true
-          platforms: linux/amd64
-          tags: arca-lb-controller:${{ github.event.release.tag_name }}
-
-      - name: Build agent image (linux/amd64)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: deploy/docker/Dockerfile.agent
-          load: true
-          platforms: linux/amd64
-          tags: arca-lb-agent:${{ github.event.release.tag_name }}
-
-      - name: Export images
-        run: |
-          set -euo pipefail
-          VERSION="${{ github.event.release.tag_name }}"
-          mkdir -p dist
-
-          CONTROLLER_ARCHIVE="arca-lb-controller-${VERSION}-linux-amd64-image.tar.gz"
-          AGENT_ARCHIVE="arca-lb-agent-${VERSION}-linux-amd64-image.tar.gz"
-
-          docker save "arca-lb-controller:${VERSION}" | gzip -c > "dist/${CONTROLLER_ARCHIVE}"
-          docker save "arca-lb-agent:${VERSION}" | gzip -c > "dist/${AGENT_ARCHIVE}"
-
-          (cd dist && sha256sum "${CONTROLLER_ARCHIVE}" > "${CONTROLLER_ARCHIVE}.sha256")
-          (cd dist && sha256sum "${AGENT_ARCHIVE}" > "${AGENT_ARCHIVE}.sha256")
-
-      - name: Attach images to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.tar.gz
-            dist/*.sha256
 
   proto:
     name: Generate Protobuf

@@ -6,6 +6,8 @@
 
 - Controller: https://hub.docker.com/r/akam1o/arca-lb-controller
 - Agent: https://hub.docker.com/r/akam1o/arca-lb-agent
+- Controller (GHCR): `ghcr.io/akam1o/arca-lb-controller`
+- Agent (GHCR): `ghcr.io/akam1o/arca-lb-agent`
 
 ## Features
 

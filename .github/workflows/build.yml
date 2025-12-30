@@ -113,8 +113,10 @@ jobs:
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Extract metadata for Agent
@@ -127,8 +129,10 @@ jobs:
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Controller image

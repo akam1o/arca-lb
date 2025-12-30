@@ -66,7 +66,7 @@ arca-lb/
 ## Requirements
 
 - **Go**: 1.24+ (development)
-- **VPP**: 22.02+ (Agent runtime)
+- **VPP**: 24.10 (recommended, Agent runtime)
 - **FRRouting**: 8.0+ (Agent runtime)
 - **etcd**: 3.5+ (Controller, optional)
 - **MySQL**: 8.0+ (Controller, optional)

@@ -189,7 +189,7 @@ The Agent runs on each load balancer node and is responsible for:
 ### Agent
 
 - **Language**: Go 1.23
-- **VPP integration**: git.fd.io/govpp.git v0.5.0
+- **VPP integration**: go.fd.io/govpp v0.13.0
 - **FRR integration**: via `vtysh`
 - **Metrics**: Prometheus `client_golang`
 
@@ -223,6 +223,5 @@ The Agent runs on each load balancer node and is responsible for:
 
 - See [Development Environment](./development.md) to get started
 - See the [Contribution Guide](./contributing.md) to contribute to the project
-
 
 

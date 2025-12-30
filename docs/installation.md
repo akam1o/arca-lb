@@ -14,7 +14,7 @@ This document explains how to install arca-lb.
 ### Agent
 
 - **Go**: 1.23+ (for builds)
-- **VPP**: 22.02+ (runtime)
+- **VPP**: 24.10 (recommended, runtime)
 - **FRRouting**: 8.0+ (runtime, required for BGP advertisements)
 - **Docker**: 20.10+ (optional; when running in containers)
 

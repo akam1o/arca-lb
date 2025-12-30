@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"git.fd.io/govpp.git"
-	"git.fd.io/govpp.git/api"
-	"git.fd.io/govpp.git/core"
+	"go.fd.io/govpp"
+	"go.fd.io/govpp/api"
+	"go.fd.io/govpp/core"
 	"github.com/akam1o/arca-lb/internal/agent/config"
 	"github.com/sirupsen/logrus"
 )

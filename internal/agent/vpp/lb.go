@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net"
 
-	"git.fd.io/govpp.git/binapi/ip_types"
-	"git.fd.io/govpp.git/binapi/lb"
-	"git.fd.io/govpp.git/binapi/lb_types"
+	"go.fd.io/govpp/binapi/ip_types"
+	"go.fd.io/govpp/binapi/lb"
+	"go.fd.io/govpp/binapi/lb_types"
 	"github.com/akam1o/arca-lb/internal/agent/config"
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/sirupsen/logrus"

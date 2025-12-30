@@ -66,7 +66,7 @@ arca-lb/
 ## 必要要件
 
 - **Go**: 1.24+ (開発環境)
-- **VPP**: 22.02+ (Agent 実行環境)
+- **VPP**: 24.10 (推奨, Agent 実行環境)
 - **FRRouting**: 8.0+ (Agent 実行環境)
 - **etcd**: 3.5+ (Controller, オプション)
 - **MySQL**: 8.0+ (Controller, オプション)

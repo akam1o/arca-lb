@@ -189,7 +189,7 @@ Agent は各ロードバランサーノードで実行されるコンポーネ�
 ### Agent
 
 - **言語**: Go 1.23
-- **VPP 連携**: git.fd.io/govpp.git v0.5.0
+- **VPP 連携**: go.fd.io/govpp v0.13.0
 - **FRR 連携**: vtysh コマンド経由
 - **メトリクス**: Prometheus client_golang
 
@@ -223,4 +223,3 @@ Agent は各ロードバランサーノードで実行されるコンポーネ�
 
 - [開発環境セットアップ](./development.md) を参照して、開発を開始します
 - [コントリビューションガイド](./contributing.md) を参照して、プロジェクトに貢献します
-

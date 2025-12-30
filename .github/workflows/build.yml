@@ -108,7 +108,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/arcalb-controller
+            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/arca-lb-controller
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -122,7 +122,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/arcalb-agent
+            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/arca-lb-agent
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -159,6 +159,90 @@ jobs:
           files: |
             deploy/docker/Dockerfile.controller
             deploy/docker/Dockerfile.agent
+
+  release-artifacts:
+    name: Attach Binaries to Release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [build]
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/bin
+
+      - name: Package binaries
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.release.tag_name }}"
+          PLATFORM="linux-amd64"
+          ARCHIVE="arcalb-${VERSION}-${PLATFORM}.tar.gz"
+          tar -C dist/bin -czf "dist/${ARCHIVE}" .
+          (cd dist && sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256")
+
+      - name: Attach binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  release-containers:
+    name: Attach Container Images to Release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [lint, test]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build images (linux/amd64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.controller
+          load: true
+          platforms: linux/amd64
+          tags: arca-lb-controller:${{ github.event.release.tag_name }}
+
+      - name: Build agent image (linux/amd64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.agent
+          load: true
+          platforms: linux/amd64
+          tags: arca-lb-agent:${{ github.event.release.tag_name }}
+
+      - name: Export images
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.release.tag_name }}"
+          mkdir -p dist
+
+          CONTROLLER_ARCHIVE="arca-lb-controller-${VERSION}-linux-amd64-image.tar.gz"
+          AGENT_ARCHIVE="arca-lb-agent-${VERSION}-linux-amd64-image.tar.gz"
+
+          docker save "arca-lb-controller:${VERSION}" | gzip -c > "dist/${CONTROLLER_ARCHIVE}"
+          docker save "arca-lb-agent:${VERSION}" | gzip -c > "dist/${AGENT_ARCHIVE}"
+
+          (cd dist && sha256sum "${CONTROLLER_ARCHIVE}" > "${CONTROLLER_ARCHIVE}.sha256")
+          (cd dist && sha256sum "${AGENT_ARCHIVE}" > "${AGENT_ARCHIVE}.sha256")
+
+      - name: Attach images to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
 
   proto:
     name: Generate Protobuf

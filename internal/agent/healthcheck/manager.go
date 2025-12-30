@@ -27,8 +27,8 @@ type Manager struct {
 	cancel  context.CancelFunc
 
 	// Worker pool
-	workers []*Worker
-	jobCh   chan *ProbeJob
+	workers  []*Worker
+	jobCh    chan *ProbeJob
 	resultCh chan *ProbeJobResult
 
 	// State tracking
@@ -38,7 +38,7 @@ type Manager struct {
 	scheduler *JobScheduler
 
 	// VIP management
-	vipProbers map[string]Prober // vipID -> Prober
+	vipProbers map[string]Prober            // vipID -> Prober
 	vipConfigs map[string]*models.VIPConfig // vipID -> VIPConfig
 
 	// Metrics (optional)
@@ -119,7 +119,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.started = true
 
 	m.logger.WithFields(logrus.Fields{
-		"worker_count":  m.config.WorkerCount,
+		"worker_count":   m.config.WorkerCount,
 		"max_concurrent": m.config.MaxConcurrentChecks,
 	}).Info("Health check manager started")
 

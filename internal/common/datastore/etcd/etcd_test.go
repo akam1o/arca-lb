@@ -77,7 +77,7 @@ func TestEtcdDataStore_Concurrency(t *testing.T) {
 	}()
 
 	go func() {
-		vip.LBMethod = models.LBMethodRoundRobin
+		vip.Protocol = models.ProtocolUDP
 		ds.UpdateVIP(ctx, vip)
 		done <- true
 	}()
@@ -89,7 +89,7 @@ func TestEtcdDataStore_Concurrency(t *testing.T) {
 	retrieved, err := ds.GetVIP(ctx, vip.ID)
 	require.NoError(t, err)
 	// Last write wins
-	assert.True(t, retrieved.Port == 443 || retrieved.LBMethod == models.LBMethodRoundRobin)
+	assert.True(t, retrieved.Port == 443 || retrieved.Protocol == models.ProtocolUDP)
 }
 
 func TestEtcdDataStore_Idempotency(t *testing.T) {
@@ -130,4 +130,3 @@ func TestEtcdDataStore_Idempotency(t *testing.T) {
 	err = ds.DeleteVIP(ctx, vip.ID)
 	assert.NoError(t, err)
 }
-

@@ -16,9 +16,7 @@ enum Protocol {
 // LBMethod represents the load balancing method
 enum LBMethod {
   LB_METHOD_UNSPECIFIED = 0;
-  LB_METHOD_ROUND_ROBIN = 1;
-  LB_METHOD_LEAST_CONN = 2;
-  LB_METHOD_MAGLEV = 3;
+  LB_METHOD_MAGLEV = 1;
 }
 
 // HCType represents the health check type

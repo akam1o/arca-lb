@@ -111,4 +111,3 @@ func (ds *MySQLDataStore) GetConfig(ctx context.Context) (*models.Config, error)
 
 	return config, nil
 }
-

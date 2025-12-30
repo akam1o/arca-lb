@@ -154,11 +154,11 @@ func (st *StateTracker) UpdateProbeResult(
 	stateChanged := newState != prevState
 	if stateChanged {
 		st.logger.WithFields(logrus.Fields{
-			"vip_id":     vipID,
-			"backend_id": backendID,
-			"prev_state": prevState,
-			"new_state":  newState,
-			"consec_up":  state.ConsecutiveUp,
+			"vip_id":      vipID,
+			"backend_id":  backendID,
+			"prev_state":  prevState,
+			"new_state":   newState,
+			"consec_up":   state.ConsecutiveUp,
 			"consec_down": state.ConsecutiveDown,
 		}).Info("Backend health state changed")
 
@@ -209,7 +209,7 @@ func (st *StateTracker) RemoveVIP(vipID string) {
 	}
 
 	st.logger.WithFields(logrus.Fields{
-		"vip_id":        vipID,
+		"vip_id":           vipID,
 		"backends_removed": len(keysToRemove),
 	}).Debug("Removed VIP from health state tracking")
 }

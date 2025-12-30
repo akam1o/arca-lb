@@ -179,8 +179,8 @@ func TestComputeDiff(t *testing.T) {
 					ID:       "vip1",
 					VIP:      "10.0.0.1",
 					Port:     80,
-					Protocol: models.ProtocolTCP,
-					LBMethod: models.LBMethodRoundRobin, // Changed
+					Protocol: models.ProtocolUDP, // Changed
+					LBMethod: models.LBMethodMaglev,
 				},
 				Backends: []models.Backend{
 					{

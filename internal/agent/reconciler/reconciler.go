@@ -59,7 +59,7 @@ type Reconciler struct {
 	stopCh      chan struct{}
 	doneCh      chan struct{}
 	reconcileCh chan struct{}
-	
+
 	// Metrics (optional)
 	metricsRecorder MetricsRecorder
 }

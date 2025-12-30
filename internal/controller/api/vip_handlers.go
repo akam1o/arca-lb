@@ -22,7 +22,7 @@ type CreateVIPRequest struct {
 	VIP         string              `json:"vip" binding:"required,ip"`
 	Port        int                 `json:"port" binding:"required,min=1,max=65535"`
 	Protocol    models.Protocol     `json:"protocol" binding:"required,oneof=TCP UDP"`
-	LBMethod    models.LBMethod     `json:"lb_method" binding:"omitempty,oneof=round_robin least_conn maglev"`
+	LBMethod    models.LBMethod     `json:"lb_method" binding:"omitempty,oneof=maglev"`
 	HealthCheck *HealthCheckRequest `json:"health_check,omitempty"`
 }
 
@@ -31,7 +31,7 @@ type UpdateVIPRequest struct {
 	VIP      string          `json:"vip" binding:"omitempty,ip"`
 	Port     int             `json:"port" binding:"omitempty,min=1,max=65535"`
 	Protocol models.Protocol `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
-	LBMethod models.LBMethod `json:"lb_method" binding:"omitempty,oneof=round_robin least_conn maglev"`
+	LBMethod models.LBMethod `json:"lb_method" binding:"omitempty,oneof=maglev"`
 }
 
 // createVIP handles POST /api/v1/vips

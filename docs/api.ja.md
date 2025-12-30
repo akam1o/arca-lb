@@ -142,7 +142,7 @@ http://localhost:8080
   "vip": "192.168.1.101",
   "port": 443,
   "protocol": "TCP",
-  "lb_method": "round_robin"
+  "lb_method": "maglev"
 }
 ```
 
@@ -303,7 +303,7 @@ http://localhost:8080
   "vip": "string (IP address)",
   "port": "integer (1-65535)",
   "protocol": "TCP | UDP",
-  "lb_method": "round_robin | least_conn | maglev",
+  "lb_method": "maglev",
   "health_check": "HealthCheck (optional)",
   "created_at": "string (RFC3339)",
   "updated_at": "string (RFC3339)"
@@ -387,4 +387,3 @@ curl http://localhost:8080/api/v1/vips
 
 - [設定ガイド](./configuration.md) を参照して、詳細な設定を行います
 - [トラブルシューティング](./troubleshooting.md) を参照して、問題の解決方法を確認します
-

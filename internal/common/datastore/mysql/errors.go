@@ -38,4 +38,3 @@ func normalizeError(err error) error {
 
 	return err
 }
-

@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS `vips` (
   `vip` VARCHAR(45) NOT NULL,
   `port` INT NOT NULL,
   `protocol` ENUM('TCP', 'UDP') NOT NULL,
-  `lb_method` ENUM('round_robin', 'least_conn', 'maglev') NOT NULL DEFAULT 'maglev',
+  `lb_method` ENUM('maglev') NOT NULL DEFAULT 'maglev',
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

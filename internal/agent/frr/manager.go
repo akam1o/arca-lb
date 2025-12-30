@@ -108,10 +108,10 @@ func (m *Manager) UpdateBackendHealth(vipID, backendID, vipAddress string, oldSt
 	currentRouteState := health.RouteAnnounced
 
 	m.logger.WithFields(logrus.Fields{
-		"vip_id":                vipID,
-		"healthy_count":         healthyCount,
-		"desired_route_state":   desiredRouteState,
-		"current_route_state":   currentRouteState,
+		"vip_id":              vipID,
+		"healthy_count":       healthyCount,
+		"desired_route_state": desiredRouteState,
+		"current_route_state": currentRouteState,
 	}).Debug("Route state comparison")
 
 	// Release lock before vtysh execution

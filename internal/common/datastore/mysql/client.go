@@ -81,4 +81,3 @@ func (ds *MySQLDataStore) Close() error {
 	}
 	return nil
 }
-

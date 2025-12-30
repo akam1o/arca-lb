@@ -18,15 +18,15 @@ type HTTPProber struct {
 	logger *logrus.Logger
 
 	// Configuration
-	useHTTPS        bool
-	port            int
-	path            string
-	method          string
-	expectedCodes   map[int]bool
-	headers         map[string]string
-	tlsSkipVerify   bool
-	hostHeader      string
-	timeout         time.Duration
+	useHTTPS      bool
+	port          int
+	path          string
+	method        string
+	expectedCodes map[int]bool
+	headers       map[string]string
+	tlsSkipVerify bool
+	hostHeader    string
+	timeout       time.Duration
 
 	// HTTP client
 	client *http.Client

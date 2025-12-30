@@ -19,7 +19,7 @@ type VIPRecord struct {
 	VIP       string    `gorm:"type:varchar(45);not null"`
 	Port      int       `gorm:"not null"`
 	Protocol  string    `gorm:"type:enum('TCP','UDP');not null"`
-	LBMethod  string    `gorm:"type:enum('round_robin','least_conn','maglev');not null;default:'maglev'"`
+	LBMethod  string    `gorm:"type:enum('maglev');not null;default:'maglev'"`
 	CreatedAt time.Time `gorm:"not null"`
 	UpdatedAt time.Time `gorm:"not null"`
 }

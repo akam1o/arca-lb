@@ -50,15 +50,15 @@ type JobScheduler struct {
 
 // VIPSchedule represents the health check schedule for a single VIP
 type VIPSchedule struct {
-	vipID       string
-	vipConfig   *models.VIPConfig
-	prober      Prober
-	interval    time.Duration
-	riseCount   int
-	fallCount   int
-	ticker      *time.Ticker
-	stopCh      chan struct{}
-	logger      *logrus.Logger
+	vipID     string
+	vipConfig *models.VIPConfig
+	prober    Prober
+	interval  time.Duration
+	riseCount int
+	fallCount int
+	ticker    *time.Ticker
+	stopCh    chan struct{}
+	logger    *logrus.Logger
 }
 
 // NewJobScheduler creates a new job scheduler

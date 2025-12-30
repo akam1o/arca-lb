@@ -14,12 +14,12 @@ type HealthCheckCollector struct {
 	logger       *logrus.Logger
 
 	// Metrics
-	healthCheckTotal     *prometheus.CounterVec
-	backendState         *prometheus.GaugeVec
-	healthCheckDuration  *prometheus.HistogramVec
-	
+	healthCheckTotal    *prometheus.CounterVec
+	backendState        *prometheus.GaugeVec
+	healthCheckDuration *prometheus.HistogramVec
+
 	// Track previous collection state to detect removed backends
-	mu              sync.Mutex
+	mu               sync.Mutex
 	previousBackends map[string]bool // "vipID:backendID" -> exists
 }
 
@@ -69,11 +69,11 @@ func (c *HealthCheckCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *HealthCheckCollector) Collect(ch chan<- prometheus.Metric) {
 	// Collect current backend states
 	states := c.stateTracker.GetAllStates()
-	
+
 	c.mu.Lock()
 	// Track current backends
 	currentBackends := make(map[string]bool)
-	
+
 	// Update backend state gauges for all current states
 	for key, state := range states {
 		// Parse key: "vipID:backendID"
@@ -97,7 +97,7 @@ func (c *HealthCheckCollector) Collect(ch chan<- prometheus.Metric) {
 			c.backendState.WithLabelValues(vipID, backendID).Set(-1.0)
 		}
 	}
-	
+
 	// Remove metrics for backends that no longer exist
 	for key := range c.previousBackends {
 		if !currentBackends[key] {
@@ -108,7 +108,7 @@ func (c *HealthCheckCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 		}
 	}
-	
+
 	// Update previous backends for next collection
 	c.previousBackends = currentBackends
 	c.mu.Unlock()
@@ -145,7 +145,7 @@ type VPPCollector struct {
 	logger *logrus.Logger
 
 	// Metrics
-	vppErrorsTotal    *prometheus.CounterVec
+	vppErrorsTotal     *prometheus.CounterVec
 	vppReconnectsTotal prometheus.Counter
 }
 
@@ -206,17 +206,17 @@ type ReconcilerCollector struct {
 // VIPTrafficCollector collects VIP traffic statistics
 type VIPTrafficCollector struct {
 	logger *logrus.Logger
-	
+
 	// VIP provider interface to get current VIPs
 	vipProvider VIPTrafficProvider
-	
+
 	// Metrics
 	vipBytesTotal   *prometheus.CounterVec
 	vipPacketsTotal *prometheus.CounterVec
-	
+
 	// Track previous VIPs to detect removed VIPs
-	mu            sync.Mutex
-	previousVIPs  map[string]VIPInfo // "vipID" -> VIPInfo (to get label values for deletion)
+	mu           sync.Mutex
+	previousVIPs map[string]VIPInfo // "vipID" -> VIPInfo (to get label values for deletion)
 }
 
 // VIPTrafficProvider is an interface for getting VIP information
@@ -231,7 +231,6 @@ type VIPInfo struct {
 	Port     uint16
 	Protocol string
 }
-
 
 // NewVIPTrafficCollector creates a new VIP traffic collector
 func NewVIPTrafficCollector(vipProvider VIPTrafficProvider, logger *logrus.Logger) *VIPTrafficCollector {
@@ -273,9 +272,9 @@ func (c *VIPTrafficCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	vips := c.vipProvider.GetVIPs()
-	
+
 	c.mu.Lock()
-	
+
 	// Update metrics for current VIPs
 	// Note: Actual traffic statistics from VPP stats API will be implemented later
 	// For now, we initialize counters at 0 for all VIPs
@@ -287,7 +286,7 @@ func (c *VIPTrafficCollector) Collect(ch chan<- prometheus.Metric) {
 		c.vipPacketsTotal.WithLabelValues(vipID, vipInfo.IP, vipInfo.Protocol, "in").Add(0)
 		c.vipPacketsTotal.WithLabelValues(vipID, vipInfo.IP, vipInfo.Protocol, "out").Add(0)
 	}
-	
+
 	// Remove metrics for VIPs that no longer exist
 	// Use previous VIP info to get label values for deletion
 	for vipID, prevVIPInfo := range c.previousVIPs {
@@ -299,7 +298,7 @@ func (c *VIPTrafficCollector) Collect(ch chan<- prometheus.Metric) {
 			c.vipPacketsTotal.DeleteLabelValues(vipID, prevVIPInfo.IP, prevVIPInfo.Protocol, "out")
 		}
 	}
-	
+
 	// Update previous VIPs for next collection (store full VIP info for deletion)
 	c.previousVIPs = make(map[string]VIPInfo, len(vips))
 	for vipID, vipInfo := range vips {
@@ -351,4 +350,3 @@ func (c *ReconcilerCollector) Collect(ch chan<- prometheus.Metric) {
 func (c *ReconcilerCollector) RecordReconcile(result string) {
 	c.reconcileTotal.WithLabelValues(result).Inc()
 }
-

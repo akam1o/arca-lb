@@ -30,16 +30,16 @@ type Handler struct {
 	logger     *logrus.Logger
 
 	// Shutdown configuration
-	totalTimeout    time.Duration
+	totalTimeout     time.Duration
 	componentTimeout time.Duration
 }
 
 // NewHandler creates a new shutdown handler
 func NewHandler(components *Components, logger *logrus.Logger) *Handler {
 	return &Handler{
-		components:      components,
-		logger:          logger,
-		totalTimeout:    30 * time.Second,
+		components:       components,
+		logger:           logger,
+		totalTimeout:     30 * time.Second,
 		componentTimeout: 5 * time.Second,
 	}
 }
@@ -270,4 +270,3 @@ func (h *Handler) stopVPPConnection(ctx context.Context) error {
 		return nil
 	}
 }
-

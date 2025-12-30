@@ -11,9 +11,7 @@ const (
 )
 
 const (
-	LBMethodRoundRobin LBMethod = "round_robin"
-	LBMethodLeastConn  LBMethod = "least_conn"
-	LBMethodMaglev     LBMethod = "maglev"
+	LBMethodMaglev LBMethod = "maglev"
 )
 
 type VIP struct {
@@ -21,7 +19,7 @@ type VIP struct {
 	VIP       string    `json:"vip" binding:"required,ip" validate:"required,ip"`
 	Port      int       `json:"port" binding:"required,min=1,max=65535" validate:"required,min=1,max=65535"`
 	Protocol  Protocol  `json:"protocol" binding:"required,oneof=TCP UDP" validate:"required,oneof=TCP UDP"`
-	LBMethod  LBMethod  `json:"lb_method" binding:"omitempty,oneof=round_robin least_conn maglev" validate:"omitempty,oneof=round_robin least_conn maglev"`
+	LBMethod  LBMethod  `json:"lb_method" binding:"omitempty,oneof=maglev" validate:"omitempty,oneof=maglev"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 

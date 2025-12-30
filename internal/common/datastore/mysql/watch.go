@@ -150,6 +150,3 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 
 	return event, nil
 }
-
-
-

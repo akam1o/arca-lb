@@ -16,9 +16,9 @@ func init() {
 
 func TestVIP_Validation(t *testing.T) {
 	tests := []struct {
-		name      string
-		vip       VIP
-		wantError bool
+		name        string
+		vip         VIP
+		wantError   bool
 		errorFields []string
 	}{
 		{
@@ -37,7 +37,7 @@ func TestVIP_Validation(t *testing.T) {
 				Port:     80,
 				Protocol: ProtocolTCP,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"VIP"},
 		},
 		{
@@ -47,7 +47,7 @@ func TestVIP_Validation(t *testing.T) {
 				Port:     80,
 				Protocol: ProtocolTCP,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"VIP"},
 		},
 		{
@@ -56,7 +56,7 @@ func TestVIP_Validation(t *testing.T) {
 				VIP:      "192.168.1.100",
 				Protocol: ProtocolTCP,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Port"},
 		},
 		{
@@ -66,7 +66,7 @@ func TestVIP_Validation(t *testing.T) {
 				Port:     0,
 				Protocol: ProtocolTCP,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Port"},
 		},
 		{
@@ -76,16 +76,16 @@ func TestVIP_Validation(t *testing.T) {
 				Port:     65536,
 				Protocol: ProtocolTCP,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Port"},
 		},
 		{
 			name: "missing protocol",
 			vip: VIP{
-				VIP: "192.168.1.100",
+				VIP:  "192.168.1.100",
 				Port: 80,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Protocol"},
 		},
 		{
@@ -95,7 +95,7 @@ func TestVIP_Validation(t *testing.T) {
 				Port:     80,
 				Protocol: "INVALID",
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Protocol"},
 		},
 		{
@@ -115,16 +115,16 @@ func TestVIP_Validation(t *testing.T) {
 				Protocol: ProtocolTCP,
 				LBMethod: "invalid_method",
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"LBMethod"},
 		},
 		{
-			name: "valid LB methods",
+			name: "valid LB method",
 			vip: VIP{
 				VIP:      "192.168.1.100",
 				Port:     80,
 				Protocol: ProtocolTCP,
-				LBMethod: LBMethodRoundRobin,
+				LBMethod: LBMethodMaglev,
 			},
 			wantError: false,
 		},
@@ -158,9 +158,9 @@ func TestVIP_Validation(t *testing.T) {
 
 func TestBackend_Validation(t *testing.T) {
 	tests := []struct {
-		name       string
-		backend    Backend
-		wantError  bool
+		name        string
+		backend     Backend
+		wantError   bool
 		errorFields []string
 	}{
 		{
@@ -178,7 +178,7 @@ func TestBackend_Validation(t *testing.T) {
 				IP:     "10.0.0.1",
 				Weight: 10,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"VIPID"},
 		},
 		{
@@ -187,7 +187,7 @@ func TestBackend_Validation(t *testing.T) {
 				VIPID:  "vip-1",
 				Weight: 10,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"IP"},
 		},
 		{
@@ -197,7 +197,7 @@ func TestBackend_Validation(t *testing.T) {
 				IP:     "invalid-ip",
 				Weight: 10,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"IP"},
 		},
 		{
@@ -206,7 +206,7 @@ func TestBackend_Validation(t *testing.T) {
 				VIPID: "vip-1",
 				IP:    "10.0.0.1",
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Weight"},
 		},
 		{
@@ -216,7 +216,7 @@ func TestBackend_Validation(t *testing.T) {
 				IP:     "10.0.0.1",
 				Weight: 0,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Weight"},
 		},
 		{
@@ -226,7 +226,7 @@ func TestBackend_Validation(t *testing.T) {
 				IP:     "10.0.0.1",
 				Weight: 101,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Weight"},
 		},
 		{
@@ -277,9 +277,9 @@ func TestBackend_Validation(t *testing.T) {
 
 func TestHealthCheck_Validation(t *testing.T) {
 	tests := []struct {
-		name       string
+		name        string
 		healthCheck HealthCheck
-		wantError  bool
+		wantError   bool
 		errorFields []string
 	}{
 		{
@@ -339,7 +339,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:   3,
 				FallCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"VIPID"},
 		},
 		{
@@ -351,7 +351,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:   3,
 				FallCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Type"},
 		},
 		{
@@ -364,7 +364,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:   3,
 				FallCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"Type"},
 		},
 		{
@@ -376,7 +376,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:  3,
 				FallCount:  3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"IntervalSec"},
 		},
 		{
@@ -389,7 +389,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:   3,
 				FallCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"IntervalSec"},
 		},
 		{
@@ -401,7 +401,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:   3,
 				FallCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"TimeoutSec"},
 		},
 		{
@@ -414,7 +414,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:   3,
 				FallCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"TimeoutSec"},
 		},
 		{
@@ -426,7 +426,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				TimeoutSec:  5,
 				FallCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"RiseCount"},
 		},
 		{
@@ -439,7 +439,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:   0,
 				FallCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"RiseCount"},
 		},
 		{
@@ -451,7 +451,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				TimeoutSec:  5,
 				RiseCount:   3,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"FallCount"},
 		},
 		{
@@ -464,7 +464,7 @@ func TestHealthCheck_Validation(t *testing.T) {
 				RiseCount:   3,
 				FallCount:   0,
 			},
-			wantError: true,
+			wantError:   true,
 			errorFields: []string{"FallCount"},
 		},
 		{
@@ -504,8 +504,6 @@ func TestProtocol_Constants(t *testing.T) {
 }
 
 func TestLBMethod_Constants(t *testing.T) {
-	assert.Equal(t, LBMethod("round_robin"), LBMethodRoundRobin)
-	assert.Equal(t, LBMethod("least_conn"), LBMethodLeastConn)
 	assert.Equal(t, LBMethod("maglev"), LBMethodMaglev)
 }
 
@@ -515,6 +513,3 @@ func TestHCType_Constants(t *testing.T) {
 	assert.Equal(t, HCType("tcp"), HCTypeTCP)
 	assert.Equal(t, HCType("ping"), HCTypePing)
 }
-
-
-

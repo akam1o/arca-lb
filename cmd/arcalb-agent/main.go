@@ -24,13 +24,13 @@ import (
 
 // Components holds all initialized agent components
 type Components struct {
-	StateManager   *state.Manager
-	VPPConnection  *vpp.Connection
-	VPPSyncer      *vpp.Syncer
-	FRRManager     *frr.Manager // Can be nil if FRR is disabled
-	HealthCheckMgr *healthcheck.Manager
-	Reconciler     *reconciler.Reconciler
-	GRPCClient     *grpc.Client
+	StateManager    *state.Manager
+	VPPConnection   *vpp.Connection
+	VPPSyncer       *vpp.Syncer
+	FRRManager      *frr.Manager // Can be nil if FRR is disabled
+	HealthCheckMgr  *healthcheck.Manager
+	Reconciler      *reconciler.Reconciler
+	GRPCClient      *grpc.Client
 	MetricsRegistry *metrics.Registry
 	MetricsServer   *metrics.Server
 }
@@ -160,7 +160,7 @@ func initializeComponents(ctx context.Context, cfg *config.Config, logger *logru
 
 		// Register health check collector
 		metricsRegistry.RegisterHealthCheckCollector(healthCheckMgr.GetStateTracker())
-		
+
 		// Register VIP traffic collector (using VPP Syncer as provider)
 		vipProvider := &vppSyncerVIPProvider{syncer: vppSyncer}
 		metricsRegistry.RegisterVIPTrafficCollector(vipProvider)
@@ -205,14 +205,14 @@ func initializeComponents(ctx context.Context, cfg *config.Config, logger *logru
 		if healthCheckCollector != nil {
 			healthCheckMgr.SetMetricsRecorder(healthCheckCollector)
 		}
-		
+
 		// VPP metrics
 		vppCollector := metricsRegistry.GetVPPCollector()
 		if vppCollector != nil {
 			vppConn.SetMetricsRecorder(vppCollector)
 			vppSyncer.SetMetricsRecorder(vppCollector)
 		}
-		
+
 		// Reconciler metrics
 		reconcilerCollector := metricsRegistry.GetReconcilerCollector()
 		if reconcilerCollector != nil {
@@ -377,10 +377,10 @@ func (p *vppSyncerVIPProvider) GetVIPs() map[string]metrics.VIPInfo {
 	if p.syncer == nil {
 		return make(map[string]metrics.VIPInfo)
 	}
-	
+
 	vppVIPs := p.syncer.GetVIPsForMetrics()
 	result := make(map[string]metrics.VIPInfo, len(vppVIPs))
-	
+
 	for vipID, vppVIP := range vppVIPs {
 		result[vipID] = metrics.VIPInfo{
 			ID:       vppVIP.ID,
@@ -389,6 +389,6 @@ func (p *vppSyncerVIPProvider) GetVIPs() map[string]metrics.VIPInfo {
 			Protocol: vppVIP.Protocol,
 		}
 	}
-	
+
 	return result
 }

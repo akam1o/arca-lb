@@ -265,10 +265,6 @@ func (s *ConfigSyncService) convertProtocol(protocol models.Protocol) pb.Protoco
 // convertLBMethod converts internal LB method to protobuf
 func (s *ConfigSyncService) convertLBMethod(method models.LBMethod) pb.LBMethod {
 	switch method {
-	case models.LBMethodRoundRobin:
-		return pb.LBMethod_LB_METHOD_ROUND_ROBIN
-	case models.LBMethodLeastConn:
-		return pb.LBMethod_LB_METHOD_LEAST_CONN
 	case models.LBMethodMaglev:
 		return pb.LBMethod_LB_METHOD_MAGLEV
 	default:

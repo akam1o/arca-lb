@@ -19,11 +19,11 @@ func TestMySQLDataStore_CommonTests(t *testing.T) {
 	factory := func(ctx context.Context, t *testing.T) (datastore.DataStore, func()) {
 		cfg := &datastore.Config{
 			Type:          "mysql",
-			MySQLHost:      "localhost",
-			MySQLPort:      3306,
-			MySQLUser:      "arcalb",
-			MySQLPassword:  "arcalbpass",
-			MySQLDatabase:  "arcalb_test",
+			MySQLHost:     "localhost",
+			MySQLPort:     3306,
+			MySQLUser:     "arcalb",
+			MySQLPassword: "arcalbpass",
+			MySQLDatabase: "arcalb_test",
 		}
 
 		ds, err := NewMySQLDataStore(ctx, cfg)
@@ -40,6 +40,3 @@ func TestMySQLDataStore_CommonTests(t *testing.T) {
 
 	testsuite.RunDataStoreTests(t, factory)
 }
-
-
-

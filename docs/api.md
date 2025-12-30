@@ -142,7 +142,7 @@ Update a VIP by ID.
   "vip": "192.168.1.101",
   "port": 443,
   "protocol": "TCP",
-  "lb_method": "round_robin"
+  "lb_method": "maglev"
 }
 ```
 
@@ -303,7 +303,7 @@ On errors, responses follow this format:
   "vip": "string (IP address)",
   "port": "integer (1-65535)",
   "protocol": "TCP | UDP",
-  "lb_method": "round_robin | least_conn | maglev",
+  "lb_method": "maglev",
   "health_check": "HealthCheck (optional)",
   "created_at": "string (RFC3339)",
   "updated_at": "string (RFC3339)"

@@ -22,11 +22,11 @@ type ChangeEvent struct {
 
 // MySQLTransaction implements datastore.Transaction using MySQL transactions
 type MySQLTransaction struct {
-	ds        *MySQLDataStore
-	tx        *gorm.DB
-	ctx       context.Context
-	hasOps    bool          // Track if any operations were performed
-	changes   []ChangeEvent // Track change events for accurate change_log
+	ds      *MySQLDataStore
+	tx      *gorm.DB
+	ctx     context.Context
+	hasOps  bool          // Track if any operations were performed
+	changes []ChangeEvent // Track change events for accurate change_log
 }
 
 // BeginTx starts a new transaction
@@ -336,4 +336,3 @@ func (tx *MySQLTransaction) Rollback() error {
 	}
 	return nil
 }
-

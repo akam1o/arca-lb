@@ -66,4 +66,3 @@ func (ds *MySQLDataStore) IncrementRevision(ctx context.Context) (int64, error) 
 
 	return newRevision, nil
 }
-

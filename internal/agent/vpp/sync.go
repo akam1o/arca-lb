@@ -18,10 +18,10 @@ type Syncer struct {
 	mu sync.RWMutex
 	// Cache of current VPP state
 	// This is populated from VPP and kept in sync
-	currentVIPs      map[string]*models.VIPConfig
-	currentBackends  map[string]*models.Backend
-	vipToBackends    map[string][]string
-	
+	currentVIPs     map[string]*models.VIPConfig
+	currentBackends map[string]*models.Backend
+	vipToBackends   map[string][]string
+
 	// Metrics (optional)
 	metricsRecorder MetricsRecorder
 }
@@ -343,11 +343,11 @@ type VIPInfoForMetrics struct {
 //   - Current approach avoids API compatibility issues
 //
 // RECOMMENDED MITIGATIONS:
-//   1. Periodic reconciliation: Controller should periodically resend full
-//      desired state to re-apply configuration (handles VPP restarts)
-//   2. VPP event monitoring: Subscribe to VPP events for state changes
-//   3. External monitoring: Deploy separate monitoring to detect VPP restarts
-//   4. Health checks: Use health check failures as drift indicators
+//  1. Periodic reconciliation: Controller should periodically resend full
+//     desired state to re-apply configuration (handles VPP restarts)
+//  2. VPP event monitoring: Subscribe to VPP events for state changes
+//  3. External monitoring: Deploy separate monitoring to detect VPP restarts
+//  4. Health checks: Use health check failures as drift indicators
 //
 // FUTURE IMPROVEMENTS:
 //   - Upgrade to newer govpp version with better LB plugin support

@@ -603,10 +603,6 @@ func (c *Client) convertProtoProtocol(protocol pb.Protocol) models.Protocol {
 // convertProtoLBMethod converts protobuf LB method to internal model
 func (c *Client) convertProtoLBMethod(method pb.LBMethod) models.LBMethod {
 	switch method {
-	case pb.LBMethod_LB_METHOD_ROUND_ROBIN:
-		return models.LBMethodRoundRobin
-	case pb.LBMethod_LB_METHOD_LEAST_CONN:
-		return models.LBMethodLeastConn
 	case pb.LBMethod_LB_METHOD_MAGLEV:
 		return models.LBMethodMaglev
 	default:

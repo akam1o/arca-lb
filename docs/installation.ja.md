@@ -193,6 +193,5 @@ curl http://localhost:9090/metrics
 
 ## 次のステップ
 
-- [設定ガイド](./configuration.md) を参照して、詳細な設定を行います
-- [REST API リファレンス](./api.md) を参照して、API の使用方法を確認します
-
+- [設定ガイド](./configuration.ja.md) を参照して、詳細な設定を行います
+- [REST API リファレンス](./api.ja.md) を参照して、API の使用方法を確認します

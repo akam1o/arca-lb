@@ -385,5 +385,5 @@ curl http://localhost:8080/api/v1/vips
 
 ## 次のステップ
 
-- [設定ガイド](./configuration.md) を参照して、詳細な設定を行います
-- [トラブルシューティング](./troubleshooting.md) を参照して、問題の解決方法を確認します
+- [設定ガイド](./configuration.ja.md) を参照して、詳細な設定を行います
+- [トラブルシューティング](./troubleshooting.ja.md) を参照して、問題の解決方法を確認します

@@ -261,6 +261,5 @@ ARCA_AGENT_CONFIG=/path/to/agent.yaml ./bin/arcalb-agent
 
 ## 次のステップ
 
-- [REST API リファレンス](./api.md) を参照して、API の使用方法を確認します
-- [トラブルシューティング](./troubleshooting.md) を参照して、問題の解決方法を確認します
-
+- [REST API リファレンス](./api.ja.md) を参照して、API の使用方法を確認します
+- [トラブルシューティング](./troubleshooting.ja.md) を参照して、問題の解決方法を確認します

@@ -56,7 +56,7 @@ git checkout -b fix/my-bugfix
 
 ### 3. コードの変更
 
-- コードスタイルに従う（[開発環境セットアップ](./development.md) を参照）
+- コードスタイルに従う（[開発環境セットアップ](./development.ja.md) を参照）
 - テストを追加・更新
 - ドキュメントを更新
 
@@ -204,5 +204,5 @@ go test -coverprofile=coverage.out ./...
 
 ## 次のステップ
 
-- [開発環境セットアップ](./development.md) を参照して、開発を開始します
-- [アーキテクチャ詳細](./architecture.md) を参照して、システムの設計を理解します
+- [開発環境セットアップ](./development.ja.md) を参照して、開発を開始します
+- [アーキテクチャ詳細](./architecture.ja.md) を参照して、システムの設計を理解します

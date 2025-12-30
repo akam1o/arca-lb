@@ -138,16 +138,16 @@ make clean         # ビルド成果物を削除
 詳細なドキュメントは `docs/` ディレクトリを参照してください：
 
 ### 運用ドキュメント
-- [インストールガイド](docs/installation.md) - インストール手順とセットアップ
-- [設定ガイド](docs/configuration.md) - Controller と Agent の設定方法
-- [API リファレンス](docs/api.md) - REST API の詳細なリファレンス
-- [トラブルシューティング](docs/troubleshooting.md) - よくある問題と解決方法
-- [バックエンドサーバー設定ガイド](docs/backend-setup.md) - バックエンドサーバーの設定方法
+- [インストールガイド](docs/installation.ja.md) - インストール手順とセットアップ
+- [設定ガイド](docs/configuration.ja.md) - Controller と Agent の設定方法
+- [API リファレンス](docs/api.ja.md) - REST API の詳細なリファレンス
+- [トラブルシューティング](docs/troubleshooting.ja.md) - よくある問題と解決方法
+- [バックエンドサーバー設定ガイド](docs/backend-setup.ja.md) - バックエンドサーバーの設定方法
 
 ### 開発者ドキュメント
-- [アーキテクチャ](docs/architecture.md) - システムアーキテクチャと設計思想
-- [開発環境セットアップ](docs/development.md) - 開発環境のセットアップとワークフロー
-- [コントリビューションガイド](docs/contributing.md) - プロジェクトへの貢献方法
+- [アーキテクチャ](docs/architecture.ja.md) - システムアーキテクチャと設計思想
+- [開発環境セットアップ](docs/development.ja.md) - 開発環境のセットアップとワークフロー
+- [コントリビューションガイド](docs/contributing.ja.md) - プロジェクトへの貢献方法
 
 ## お問い合わせ
 

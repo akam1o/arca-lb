@@ -219,5 +219,5 @@ tail -f /var/log/frr/frr.log
 
 ## 次のステップ
 
-- [インストール手順](./installation.md) を参照して、再インストールを試みます
-- [設定ガイド](./configuration.md) を参照して、設定を見直します
+- [インストール手順](./installation.ja.md) を参照して、再インストールを試みます
+- [設定ガイド](./configuration.ja.md) を参照して、設定を見直します

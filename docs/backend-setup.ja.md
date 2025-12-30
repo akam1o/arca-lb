@@ -195,6 +195,5 @@ ifconfig eth0
 
 ## 次のステップ
 
-- [インストール手順](./installation.md) を参照して、arca-lb をインストールします
-- [設定ガイド](./configuration.md) を参照して、詳細な設定を行います
-
+- [インストール手順](./installation.ja.md) を参照して、arca-lb をインストールします
+- [設定ガイド](./configuration.ja.md) を参照して、詳細な設定を行います

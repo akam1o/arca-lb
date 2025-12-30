@@ -48,6 +48,10 @@ func (ds *MySQLDataStore) GetConfig(ctx context.Context) (*models.Config, error)
 				CreatedAt: vipRecord.CreatedAt,
 				UpdatedAt: vipRecord.UpdatedAt,
 			}
+			if vipRecord.EncapType != nil {
+				vip.EncapType = models.EncapType(*vipRecord.EncapType)
+			}
+			vip.DSCP = vipRecord.DSCP
 
 			// Load health check
 			var hcRecord HealthCheckRecord

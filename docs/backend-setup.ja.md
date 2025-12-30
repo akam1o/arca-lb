@@ -7,7 +7,7 @@
 arca-lb は複数のカプセル化方式をサポートしています。バックエンドサーバーの設定は、Agent の `vpp.lb.encap_type` 設定によって異なります：
 
 - **GRE4/GRE6**: GRE カプセル化を使用（MTU 調整が必要）
-- **L3DSR**: Direct Server Return 方式（ARP 無効化が必要）
+- **DSCP（L3DSR）**: DSCP マーキングによる Direct Server Return 方式（ARP 無効化が必要、PBR 等のネットワーク側誘導が必要）
 - **NAT4/NAT6**: NAT 方式（通常の設定で動作）
 
 このドキュメントでは、L3DSR 方式と GRE4 方式の設定を説明します。

@@ -534,6 +534,14 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 	}
 
 	for _, pbVipConfig := range pbConfig.Vips {
+		var dscp *uint8
+		if pbVipConfig.Vip.Dscp != nil {
+			if pbVipConfig.Vip.Dscp.Value <= 63 {
+				v := uint8(pbVipConfig.Vip.Dscp.Value)
+				dscp = &v
+			}
+		}
+
 		vipConfig := models.VIPConfig{
 			VIP: models.VIP{
 				ID:        pbVipConfig.Vip.Id,
@@ -541,6 +549,8 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 				Port:      int(pbVipConfig.Vip.Port),
 				Protocol:  c.convertProtoProtocol(pbVipConfig.Vip.Protocol),
 				LBMethod:  c.convertProtoLBMethod(pbVipConfig.Vip.LbMethod),
+				EncapType: c.convertProtoEncapType(pbVipConfig.Vip.EncapType),
+				DSCP:      dscp,
 				CreatedAt: pbVipConfig.Vip.CreatedAt.AsTime(),
 				UpdatedAt: pbVipConfig.Vip.UpdatedAt.AsTime(),
 			},
@@ -607,6 +617,24 @@ func (c *Client) convertProtoLBMethod(method pb.LBMethod) models.LBMethod {
 		return models.LBMethodMaglev
 	default:
 		return models.LBMethodMaglev
+	}
+}
+
+// convertProtoEncapType converts protobuf encap type to internal model
+func (c *Client) convertProtoEncapType(encapType pb.EncapType) models.EncapType {
+	switch encapType {
+	case pb.EncapType_ENCAP_TYPE_GRE4:
+		return models.EncapTypeGRE4
+	case pb.EncapType_ENCAP_TYPE_GRE6:
+		return models.EncapTypeGRE6
+	case pb.EncapType_ENCAP_TYPE_L3DSR:
+		return models.EncapTypeL3DSR
+	case pb.EncapType_ENCAP_TYPE_NAT4:
+		return models.EncapTypeNAT4
+	case pb.EncapType_ENCAP_TYPE_NAT6:
+		return models.EncapTypeNAT6
+	default:
+		return ""
 	}
 }
 

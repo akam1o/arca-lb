@@ -52,8 +52,8 @@ vpp:
     # Encapsulation type: GRE4, GRE6, L3DSR, NAT4, NAT6
     encap_type: "GRE4"
 
-    # DSCP value for encapsulated packets (0-63)
-    dscp: 0
+    # DSCP value for DSCP (L3DSR) mode (0-63); must be 1-63 when encap_type is L3DSR
+    dscp: 1
 
     # Load balancer service type: CLUSTERIP, NODEPORT
     type: "CLUSTERIP"

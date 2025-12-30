@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"net"
 
-	"go.fd.io/govpp/binapi/ip_types"
-	"go.fd.io/govpp/binapi/lb"
-	"go.fd.io/govpp/binapi/lb_types"
 	"github.com/akam1o/arca-lb/internal/agent/config"
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/sirupsen/logrus"
+	"go.fd.io/govpp/binapi/ip_types"
+	"go.fd.io/govpp/binapi/lb"
+	"go.fd.io/govpp/binapi/lb_types"
 )
 
 // LBManager manages VPP load balancer operations
@@ -61,13 +61,29 @@ func (m *LBManager) AddVIP(vipConfig *models.VIPConfig) error {
 		return fmt.Errorf("unsupported protocol: %s", vipConfig.VIP.Protocol)
 	}
 
+	encapType := m.config.EncapType
+	if vipConfig.VIP.EncapType != "" {
+		encapType = string(vipConfig.VIP.EncapType)
+	}
+
+	dscp := uint8(0)
+	if encapType == "L3DSR" {
+		dscp = m.config.DSCP
+		if vipConfig.VIP.DSCP != nil {
+			dscp = *vipConfig.VIP.DSCP
+		}
+		if dscp == 0 {
+			return fmt.Errorf("invalid dscp=0 for L3DSR (DSCP mode); set vip.dscp or vpp.lb.dscp to 1-63")
+		}
+	}
+
 	// Prepare LB add/del VIP request using configured parameters
 	req := &lb.LbAddDelVip{
 		Pfx:                 vipAddr,
 		Protocol:            proto,
 		Port:                uint16(vipConfig.VIP.Port),
-		Encap:               encapTypeToAPI(m.config.EncapType),
-		Dscp:                m.config.DSCP,
+		Encap:               encapTypeToAPI(encapType),
+		Dscp:                dscp,
 		Type:                lbTypeToAPI(m.config.Type),
 		TargetPort:          uint16(vipConfig.VIP.Port),
 		NodePort:            0,
@@ -156,13 +172,29 @@ func (m *LBManager) DeleteVIPByConfig(vipConfig *models.VIPConfig) error {
 		return fmt.Errorf("unsupported protocol: %s", vipConfig.VIP.Protocol)
 	}
 
+	encapType := m.config.EncapType
+	if vipConfig.VIP.EncapType != "" {
+		encapType = string(vipConfig.VIP.EncapType)
+	}
+
+	dscp := uint8(0)
+	if encapType == "L3DSR" {
+		dscp = m.config.DSCP
+		if vipConfig.VIP.DSCP != nil {
+			dscp = *vipConfig.VIP.DSCP
+		}
+		if dscp == 0 {
+			return fmt.Errorf("invalid dscp=0 for L3DSR (DSCP mode); set vip.dscp or vpp.lb.dscp to 1-63")
+		}
+	}
+
 	// Prepare LB add/del VIP request (delete) - must match creation parameters
 	req := &lb.LbAddDelVip{
 		Pfx:      vipAddr,
 		Protocol: proto,
 		Port:     uint16(vipConfig.VIP.Port),
-		Encap:    encapTypeToAPI(m.config.EncapType),
-		Dscp:     m.config.DSCP,
+		Encap:    encapTypeToAPI(encapType),
+		Dscp:     dscp,
 		Type:     lbTypeToAPI(m.config.Type),
 		IsDel:    true,
 	}

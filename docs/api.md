@@ -65,6 +65,8 @@ Create a new VIP.
   "port": 80,
   "protocol": "TCP",
   "lb_method": "maglev",
+  "encap_type": "L3DSR",
+  "dscp": 10,
   "health_check": {
     "type": "http",
     "interval_sec": 10,
@@ -84,6 +86,8 @@ Create a new VIP.
 - `health_check.type` must be lowercase (`http`, `https`, `tcp`, `ping`)
 - `health_check.rise_count` and `health_check.fall_count` are required
 - Do not set `health_check.vip_id` when creating a VIP (it is set automatically after creation)
+- `encap_type` is optional (`GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`); if omitted, the Agent default (`vpp.lb.encap_type`) is used
+- `dscp` is optional (1-63) and is used only when `encap_type` resolves to `L3DSR` (DSCP mode); it is not used for GRE/NAT; if omitted, the Agent default (`vpp.lb.dscp`) is used; `dscp=0` is rejected in `L3DSR` mode
 
 **Responses**
 
@@ -106,6 +110,8 @@ List all VIPs.
       "port": 80,
       "protocol": "TCP",
       "lb_method": "maglev",
+      "encap_type": "L3DSR",
+      "dscp": 10,
       "created_at": "2025-12-20T10:00:00Z",
       "updated_at": "2025-12-20T10:00:00Z"
     }
@@ -142,7 +148,9 @@ Update a VIP by ID.
   "vip": "192.168.1.101",
   "port": 443,
   "protocol": "TCP",
-  "lb_method": "maglev"
+  "lb_method": "maglev",
+  "encap_type": "GRE4",
+  "dscp": 0
 }
 ```
 

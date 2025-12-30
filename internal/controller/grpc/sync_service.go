@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // ConfigSyncService implements the ConfigSync gRPC service
@@ -189,12 +190,19 @@ func (s *ConfigSyncService) convertConfigToProto(config *models.Config) (*pb.Con
 	pbVips := make([]*pb.VIPConfig, 0, len(config.VIPs))
 
 	for _, vipConfig := range config.VIPs {
+		var pbDscp *wrapperspb.UInt32Value
+		if vipConfig.VIP.DSCP != nil {
+			pbDscp = wrapperspb.UInt32(uint32(*vipConfig.VIP.DSCP))
+		}
+
 		pbVip := &pb.VIP{
 			Id:        vipConfig.VIP.ID,
 			Vip:       vipConfig.VIP.VIP,
 			Port:      int32(vipConfig.VIP.Port),
 			Protocol:  s.convertProtocol(vipConfig.VIP.Protocol),
 			LbMethod:  s.convertLBMethod(vipConfig.VIP.LBMethod),
+			EncapType: s.convertEncapType(vipConfig.VIP.EncapType),
+			Dscp:      pbDscp,
 			CreatedAt: timestamppb.New(vipConfig.VIP.CreatedAt),
 			UpdatedAt: timestamppb.New(vipConfig.VIP.UpdatedAt),
 		}
@@ -269,6 +277,24 @@ func (s *ConfigSyncService) convertLBMethod(method models.LBMethod) pb.LBMethod 
 		return pb.LBMethod_LB_METHOD_MAGLEV
 	default:
 		return pb.LBMethod_LB_METHOD_UNSPECIFIED
+	}
+}
+
+// convertEncapType converts internal encap type to protobuf
+func (s *ConfigSyncService) convertEncapType(encapType models.EncapType) pb.EncapType {
+	switch encapType {
+	case models.EncapTypeGRE4:
+		return pb.EncapType_ENCAP_TYPE_GRE4
+	case models.EncapTypeGRE6:
+		return pb.EncapType_ENCAP_TYPE_GRE6
+	case models.EncapTypeL3DSR:
+		return pb.EncapType_ENCAP_TYPE_L3DSR
+	case models.EncapTypeNAT4:
+		return pb.EncapType_ENCAP_TYPE_NAT4
+	case models.EncapTypeNAT6:
+		return pb.EncapType_ENCAP_TYPE_NAT6
+	default:
+		return pb.EncapType_ENCAP_TYPE_UNSPECIFIED
 	}
 }
 

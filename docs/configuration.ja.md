@@ -118,7 +118,7 @@ vpp:
   max_reconnect_attempts: 0
   lb:
     encap_type: "GRE4"
-    dscp: 0
+    dscp: 1 # DSCP（L3DSR）方式のみ使用。L3DSR を使う場合は 1-63 を設定
     type: "CLUSTERIP"
     new_flows_table_length: 1024
     fail_on_all_backends_down: false
@@ -178,7 +178,7 @@ log:
 | `reconnect_interval` | 再接続間隔 | `5s` |
 | `max_reconnect_attempts` | 最大再接続試行回数（0=無制限） | `0` |
 | `lb.encap_type` | カプセル化タイプ（GRE4, GRE6, L3DSR, NAT4, NAT6） | `GRE4` |
-| `lb.dscp` | カプセル化パケットの DSCP 値（0-63） | `0` |
+| `lb.dscp` | DSCP（L3DSR）方式の DSCP 値（0-63。L3DSR を使う場合は 1-63 必須。GRE/NAT では未使用） | `0` |
 | `lb.type` | ロードバランサーサービスタイプ（CLUSTERIP, NODEPORT） | `CLUSTERIP` |
 | `lb.new_flows_table_length` | 新規接続のフローテーブルサイズ | `1024` |
 | `lb.fail_on_all_backends_down` | すべてのバックエンドがダウン時に VIP 作成を失敗させる | `false` |

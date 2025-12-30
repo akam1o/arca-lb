@@ -5,6 +5,7 @@ package arcalb.v1;
 option go_package = "github.com/akam1o/arca-lb/pkg/grpc/v1;arcalbv1";
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
 
 // Protocol represents the transport protocol (TCP or UDP)
 enum Protocol {
@@ -17,6 +18,16 @@ enum Protocol {
 enum LBMethod {
   LB_METHOD_UNSPECIFIED = 0;
   LB_METHOD_MAGLEV = 1;
+}
+
+// EncapType represents the encapsulation type for load balancing
+enum EncapType {
+  ENCAP_TYPE_UNSPECIFIED = 0;
+  ENCAP_TYPE_GRE4 = 1;
+  ENCAP_TYPE_GRE6 = 2;
+  ENCAP_TYPE_L3DSR = 3;
+  ENCAP_TYPE_NAT4 = 4;
+  ENCAP_TYPE_NAT6 = 5;
 }
 
 // HCType represents the health check type
@@ -37,6 +48,8 @@ message VIP {
   LBMethod lb_method = 5;
   google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp updated_at = 7;
+  EncapType encap_type = 8;
+  google.protobuf.UInt32Value dscp = 9;
 }
 
 // HealthCheck represents health check configuration for a VIP

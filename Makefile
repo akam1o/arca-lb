@@ -57,6 +57,12 @@ proto: ## Generate gRPC code from protobuf
 		--go_out=$(PROTO_OUT) --go_opt=paths=source_relative \
 		--go-grpc_out=$(PROTO_OUT) --go-grpc_opt=paths=source_relative \
 		$(PROTO_SRC)/*.proto
+	@# Normalize tool version headers to avoid CI diffs across protoc/plugin versions.
+	@perl -pi -e 's|^// - protoc-gen-go v.*$$|// - protoc-gen-go (version omitted)|' $(PROTO_OUT)/*.pb.go
+	@perl -pi -e 's|^// - protoc-gen-go-grpc v.*$$|// - protoc-gen-go-grpc (version omitted)|' $(PROTO_OUT)/*_grpc.pb.go
+	@perl -pi -e 's|^// - protoc[[:space:]]+v.*$$|// - protoc             (version omitted)|' $(PROTO_OUT)/*.pb.go
+	@perl -pi -e 's|^//[[:space:]]+protoc-gen-go[[:space:]]+v.*$$|//\tprotoc-gen-go (version omitted)|' $(PROTO_OUT)/*.pb.go
+	@perl -pi -e 's|^//[[:space:]]+protoc[[:space:]]+v.*$$|//\tprotoc        (version omitted)|' $(PROTO_OUT)/*.pb.go
 
 .PHONY: docker
 docker: ## Build controller and agent Docker images

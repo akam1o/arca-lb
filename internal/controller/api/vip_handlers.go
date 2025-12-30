@@ -23,15 +23,19 @@ type CreateVIPRequest struct {
 	Port        int                 `json:"port" binding:"required,min=1,max=65535"`
 	Protocol    models.Protocol     `json:"protocol" binding:"required,oneof=TCP UDP"`
 	LBMethod    models.LBMethod     `json:"lb_method" binding:"omitempty,oneof=maglev"`
+	EncapType   models.EncapType    `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
+	DSCP        *uint8              `json:"dscp" binding:"omitempty,min=0,max=63"`
 	HealthCheck *HealthCheckRequest `json:"health_check,omitempty"`
 }
 
 // UpdateVIPRequest represents the request body for updating a VIP
 type UpdateVIPRequest struct {
-	VIP      string          `json:"vip" binding:"omitempty,ip"`
-	Port     int             `json:"port" binding:"omitempty,min=1,max=65535"`
-	Protocol models.Protocol `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
-	LBMethod models.LBMethod `json:"lb_method" binding:"omitempty,oneof=maglev"`
+	VIP       string           `json:"vip" binding:"omitempty,ip"`
+	Port      int              `json:"port" binding:"omitempty,min=1,max=65535"`
+	Protocol  models.Protocol  `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
+	LBMethod  models.LBMethod  `json:"lb_method" binding:"omitempty,oneof=maglev"`
+	EncapType models.EncapType `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
+	DSCP      *uint8           `json:"dscp" binding:"omitempty,min=0,max=63"`
 }
 
 // createVIP handles POST /api/v1/vips
@@ -42,12 +46,19 @@ func (s *Server) createVIP(c *gin.Context) {
 		return
 	}
 
+	if req.EncapType == models.EncapTypeL3DSR && req.DSCP != nil && *req.DSCP == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "dscp must be 1-63 when encap_type is L3DSR (DSCP mode)"})
+		return
+	}
+
 	// Create VIP model
 	vip := &models.VIP{
-		VIP:      req.VIP,
-		Port:     req.Port,
-		Protocol: req.Protocol,
-		LBMethod: req.LBMethod,
+		VIP:       req.VIP,
+		Port:      req.Port,
+		Protocol:  req.Protocol,
+		LBMethod:  req.LBMethod,
+		EncapType: req.EncapType,
+		DSCP:      req.DSCP,
 	}
 
 	// Set default LB method if not specified
@@ -173,6 +184,17 @@ func (s *Server) updateVIP(c *gin.Context) {
 	}
 	if req.LBMethod != "" {
 		vip.LBMethod = req.LBMethod
+	}
+	if req.EncapType != "" {
+		vip.EncapType = req.EncapType
+	}
+	if req.DSCP != nil {
+		vip.DSCP = req.DSCP
+	}
+
+	if vip.EncapType == models.EncapTypeL3DSR && vip.DSCP != nil && *vip.DSCP == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "dscp must be 1-63 when encap_type is L3DSR (DSCP mode)"})
+		return
 	}
 
 	// Update VIP in datastore

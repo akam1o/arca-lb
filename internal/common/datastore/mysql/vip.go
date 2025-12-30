@@ -20,6 +20,8 @@ type VIPRecord struct {
 	Port      int       `gorm:"not null"`
 	Protocol  string    `gorm:"type:enum('TCP','UDP');not null"`
 	LBMethod  string    `gorm:"type:enum('maglev');not null;default:'maglev'"`
+	EncapType *string   `gorm:"type:enum('GRE4','GRE6','L3DSR','NAT4','NAT6');null"`
+	DSCP      *uint8    `gorm:"type:tinyint unsigned;null"`
 	CreatedAt time.Time `gorm:"not null"`
 	UpdatedAt time.Time `gorm:"not null"`
 }
@@ -68,12 +70,19 @@ func (ds *MySQLDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error 
 	}
 
 	// Convert to database record
+	var encapType *string
+	if vip.EncapType != "" {
+		v := string(vip.EncapType)
+		encapType = &v
+	}
 	vipRecord := VIPRecord{
 		ID:        vip.ID,
 		VIP:       vip.VIP,
 		Port:      vip.Port,
 		Protocol:  string(vip.Protocol),
 		LBMethod:  string(vip.LBMethod),
+		EncapType: encapType,
+		DSCP:      vip.DSCP,
 		CreatedAt: vip.CreatedAt,
 		UpdatedAt: vip.UpdatedAt,
 	}
@@ -162,6 +171,10 @@ func (ds *MySQLDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, e
 		CreatedAt: vipRecord.CreatedAt,
 		UpdatedAt: vipRecord.UpdatedAt,
 	}
+	if vipRecord.EncapType != nil {
+		vip.EncapType = models.EncapType(*vipRecord.EncapType)
+	}
+	vip.DSCP = vipRecord.DSCP
 
 	if hcErr == nil {
 		var hcConfig models.HCConfig
@@ -210,6 +223,10 @@ func (ds *MySQLDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
 			CreatedAt: vipRecord.CreatedAt,
 			UpdatedAt: vipRecord.UpdatedAt,
 		}
+		if vipRecord.EncapType != nil {
+			vip.EncapType = models.EncapType(*vipRecord.EncapType)
+		}
+		vip.DSCP = vipRecord.DSCP
 
 		// Load health check
 		var hcRecord HealthCheckRecord
@@ -265,12 +282,19 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 	vip.UpdatedAt = time.Now()
 
 	// Convert to database record
+	var encapType *string
+	if vip.EncapType != "" {
+		v := string(vip.EncapType)
+		encapType = &v
+	}
 	vipRecord := VIPRecord{
 		ID:        vip.ID,
 		VIP:       vip.VIP,
 		Port:      vip.Port,
 		Protocol:  string(vip.Protocol),
 		LBMethod:  string(vip.LBMethod),
+		EncapType: encapType,
+		DSCP:      vip.DSCP,
 		CreatedAt: vip.CreatedAt,
 		UpdatedAt: vip.UpdatedAt,
 	}

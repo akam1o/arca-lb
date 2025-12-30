@@ -64,12 +64,19 @@ func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) erro
 	}
 
 	// Convert to database record
+	var encapType *string
+	if vip.EncapType != "" {
+		v := string(vip.EncapType)
+		encapType = &v
+	}
 	vipRecord := VIPRecord{
 		ID:        vip.ID,
 		VIP:       vip.VIP,
 		Port:      vip.Port,
 		Protocol:  string(vip.Protocol),
 		LBMethod:  string(vip.LBMethod),
+		EncapType: encapType,
+		DSCP:      vip.DSCP,
 		CreatedAt: vip.CreatedAt,
 		UpdatedAt: vip.UpdatedAt,
 	}
@@ -182,12 +189,19 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 	vip.UpdatedAt = time.Now()
 
 	// Convert to database record
+	var encapType *string
+	if vip.EncapType != "" {
+		v := string(vip.EncapType)
+		encapType = &v
+	}
 	vipRecord := VIPRecord{
 		ID:        vip.ID,
 		VIP:       vip.VIP,
 		Port:      vip.Port,
 		Protocol:  string(vip.Protocol),
 		LBMethod:  string(vip.LBMethod),
+		EncapType: encapType,
+		DSCP:      vip.DSCP,
 		CreatedAt: existingRecord.CreatedAt, // Preserve CreatedAt
 		UpdatedAt: vip.UpdatedAt,
 	}

@@ -65,6 +65,8 @@ http://localhost:8080
   "port": 80,
   "protocol": "TCP",
   "lb_method": "maglev",
+  "encap_type": "L3DSR",
+  "dscp": 10,
   "health_check": {
     "type": "http",
     "interval_sec": 10,
@@ -84,6 +86,8 @@ http://localhost:8080
 - `health_check.type` は小文字（`http`, `https`, `tcp`, `ping`）
 - `health_check.rise_count` と `health_check.fall_count` は必須
 - VIP 作成時は `health_check.vip_id` は不要（VIP 作成後に自動的に設定されます）
+- `encap_type` は任意（`GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`）。省略した場合は Agent のデフォルト（`vpp.lb.encap_type`）が使用されます
+- `dscp` は任意（1-63）で、`encap_type` が `L3DSR`（DSCP 方式）に解決される場合のみ使用されます（GRE/NAT では使用されません）。省略した場合は Agent のデフォルト（`vpp.lb.dscp`）が使用されます（`L3DSR` の場合 `dscp=0` はエラーになります）
 
 **レスポンス**
 
@@ -106,6 +110,8 @@ http://localhost:8080
       "port": 80,
       "protocol": "TCP",
       "lb_method": "maglev",
+      "encap_type": "L3DSR",
+      "dscp": 10,
       "created_at": "2025-12-20T10:00:00Z",
       "updated_at": "2025-12-20T10:00:00Z"
     }
@@ -142,7 +148,9 @@ http://localhost:8080
   "vip": "192.168.1.101",
   "port": 443,
   "protocol": "TCP",
-  "lb_method": "maglev"
+  "lb_method": "maglev",
+  "encap_type": "GRE4",
+  "dscp": 0
 }
 ```
 

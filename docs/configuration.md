@@ -118,7 +118,7 @@ vpp:
   max_reconnect_attempts: 0
   lb:
     encap_type: "GRE4"
-    dscp: 0
+    dscp: 1 # DSCP (L3DSR) mode only; must be 1-63 when L3DSR is used
     type: "CLUSTERIP"
     new_flows_table_length: 1024
     fail_on_all_backends_down: false
@@ -178,7 +178,7 @@ log:
 | `reconnect_interval` | Reconnect interval | `5s` |
 | `max_reconnect_attempts` | Max reconnect attempts (0 = unlimited) | `0` |
 | `lb.encap_type` | Encapsulation type (GRE4, GRE6, L3DSR, NAT4, NAT6) | `GRE4` |
-| `lb.dscp` | DSCP value for encapsulated packets (0-63) | `0` |
+| `lb.dscp` | DSCP value for DSCP (L3DSR) mode (0-63; must be 1-63 when L3DSR is used; not used for GRE/NAT) | `0` |
 | `lb.type` | Load balancer service type (CLUSTERIP, NODEPORT) | `CLUSTERIP` |
 | `lb.new_flows_table_length` | Flow table size for new connections | `1024` |
 | `lb.fail_on_all_backends_down` | Fail VIP creation when all backends are down | `false` |

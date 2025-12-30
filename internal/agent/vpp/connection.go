@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akam1o/arca-lb/internal/agent/config"
+	"github.com/sirupsen/logrus"
 	"go.fd.io/govpp"
 	"go.fd.io/govpp/api"
 	"go.fd.io/govpp/core"
-	"github.com/akam1o/arca-lb/internal/agent/config"
-	"github.com/sirupsen/logrus"
 )
 
 // MetricsRecorder is an interface for recording VPP metrics

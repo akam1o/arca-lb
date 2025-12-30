@@ -122,6 +122,17 @@ func TestCreateVIP(t *testing.T) {
 				mockDS.SetCreateVIPError(datastore.ErrInvalidInput)
 			},
 		},
+		{
+			name: "invalid dscp for L3DSR",
+			requestBody: map[string]interface{}{
+				"vip":        "192.168.1.100",
+				"port":       80,
+				"protocol":   "TCP",
+				"encap_type": "L3DSR",
+				"dscp":       0,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -341,6 +352,15 @@ func TestUpdateVIP(t *testing.T) {
 			setupMock: func() {
 				mockDS.SetUpdateVIPError(datastore.ErrInvalidInput)
 			},
+		},
+		{
+			name:  "invalid dscp for L3DSR",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"encap_type": "L3DSR",
+				"dscp":       0,
+			},
+			expectedStatus: http.StatusBadRequest,
 		},
 	}
 

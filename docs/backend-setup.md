@@ -7,7 +7,7 @@ This document explains how to configure backend servers for arca-lb.
 arca-lb supports multiple encapsulation methods. Backend configuration depends on the Agent `vpp.lb.encap_type` setting:
 
 - **GRE4/GRE6**: Uses GRE encapsulation (requires MTU adjustment)
-- **L3DSR**: Direct Server Return (requires disabling ARP responses)
+- **DSCP (L3DSR)**: Direct Server Return using DSCP marking (requires disabling ARP responses; network-side steering such as PBR is required)
 - **NAT4/NAT6**: NAT-based (works with standard settings)
 
 This guide covers L3DSR and GRE4 setups.

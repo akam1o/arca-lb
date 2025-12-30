@@ -13,6 +13,7 @@ GO_ENV := GOCACHE=$(GOCACHE_DIR) GOMODCACHE=$(GOMODCACHE_DIR) GOTMPDIR=$(GOTMP_D
 
 PROTO_SRC := api/proto
 PROTO_OUT := pkg/grpc
+PROTO_PATH := $(PATH):$(shell go env GOPATH)/bin
 
 DOCKER_CONTROLLER_FILE ?= deploy/docker/Dockerfile.controller
 DOCKER_AGENT_FILE ?= deploy/docker/Dockerfile.agent
@@ -48,11 +49,11 @@ lint: goenv ## Run golangci-lint
 
 .PHONY: proto
 proto: ## Generate gRPC code from protobuf
-	$(call ensure_tool,protoc)
-	$(call ensure_tool,protoc-gen-go)
-	$(call ensure_tool,protoc-gen-go-grpc)
+	@PATH="$(PROTO_PATH)" command -v protoc >/dev/null 2>&1 || { echo "error: protoc is required"; exit 1; }
+	@PATH="$(PROTO_PATH)" command -v protoc-gen-go >/dev/null 2>&1 || { echo "error: protoc-gen-go is required"; exit 1; }
+	@PATH="$(PROTO_PATH)" command -v protoc-gen-go-grpc >/dev/null 2>&1 || { echo "error: protoc-gen-go-grpc is required"; exit 1; }
 	@mkdir -p $(PROTO_OUT)
-	protoc -I $(PROTO_SRC) \
+	PATH="$(PROTO_PATH)" protoc -I $(PROTO_SRC) \
 		--go_out=$(PROTO_OUT) --go_opt=paths=source_relative \
 		--go-grpc_out=$(PROTO_OUT) --go-grpc_opt=paths=source_relative \
 		$(PROTO_SRC)/*.proto

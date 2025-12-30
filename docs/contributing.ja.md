@@ -90,6 +90,18 @@ git push origin feature/my-feature
 
 GitHub で Pull Request を作成してください。
 
+## Developer Certificate of Origin (DCO)
+
+個人・企業を問わずコントリビューションをしやすくするため、軽量なサインオフ（sign-off）プロセスを採用しています。
+
+コントリビューションを行うことで、あなたの作業が本プロジェクトのライセンスの下で提出され、かつ提出する権利を有していることに同意したものとみなされます。
+
+コミット時にサインオフしてください：
+
+```bash
+git commit -s
+```
+
 ## コードレビュー
 
 ### Pull Request のチェックリスト
@@ -175,8 +187,6 @@ go test -coverprofile=coverage.out ./...
 
 - `docs/` - ユーザードキュメント
 - `README.md` - プロジェクト概要
-- `SPEC.md` - 仕様書
-- `PLAN.md` - 実装計画
 
 ## ライセンス
 
@@ -196,4 +206,3 @@ go test -coverprofile=coverage.out ./...
 
 - [開発環境セットアップ](./development.md) を参照して、開発を開始します
 - [アーキテクチャ詳細](./architecture.md) を参照して、システムの設計を理解します
-

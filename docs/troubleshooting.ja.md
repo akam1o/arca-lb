@@ -215,9 +215,9 @@ tail -f /var/log/frr/frr.log
 1. [GitHub Issues](https://github.com/akam1o/arca-lb/issues) で既存の問題を検索
 2. ログファイルを確認してエラーメッセージを特定
 3. 新しい Issue を作成して問題を報告
+4. 非公開での問い合わせは `arca-projects@ark-networks.net` までメールしてください。
 
 ## 次のステップ
 
 - [インストール手順](./installation.md) を参照して、再インストールを試みます
 - [設定ガイド](./configuration.md) を参照して、設定を見直します
-

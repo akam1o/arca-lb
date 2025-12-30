@@ -144,6 +144,10 @@ make clean         # ビルド成果物を削除
 - [開発環境セットアップ](docs/development.md) - 開発環境のセットアップとワークフロー
 - [コントリビューションガイド](docs/contributing.md) - プロジェクトへの貢献方法
 
+## お問い合わせ
+
+お問い合わせは `arca-projects@ark-networks.net` までメール、または GitHub Issues で Issue を作成してください。
+
 ## ライセンス
 
 Apache License 2.0

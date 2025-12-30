@@ -144,6 +144,10 @@ For detailed documentation, see the `docs/` directory:
 - [Development Environment](docs/development.md) - Dev environment setup and workflow
 - [Contribution Guide](docs/contributing.md) - How to contribute to the project
 
+## Contact
+
+For inquiries, email `arca-projects@ark-networks.net` or open an issue on GitHub.
+
 ## License
 
 Apache License 2.0

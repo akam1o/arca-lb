@@ -90,6 +90,18 @@ git push origin feature/my-feature
 
 Then open a Pull Request on GitHub.
 
+## Developer Certificate of Origin (DCO)
+
+To keep contributions easy for individuals and companies, we use a lightweight sign-off process.
+
+By contributing, you agree that your work is submitted under the project license and that you have the right to submit it.
+
+Please sign off your commits:
+
+```bash
+git commit -s
+```
+
 ## Code Review
 
 ### Pull Request checklist
@@ -175,8 +187,6 @@ go test -coverprofile=coverage.out ./...
 
 - `docs/` - User documentation
 - `README.md` - Project overview
-- `SPEC.md` - Specification
-- `PLAN.md` - Implementation plan
 
 ## License
 
@@ -196,5 +206,4 @@ If you have questions, ask in GitHub Issues.
 
 - See [Development Environment](./development.md) to get started
 - See [Architecture](./architecture.md) to understand the system design
-
 

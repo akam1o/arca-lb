@@ -214,7 +214,7 @@ If the issue persists:
 1. Search existing issues on [GitHub Issues](https://github.com/akam1o/arca-lb/issues).
 2. Review logs to identify error messages.
 3. Open a new issue to report the problem.
-4. For private inquiries, email `arca-project@ark-networks.net`.
+4. For security-related private reports, use [GitHub Security Advisories](https://github.com/akam1o/arca-lb/security/advisories/new).
 
 ## Next Steps
 

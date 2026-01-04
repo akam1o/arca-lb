@@ -153,7 +153,7 @@ For detailed documentation, see the `docs/` directory:
 
 ## Contact
 
-For inquiries, email `arca-project@ark-networks.net` or open an issue on GitHub.
+For inquiries, open an issue on [GitHub Issues](https://github.com/akam1o/arca-lb/issues). For security reports, use [GitHub Security Advisories](https://github.com/akam1o/arca-lb/security/advisories/new).
 
 ## License
 

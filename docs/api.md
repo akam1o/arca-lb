@@ -69,8 +69,8 @@ Create a new VIP.
   "dscp": 10,
   "health_check": {
     "type": "http",
-    "interval_sec": 10,
-    "timeout_sec": 5,
+    "interval": "10s",
+    "timeout": "5s",
     "rise_count": 3,
     "fall_count": 3,
     "config": {
@@ -84,7 +84,10 @@ Create a new VIP.
 
 **Notes**
 - `health_check.type` must be lowercase (`http`, `https`, `tcp`, `ping`)
-- `health_check.rise_count` and `health_check.fall_count` are required
+- `health_check.interval` and `health_check.timeout` are Go duration strings (e.g. `10s`, `1m`)
+- `rise_count` / `fall_count` are optional (defaults: 3/3)
+- `health_check.config` is required for `http`/`https`/`tcp` probes
+- For `http`/`https`, `health_check.config.port` is required; `path` defaults to `/`; `expected_codes` defaults to `[200]`
 - Do not set `health_check.vip_id` when creating a VIP (it is set automatically after creation)
 - `encap_type` is optional (`GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`); if omitted, the Agent default (`vpp.lb.encap_type`) is used
 - `dscp` is optional (1-63) and is used only when `encap_type` resolves to `L3DSR` (DSCP mode); it is not used for GRE/NAT; if omitted, the Agent default (`vpp.lb.dscp`) is used; `dscp=0` is rejected in `L3DSR` mode
@@ -353,8 +356,8 @@ On errors, responses follow this format:
 
 **Notes**
 - `type` must be lowercase (`http`, `https`, `tcp`, `ping`)
-- `rise_count` and `fall_count` are required fields
 - `vip_id` is read-only. Do not set it when creating a VIP; it is populated after creation and present when retrieving
+- When creating a VIP via REST, use `health_check.interval` / `health_check.timeout` (duration strings). The stored model uses `interval_sec` / `timeout_sec`.
 
 ## Examples
 

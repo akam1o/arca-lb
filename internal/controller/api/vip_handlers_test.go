@@ -64,12 +64,36 @@ func TestCreateVIP(t *testing.T) {
 				"port":     443,
 				"protocol": "TCP",
 				"health_check": map[string]interface{}{
-					"type":     "HTTP",
-					"interval": "10s",
-					"timeout":  "5s",
+					"type":       "HTTP",
+					"interval":   "10s",
+					"timeout":    "5s",
+					"rise_count": 2,
+					"fall_count": 4,
+					"config": map[string]interface{}{
+						"port":           8080,
+						"path":           "/health",
+						"expected_codes": []int{200, 204},
+					},
 				},
 			},
 			expectedStatus: http.StatusCreated,
+		},
+		{
+			name: "invalid health check config",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"path": "/health",
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name: "default LB method",

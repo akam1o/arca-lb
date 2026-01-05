@@ -10,11 +10,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type badRequestError string
+
+func (e badRequestError) Error() string { return string(e) }
+
 // HealthCheckRequest represents the request body for an optional health check when creating a VIP.
 type HealthCheckRequest struct {
-	Type     string `json:"type" binding:"required"`
-	Interval string `json:"interval" binding:"required"`
-	Timeout  string `json:"timeout" binding:"required"`
+	Type      string          `json:"type" binding:"required"`
+	Interval  string          `json:"interval" binding:"required"`
+	Timeout   string          `json:"timeout" binding:"required"`
+	RiseCount int             `json:"rise_count" binding:"omitempty,min=1"`
+	FallCount int             `json:"fall_count" binding:"omitempty,min=1"`
+	Config    models.HCConfig `json:"config,omitempty"`
 }
 
 // CreateVIPRequest represents the request body for creating a VIP
@@ -38,10 +45,95 @@ type UpdateVIPRequest struct {
 	DSCP      *uint8           `json:"dscp" binding:"omitempty,min=0,max=63"`
 }
 
+func parseOptionalInt(v any) (int, bool) {
+	switch typed := v.(type) {
+	case int:
+		return typed, true
+	case float64:
+		return int(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func validateHealthCheckRequest(req *HealthCheckRequest) error {
+	if req == nil {
+		return nil
+	}
+
+	hcType := models.HCType(strings.ToLower(req.Type))
+	switch hcType {
+	case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP, models.HCTypePing:
+	default:
+		return badRequestError("invalid health check type")
+	}
+
+	switch hcType {
+	case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP:
+		if req.Config == nil {
+			return badRequestError("health_check.config is required for this type")
+		}
+		portRaw, ok := req.Config["port"]
+		if !ok {
+			return badRequestError("health_check.config.port is required")
+		}
+		port, ok := parseOptionalInt(portRaw)
+		if !ok || port < 1 || port > 65535 {
+			return badRequestError("health_check.config.port must be an integer between 1 and 65535")
+		}
+
+		if hcType == models.HCTypeHTTP || hcType == models.HCTypeHTTPS {
+			if path, ok := req.Config["path"]; ok && path != nil {
+				if _, ok := path.(string); !ok {
+					return badRequestError("health_check.config.path must be a string")
+				}
+			}
+			if expectedCodes, ok := req.Config["expected_codes"]; ok && expectedCodes != nil {
+				arr, ok := expectedCodes.([]interface{})
+				if !ok {
+					return badRequestError("health_check.config.expected_codes must be an array of integers")
+				}
+				for _, code := range arr {
+					if _, ok := parseOptionalInt(code); !ok {
+						return badRequestError("health_check.config.expected_codes must be an array of integers")
+					}
+				}
+			}
+			if headers, ok := req.Config["headers"]; ok && headers != nil {
+				hm, ok := headers.(map[string]interface{})
+				if !ok {
+					return badRequestError("health_check.config.headers must be an object")
+				}
+				for _, v := range hm {
+					if v == nil {
+						continue
+					}
+					if _, ok := v.(string); !ok {
+						return badRequestError("health_check.config.headers values must be strings")
+					}
+				}
+			}
+			if tlsSkipVerify, ok := req.Config["tls_skip_verify"]; ok && tlsSkipVerify != nil {
+				if _, ok := tlsSkipVerify.(bool); !ok {
+					return badRequestError("health_check.config.tls_skip_verify must be a boolean")
+				}
+			}
+		}
+	case models.HCTypePing:
+		// No config required.
+	}
+
+	return nil
+}
+
 // createVIP handles POST /api/v1/vips
 func (s *Server) createVIP(c *gin.Context) {
 	var req CreateVIPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateHealthCheckRequest(req.HealthCheck); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -69,12 +161,6 @@ func (s *Server) createVIP(c *gin.Context) {
 	// Set health check if provided
 	if req.HealthCheck != nil {
 		hcType := models.HCType(strings.ToLower(req.HealthCheck.Type))
-		switch hcType {
-		case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP, models.HCTypePing:
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid health check type"})
-			return
-		}
 
 		interval, err := time.ParseDuration(req.HealthCheck.Interval)
 		if err != nil || interval <= 0 {
@@ -88,12 +174,22 @@ func (s *Server) createVIP(c *gin.Context) {
 			return
 		}
 
+		riseCount := req.HealthCheck.RiseCount
+		if riseCount == 0 {
+			riseCount = 3
+		}
+		fallCount := req.HealthCheck.FallCount
+		if fallCount == 0 {
+			fallCount = 3
+		}
+
 		vip.HealthCheck = &models.HealthCheck{
 			Type:        hcType,
 			IntervalSec: int(interval.Seconds()),
 			TimeoutSec:  int(timeout.Seconds()),
-			RiseCount:   3,
-			FallCount:   3,
+			RiseCount:   riseCount,
+			FallCount:   fallCount,
+			Config:      req.HealthCheck.Config,
 		}
 	}
 

@@ -143,6 +143,7 @@ make clean         # ビルド成果物を削除
 - [インストールガイド](docs/installation.ja.md) - インストール手順とセットアップ
 - [設定ガイド](docs/configuration.ja.md) - Controller と Agent の設定方法
 - [API リファレンス](docs/api.ja.md) - REST API の詳細なリファレンス
+- [OpenAPI 仕様](api/openapi/openapi.yaml) - REST API の機械可読な仕様
 - [トラブルシューティング](docs/troubleshooting.ja.md) - よくある問題と解決方法
 - [バックエンドサーバー設定ガイド](docs/backend-setup.ja.md) - バックエンドサーバーの設定方法
 

@@ -65,19 +65,20 @@ func TestE2E_VIPLifecycle(t *testing.T) {
 
 	// Create VIP
 	createReq := map[string]interface{}{
-		"vip":      "192.168.1.100",
-		"port":     80,
-		"protocol": "TCP",
+		"vip":       "192.168.1.100",
+		"port":      80,
+		"protocol":  "TCP",
 		"lb_method": "maglev",
 		"health_check": map[string]interface{}{
-			"type":         "http",
-			"interval_sec": 10,
-			"timeout_sec":  5,
-			"rise_count":   3,
-			"fall_count":   3,
+			"type":       "http",
+			"interval":   "10s",
+			"timeout":    "5s",
+			"rise_count": 3,
+			"fall_count": 3,
 			"config": map[string]interface{}{
-				"port": 8080,
-				"path": "/health",
+				"port":           8080,
+				"path":           "/health",
+				"expected_codes": []int{200},
 			},
 		},
 	}
@@ -107,7 +108,7 @@ func TestE2E_VIPLifecycle(t *testing.T) {
 
 	var listResp struct {
 		VIPs  []models.VIP `json:"vips"`
-		Count int           `json:"count"`
+		Count int          `json:"count"`
 	}
 	err = json.NewDecoder(resp.Body).Decode(&listResp)
 	require.NoError(t, err)
@@ -242,9 +243,9 @@ func TestE2E_RevisionIncrement(t *testing.T) {
 
 	// Create VIP
 	createReq := map[string]interface{}{
-		"vip":      "192.168.1.200",
-		"port":     80,
-		"protocol": "TCP",
+		"vip":       "192.168.1.200",
+		"port":      80,
+		"protocol":  "TCP",
 		"lb_method": "maglev",
 	}
 	reqBody, err := json.Marshal(createReq)
@@ -325,8 +326,3 @@ func TestE2E_ErrorHandling(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
-
-
-
-
-

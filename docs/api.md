@@ -70,7 +70,14 @@ Create a new VIP.
   "health_check": {
     "type": "http",
     "interval": "10s",
-    "timeout": "5s"
+    "timeout": "5s",
+    "rise_count": 3,
+    "fall_count": 3,
+    "config": {
+      "port": 8080,
+      "path": "/health",
+      "expected_codes": [200]
+    }
   }
 }
 ```
@@ -78,7 +85,9 @@ Create a new VIP.
 **Notes**
 - `health_check.type` must be lowercase (`http`, `https`, `tcp`, `ping`)
 - `health_check.interval` and `health_check.timeout` are Go duration strings (e.g. `10s`, `1m`)
-- `rise_count` / `fall_count` are currently not configurable via REST API (defaults: 3/3)
+- `rise_count` / `fall_count` are optional (defaults: 3/3)
+- `health_check.config` is required for `http`/`https`/`tcp` probes
+- For `http`/`https`, `health_check.config.port` is required; `path` defaults to `/`; `expected_codes` defaults to `[200]`
 - Do not set `health_check.vip_id` when creating a VIP (it is set automatically after creation)
 - `encap_type` is optional (`GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`); if omitted, the Agent default (`vpp.lb.encap_type`) is used
 - `dscp` is optional (1-63) and is used only when `encap_type` resolves to `L3DSR` (DSCP mode); it is not used for GRE/NAT; if omitted, the Agent default (`vpp.lb.dscp`) is used; `dscp=0` is rejected in `L3DSR` mode

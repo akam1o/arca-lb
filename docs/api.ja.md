@@ -70,7 +70,14 @@ http://localhost:8080
   "health_check": {
     "type": "http",
     "interval": "10s",
-    "timeout": "5s"
+    "timeout": "5s",
+    "rise_count": 3,
+    "fall_count": 3,
+    "config": {
+      "port": 8080,
+      "path": "/health",
+      "expected_codes": [200]
+    }
   }
 }
 ```
@@ -78,7 +85,9 @@ http://localhost:8080
 **注意**: 
 - `health_check.type` は小文字（`http`, `https`, `tcp`, `ping`）
 - `health_check.interval` と `health_check.timeout` は Go の duration 文字列（例: `10s`, `1m`）
-- `rise_count` / `fall_count` は現在 REST API からは設定できません（デフォルト: 3/3）
+- `rise_count` / `fall_count` は任意です（デフォルト: 3/3）
+- `health_check.config` は `http`/`https`/`tcp` の場合に必須です
+- `http`/`https` の場合、`health_check.config.port` は必須で、`path` は省略時 `/`、`expected_codes` は省略時 `[200]` になります
 - VIP 作成時は `health_check.vip_id` は不要（VIP 作成後に自動的に設定されます）
 - `encap_type` は任意（`GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`）。省略した場合は Agent のデフォルト（`vpp.lb.encap_type`）が使用されます
 - `dscp` は任意（1-63）で、`encap_type` が `L3DSR`（DSCP 方式）に解決される場合のみ使用されます（GRE/NAT では使用されません）。省略した場合は Agent のデフォルト（`vpp.lb.dscp`）が使用されます（`L3DSR` の場合 `dscp=0` はエラーになります）

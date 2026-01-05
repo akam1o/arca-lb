@@ -482,6 +482,18 @@ components:
         timeout:
           type: string
           description: Go duration string (e.g. "3s", "500ms").
+        rise_count:
+          type: integer
+          minimum: 1
+          description: Consecutive successes to mark backend Up (default 3).
+        fall_count:
+          type: integer
+          minimum: 1
+          description: Consecutive failures to mark backend Down (default 3).
+        config:
+          type: object
+          description: Prober-specific configuration; required for http/https/tcp.
+          additionalProperties: true
       required: [type, interval, timeout]
     VIPCreateRequest:
       type: object

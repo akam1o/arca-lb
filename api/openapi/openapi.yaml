@@ -1,0 +1,596 @@
+openapi: 3.0.3
+info:
+  title: arca-lb Controller REST API
+  description: REST API for managing VIPs and backends in arca-lb.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: Health
+  - name: VIPs
+  - name: Backends
+  - name: Revision
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Health check
+      operationId: healthz
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      operationId: readyz
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/revision:
+    get:
+      tags: [Revision]
+      summary: Get current config revision
+      operationId: getRevision
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevisionResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/vips:
+    get:
+      tags: [VIPs]
+      summary: List VIPs
+      operationId: listVIPs
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VIPListResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [VIPs]
+      summary: Create VIP
+      operationId: createVIP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VIPCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VIP"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/vips/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [VIPs]
+      summary: Get VIP
+      operationId: getVIP
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VIP"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags: [VIPs]
+      summary: Update VIP
+      operationId: updateVIP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VIPUpdateRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VIP"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [VIPs]
+      summary: Delete VIP
+      operationId: deleteVIP
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                required: [message]
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/backends:
+    get:
+      tags: [Backends]
+      summary: List backends for a VIP
+      operationId: listBackends
+      parameters:
+        - name: vip_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackendListResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Backends]
+      summary: Create backend
+      operationId: createBackend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackendCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Backend"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: VIP not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/backends/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Backends]
+      summary: Get backend
+      operationId: getBackend
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Backend"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags: [Backends]
+      summary: Update backend
+      operationId: updateBackend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackendUpdateRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Backend"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Backends]
+      summary: Delete backend
+      operationId: deleteBackend
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                required: [message]
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        time:
+          type: string
+          format: date-time
+      required: [status, time]
+    RevisionResponse:
+      type: object
+      properties:
+        revision:
+          type: integer
+          format: int64
+      required: [revision]
+    Protocol:
+      type: string
+      enum: [TCP, UDP]
+    LBMethod:
+      type: string
+      enum: [maglev]
+    EncapType:
+      type: string
+      enum: [GRE4, GRE6, L3DSR, NAT4, NAT6]
+    VIP:
+      type: object
+      properties:
+        id:
+          type: string
+        vip:
+          type: string
+          format: ipv4
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        protocol:
+          $ref: "#/components/schemas/Protocol"
+        lb_method:
+          $ref: "#/components/schemas/LBMethod"
+        encap_type:
+          $ref: "#/components/schemas/EncapType"
+        dscp:
+          type: integer
+          minimum: 0
+          maximum: 63
+          nullable: true
+        health_check:
+          $ref: "#/components/schemas/HealthCheck"
+        backends:
+          type: array
+          items:
+            $ref: "#/components/schemas/Backend"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, vip, port, protocol, lb_method, created_at, updated_at]
+    HealthCheck:
+      type: object
+      properties:
+        id:
+          type: string
+        vip_id:
+          type: string
+        type:
+          type: string
+          enum: [http, https, tcp, ping]
+        interval_sec:
+          type: integer
+          minimum: 1
+        timeout_sec:
+          type: integer
+          minimum: 1
+        rise_count:
+          type: integer
+          minimum: 1
+        fall_count:
+          type: integer
+          minimum: 1
+        config:
+          type: object
+          additionalProperties: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, vip_id, type, interval_sec, timeout_sec, rise_count, fall_count, created_at, updated_at]
+    HealthCheckCreate:
+      type: object
+      description: Health check settings for VIP creation (duration strings).
+      properties:
+        type:
+          type: string
+          enum: [http, https, tcp, ping]
+        interval:
+          type: string
+          description: Go duration string (e.g. "10s", "1m").
+        timeout:
+          type: string
+          description: Go duration string (e.g. "3s", "500ms").
+      required: [type, interval, timeout]
+    VIPCreateRequest:
+      type: object
+      properties:
+        vip:
+          type: string
+          format: ipv4
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        protocol:
+          $ref: "#/components/schemas/Protocol"
+        lb_method:
+          $ref: "#/components/schemas/LBMethod"
+        encap_type:
+          $ref: "#/components/schemas/EncapType"
+        dscp:
+          type: integer
+          minimum: 0
+          maximum: 63
+          nullable: true
+        health_check:
+          $ref: "#/components/schemas/HealthCheckCreate"
+      required: [vip, port, protocol]
+    VIPUpdateRequest:
+      type: object
+      properties:
+        vip:
+          type: string
+          format: ipv4
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        protocol:
+          $ref: "#/components/schemas/Protocol"
+        lb_method:
+          $ref: "#/components/schemas/LBMethod"
+        encap_type:
+          $ref: "#/components/schemas/EncapType"
+        dscp:
+          type: integer
+          minimum: 0
+          maximum: 63
+          nullable: true
+      additionalProperties: false
+    VIPListResponse:
+      type: object
+      properties:
+        vips:
+          type: array
+          items:
+            $ref: "#/components/schemas/VIP"
+        count:
+          type: integer
+      required: [vips, count]
+    Backend:
+      type: object
+      properties:
+        id:
+          type: string
+        vip_id:
+          type: string
+        ip:
+          type: string
+          format: ipv4
+        weight:
+          type: integer
+          minimum: 1
+          maximum: 100
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, vip_id, ip, weight, created_at, updated_at]
+    BackendCreateRequest:
+      type: object
+      properties:
+        vip_id:
+          type: string
+        ip:
+          type: string
+          format: ipv4
+        weight:
+          type: integer
+          minimum: 1
+          maximum: 100
+      required: [vip_id, ip]
+    BackendUpdateRequest:
+      type: object
+      properties:
+        ip:
+          type: string
+          format: ipv4
+        weight:
+          type: integer
+          minimum: 1
+          maximum: 100
+      additionalProperties: false
+    BackendListResponse:
+      type: object
+      properties:
+        backends:
+          type: array
+          items:
+            $ref: "#/components/schemas/Backend"
+        count:
+          type: integer
+      required: [backends, count]

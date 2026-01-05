@@ -69,22 +69,16 @@ http://localhost:8080
   "dscp": 10,
   "health_check": {
     "type": "http",
-    "interval_sec": 10,
-    "timeout_sec": 5,
-    "rise_count": 3,
-    "fall_count": 3,
-    "config": {
-      "port": 8080,
-      "path": "/health",
-      "expected_codes": [200]
-    }
+    "interval": "10s",
+    "timeout": "5s"
   }
 }
 ```
 
 **注意**: 
 - `health_check.type` は小文字（`http`, `https`, `tcp`, `ping`）
-- `health_check.rise_count` と `health_check.fall_count` は必須
+- `health_check.interval` と `health_check.timeout` は Go の duration 文字列（例: `10s`, `1m`）
+- `rise_count` / `fall_count` は現在 REST API からは設定できません（デフォルト: 3/3）
 - VIP 作成時は `health_check.vip_id` は不要（VIP 作成後に自動的に設定されます）
 - `encap_type` は任意（`GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`）。省略した場合は Agent のデフォルト（`vpp.lb.encap_type`）が使用されます
 - `dscp` は任意（1-63）で、`encap_type` が `L3DSR`（DSCP 方式）に解決される場合のみ使用されます（GRE/NAT では使用されません）。省略した場合は Agent のデフォルト（`vpp.lb.dscp`）が使用されます（`L3DSR` の場合 `dscp=0` はエラーになります）
@@ -353,8 +347,8 @@ http://localhost:8080
 
 **注意**: 
 - `type` は小文字（`http`, `https`, `tcp`, `ping`）
-- `rise_count`, `fall_count` は必須フィールド
 - `vip_id` は読み取り専用フィールドです。VIP 作成時には不要（VIP 作成後に自動的に設定されます）。VIP 取得時には存在します
+- REST API で VIP を作成する場合は `health_check.interval` / `health_check.timeout`（duration 文字列）を使用してください。保存モデルでは `interval_sec` / `timeout_sec` が使われます
 
 ## 使用例
 

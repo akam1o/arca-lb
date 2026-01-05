@@ -143,6 +143,7 @@ For detailed documentation, see the `docs/` directory:
 - [Installation Guide](docs/installation.md) - Installation steps and setup
 - [Configuration Guide](docs/configuration.md) - How to configure the Controller and Agent
 - [API Reference](docs/api.md) - REST API reference
+- [OpenAPI Spec](api/openapi/openapi.yaml) - Machine-readable REST API spec
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and fixes
 - [Backend Server Setup Guide](docs/backend-setup.md) - How to configure backend servers
 

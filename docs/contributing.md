@@ -190,7 +190,7 @@ go test -coverprofile=coverage.out ./...
 
 ## License
 
-Contributions are provided under the MIT License.
+Contributions are provided under the Apache License 2.0. See [LICENSE](../LICENSE).
 
 ## Code of Conduct
 
@@ -206,6 +206,5 @@ If you have questions, ask in GitHub Issues.
 
 - See [Development Environment](./development.md) to get started
 - See [Architecture](./architecture.md) to understand the system design
-
 
 

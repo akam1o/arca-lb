@@ -152,9 +152,13 @@ make clean         # ビルド成果物を削除
 - [開発環境セットアップ](docs/development.ja.md) - 開発環境のセットアップとワークフロー
 - [コントリビューションガイド](docs/contributing.ja.md) - プロジェクトへの貢献方法
 
+## コントリビュート
+
+コントリビューション歓迎です！詳細は [docs/contributing.md](docs/contributing.md) を参照してください。
+
 ## お問い合わせ
 
-お問い合わせは [GitHub Issues](https://github.com/akam1o/arca-lb/issues) で Issue を作成してください。セキュリティに関する報告は [GitHub Security Advisory](https://github.com/akam1o/arca-lb/security/advisories/new) を利用してください。
+お問い合わせは [GitHub Issues](https://github.com/akam1o/arca-lb/issues) で Issue を作成してください。セキュリティに関する報告は [GitHub Security Advisories](https://github.com/akam1o/arca-lb/security/advisories) を利用してください。
 
 ## ライセンス
 

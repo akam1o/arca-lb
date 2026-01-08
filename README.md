@@ -152,9 +152,13 @@ For detailed documentation, see the `docs/` directory:
 - [Development Environment](docs/development.md) - Dev environment setup and workflow
 - [Contribution Guide](docs/contributing.md) - How to contribute to the project
 
+## Contributing
+
+Contributions are welcome! See [docs/contributing.md](docs/contributing.md).
+
 ## Contact
 
-For inquiries, open an issue on [GitHub Issues](https://github.com/akam1o/arca-lb/issues). For security reports, use [GitHub Security Advisories](https://github.com/akam1o/arca-lb/security/advisories/new).
+For inquiries, open an issue on [GitHub Issues](https://github.com/akam1o/arca-lb/issues). For security reports, use [GitHub Security Advisories](https://github.com/akam1o/arca-lb/security/advisories).
 
 ## License
 

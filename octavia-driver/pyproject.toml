@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "octavia-arca-driver"
+version = "0.1.0"
+description = "Octavia provider driver for ArcaLB (VPP-based L3DSR Load Balancer)"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+classifiers = [
+    "Environment :: OpenStack",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "octavia-lib>=3.0.0",
+    "kubernetes>=28.0.0",
+    "oslo.config>=9.0.0",
+    "oslo.log>=5.0.0",
+]
+
+[project.entry-points."octavia.api.drivers"]
+arca = "octavia_arca_driver.driver:ArcaLBDriver"
+
+[tool.setuptools.packages.find]
+include = ["octavia_arca_driver*"]

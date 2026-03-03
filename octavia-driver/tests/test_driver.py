@@ -1,0 +1,261 @@
+# Copyright 2025 ArcaLB Authors
+# SPDX-License-Identifier: Apache-2.0
+
+"""Unit tests for the ArcaLB Octavia provider driver."""
+
+import unittest
+from unittest import mock
+
+from octavia_arca_driver import constants
+from octavia_arca_driver.driver import ArcaLBDriver
+
+
+class FakeObj:
+    """Minimal object with to_dict support for test data."""
+
+    def __init__(self, data):
+        self._data = data
+
+    def to_dict(self):
+        return self._data
+
+
+def _make_vip(name, spec, annotations=None, status=None):
+    """Build a fake VirtualIP dict as returned by the K8s API."""
+    return {
+        "apiVersion": "arca.io/v1alpha1",
+        "kind": "VirtualIP",
+        "metadata": {
+            "name": name,
+            "namespace": "arca-system",
+            "labels": {
+                constants.LABEL_MANAGED_BY: constants.LABEL_MANAGED_BY_VALUE,
+            },
+            "annotations": annotations or {},
+        },
+        "spec": spec,
+        "status": status or {},
+    }
+
+
+class TestParseExpectedCodes(unittest.TestCase):
+    def test_single(self):
+        self.assertEqual(ArcaLBDriver._parse_expected_codes("200"), [200])
+
+    def test_multiple(self):
+        self.assertEqual(ArcaLBDriver._parse_expected_codes("200,201"), [200, 201])
+
+    def test_range(self):
+        self.assertEqual(ArcaLBDriver._parse_expected_codes("200-204"),
+                         [200, 201, 202, 203, 204])
+
+    def test_mixed(self):
+        self.assertEqual(ArcaLBDriver._parse_expected_codes("200,300-302"),
+                         [200, 300, 301, 302])
+
+    def test_empty(self):
+        self.assertEqual(ArcaLBDriver._parse_expected_codes(""), [200])
+
+    def test_none(self):
+        self.assertEqual(ArcaLBDriver._parse_expected_codes(None), [200])
+
+
+class TestBuildHealthCheck(unittest.TestCase):
+    """Test the _build_health_check helper."""
+
+    @mock.patch("octavia_arca_driver.driver.CONF")
+    @mock.patch("octavia_arca_driver.driver.VirtualIPStatusWatcher")
+    @mock.patch("octavia_arca_driver.driver.VirtualIPClient")
+    def setUp(self, mock_client_cls, mock_watcher_cls, mock_conf):
+        mock_conf.driver_arca.kubernetes_config = ""
+        mock_conf.driver_arca.namespace = "arca-system"
+        mock_conf.driver_arca.default_encap_type = "L3DSR"
+        mock_conf.driver_arca.default_dscp = 10
+        mock_conf.driver_arca.status_sync_interval = 10
+        self.driver = ArcaLBDriver()
+
+    def test_http_monitor(self):
+        hm = {
+            "type": "HTTP",
+            "delay": 10,
+            "timeout": 5,
+            "max_retries": 3,
+            "max_retries_down": 2,
+            "http_method": "GET",
+            "url_path": "/healthz",
+            "expected_codes": "200",
+        }
+        hc = self.driver._build_health_check(hm)
+        self.assertEqual(hc["type"], "http")
+        self.assertEqual(hc["intervalSeconds"], 10)
+        self.assertEqual(hc["timeoutSeconds"], 5)
+        self.assertEqual(hc["riseCount"], 3)
+        self.assertEqual(hc["fallCount"], 2)
+        self.assertEqual(hc["http"]["path"], "/healthz")
+        self.assertEqual(hc["http"]["method"], "GET")
+        self.assertEqual(hc["http"]["expectedCodes"], [200])
+
+    def test_tcp_monitor(self):
+        hm = {
+            "type": "TCP",
+            "delay": 5,
+            "timeout": 3,
+            "max_retries": 2,
+        }
+        hc = self.driver._build_health_check(hm)
+        self.assertEqual(hc["type"], "tcp")
+        self.assertIn("tcp", hc)
+
+    def test_ping_monitor(self):
+        hm = {
+            "type": "PING",
+            "delay": 5,
+            "timeout": 3,
+            "max_retries": 3,
+        }
+        hc = self.driver._build_health_check(hm)
+        self.assertEqual(hc["type"], "ping")
+
+
+class TestDriverLifecycle(unittest.TestCase):
+    """Test complete Octavia lifecycle operations."""
+
+    @mock.patch("octavia_arca_driver.driver.CONF")
+    @mock.patch("octavia_arca_driver.driver.VirtualIPStatusWatcher")
+    @mock.patch("octavia_arca_driver.driver.VirtualIPClient")
+    def setUp(self, mock_client_cls, mock_watcher_cls, mock_conf):
+        mock_conf.driver_arca.kubernetes_config = ""
+        mock_conf.driver_arca.namespace = "arca-system"
+        mock_conf.driver_arca.default_encap_type = "L3DSR"
+        mock_conf.driver_arca.default_dscp = 10
+        mock_conf.driver_arca.status_sync_interval = 10
+        self.mock_k8s = mock_client_cls.return_value
+        self.driver = ArcaLBDriver()
+
+    def test_listener_create_creates_virtualip(self):
+        listener = FakeObj({
+            "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "loadbalancer_id": "bbbbbbbb-1111-2222-3333-444444444444",
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "vip_address": "203.0.113.10",
+            "project_id": "test-project",
+        })
+
+        self.mock_k8s.find_by_loadbalancer.return_value = []
+        self.driver.listener_create(listener)
+
+        self.mock_k8s.create_virtualip.assert_called_once()
+        args = self.mock_k8s.create_virtualip.call_args
+        name = args[0][0]
+        spec = args[0][1]
+        self.assertIn("octavia-", name)
+        self.assertEqual(spec["address"], "203.0.113.10")
+        self.assertEqual(spec["port"], 80)
+        self.assertEqual(spec["protocol"], "TCP")
+        self.assertEqual(spec["encapType"], "L3DSR")
+        self.assertEqual(spec["dscp"], 10)
+
+    def test_member_create_adds_backend(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": []},
+            annotations={
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        member = FakeObj({
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+            "weight": 100,
+        })
+        self.driver.member_create(member)
+
+        self.mock_k8s.update_virtualip.assert_called_once()
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(len(spec["backends"]), 1)
+        self.assertEqual(spec["backends"][0]["address"], "10.0.1.1")
+
+    def test_member_delete_removes_backend(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100},
+                          {"address": "10.0.1.2", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        member = FakeObj({"pool_id": "pool-1111", "address": "10.0.1.1"})
+        self.driver.member_delete(member)
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(len(spec["backends"]), 1)
+        self.assertEqual(spec["backends"][0]["address"], "10.0.1.2")
+
+    def test_loadbalancer_delete_removes_all_vips(self):
+        vips = [
+            _make_vip("octavia-bbbbbbbb-aaaaaaaa",
+                       {"address": "203.0.113.10", "port": 80}),
+            _make_vip("octavia-bbbbbbbb-cccccccc",
+                       {"address": "203.0.113.10", "port": 443}),
+        ]
+        self.mock_k8s.find_by_loadbalancer.return_value = vips
+
+        lb = FakeObj({"loadbalancer_id": "bbbbbbbb-1111-2222-3333-444444444444"})
+        self.driver.loadbalancer_delete(lb)
+
+        self.assertEqual(self.mock_k8s.delete_virtualip.call_count, 2)
+
+    def test_health_monitor_create(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        hm = FakeObj({
+            "healthmonitor_id": "hm-1111",
+            "pool_id": "pool-1111",
+            "type": "HTTP",
+            "delay": 10,
+            "timeout": 5,
+            "max_retries": 3,
+            "max_retries_down": 2,
+            "http_method": "GET",
+            "url_path": "/healthz",
+            "expected_codes": "200",
+        })
+        self.driver.health_monitor_create(hm)
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertIn("healthCheck", spec)
+        self.assertEqual(spec["healthCheck"]["type"], "http")
+
+    def test_l7policy_not_supported(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.l7policy_create(FakeObj({}))
+
+    def test_validate_flavor_valid(self):
+        # Should not raise.
+        self.driver.validate_flavor({"encap_type": "L3DSR", "dscp": "10"})
+
+    def test_validate_flavor_invalid_encap(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.validate_flavor({"encap_type": "INVALID"})
+
+    def test_validate_flavor_invalid_dscp(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.validate_flavor({"dscp": "999"})
+
+
+if __name__ == "__main__":
+    unittest.main()

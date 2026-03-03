@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: octavia-arca-driver
+  namespace: arca-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: octavia-arca-driver
+  namespace: arca-system
+rules:
+  - apiGroups: ["arca.io"]
+    resources: ["virtualips"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: octavia-arca-driver
+  namespace: arca-system
+subjects:
+  - kind: ServiceAccount
+    name: octavia-arca-driver
+    namespace: arca-system
+roleRef:
+  kind: Role
+  name: octavia-arca-driver
+  apiGroup: rbac.authorization.k8s.io

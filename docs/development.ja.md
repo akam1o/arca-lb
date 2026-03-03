@@ -6,17 +6,19 @@
 
 ### 必須
 
-- **Go**: 1.23 以上
+- **Go**: 1.24 以上
 - **Git**: 2.0 以上
 - **Make**: 3.0 以上
-- **Docker**: 20.10 以上（オプション、統合テスト用）
-- **Docker Compose**: 2.0 以上（オプション、統合テスト用）
+- **Kubernetes**: 1.28 以上（統合テスト用）
+- **kubectl**: 開発クラスターに設定済み
 
 ### オプション
 
 - **golangci-lint**: コード品質チェック用
-- **protoc**: Protocol Buffers コンパイラ（gRPC コード生成用）
-- **etcd**: データストア（開発用）
+- **controller-gen**: CRD および DeepCopy コード生成用
+- **protoc**: Protocol Buffers コンパイラ（v1 gRPC コード生成用）
+- **Docker**: 20.10 以上（コンテナイメージ用）
+- **kind**: テスト用ローカル K8s クラスター
 
 ## セットアップ手順
 
@@ -35,6 +37,14 @@ make deps
 
 ### 3. 開発ツールのインストール
 
+#### controller-gen（CRD 開発に必須）
+
+```bash
+make install-controller-gen
+# または
+go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+```
+
 #### golangci-lint
 
 ```bash
@@ -45,7 +55,7 @@ brew install golangci-lint
 curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
 ```
 
-#### protoc
+#### protoc（v1 のみ）
 
 ```bash
 # macOS
@@ -59,20 +69,15 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 ```
 
-### 4. 開発環境の起動
-
-#### etcd の起動（Docker Compose）
+### 4. 開発用 Kubernetes クラスターのセットアップ（オプション）
 
 ```bash
-cd deploy/docker-compose
-docker compose -f docker-compose.dev.yml up -d etcd
-```
+# kind を使用
+kind create cluster --name arca-lb-dev
 
-#### 設定ファイルの準備
-
-```bash
-cp deploy/config/controller.example.yaml deploy/config/controller.yaml
-cp deploy/config/agent.example.yaml deploy/config/agent.yaml
+# CRD のインストール
+make manifests
+kubectl apply -f config/crd/bases/
 ```
 
 ## 開発ワークフロー
@@ -96,7 +101,22 @@ make lint
 make test
 ```
 
-### 2. Protocol Buffers の変更
+### 2. CRD 型の変更
+
+`api/v1alpha1/types.go` を変更した場合：
+
+```bash
+# CRD マニフェストの再生成
+make manifests
+
+# DeepCopy メソッドの再生成
+make generate
+
+# 開発クラスターに CRD を再適用
+kubectl apply -f config/crd/bases/
+```
+
+### 3. Protocol Buffers の変更（v1 のみ）
 
 ```bash
 # proto ファイルを編集
@@ -106,10 +126,13 @@ make test
 make proto
 ```
 
-### 3. ビルドとテスト
+### 4. ビルドとテスト
 
 ```bash
-# ビルド
+# v2 のみビルド
+make build-v2
+
+# すべてビルド (v1 + v2)
 make build
 
 # テスト
@@ -120,30 +143,41 @@ go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
-### 4. 統合テストの実行
+### 5. ローカル実行
 
 ```bash
-# 統合テストの実行（etcd が必要）
-go test -tags=integration ./test/integration/...
+# Operator の実行（現在の kubeconfig コンテキストに接続）
+./bin/arcalb-operator --metrics-bind-address=:8080
+
+# Agent の実行（テスト用 noop データプレーン）
+./bin/arcalb-agent-v2 --config deploy/config/agent.yaml
 ```
 
 ## デバッグ
 
-### Controller のデバッグ
+### Operator のデバッグ
 
 ```bash
-# デバッグログレベルで起動
-./bin/arcalb-controller --config deploy/config/controller.yaml
-# 設定ファイルで log.level: "debug" を設定
+# 詳細ログで実行
+./bin/arcalb-operator --metrics-bind-address=:8080
+# controller-runtime はデフォルトで dev モードの zap ロガーを使用
 ```
 
 ### Agent のデバッグ
 
 ```bash
-# デバッグログレベルで起動
-export ARCA_AGENT_CONFIG=deploy/config/agent.yaml
-sudo ./bin/arcalb-agent
-# 設定ファイルで log.level: "debug" を設定
+# Agent 設定ファイルで log.level: "debug" を設定
+./bin/arcalb-agent-v2 --config deploy/config/agent.yaml
+```
+
+VPP/FRR なしで開発する場合は `noop` データプレーンとルーターを使用：
+
+```yaml
+dataplane:
+  type: "noop"
+routing:
+  enabled: false
+  type: "noop"
 ```
 
 ### VPP のデバッグ
@@ -159,9 +193,22 @@ show lb vip
 show lb as
 ```
 
+### VirtualIP リソースの確認
+
+```bash
+# すべての VIP を一覧表示
+kubectl get vip -o wide
+
+# 詳細なステータスを表示
+kubectl get vip web-vip -o yaml
+
+# 変更を監視
+kubectl get vip -w
+```
+
 ## コードスタイル
 
-### Go コーディング規約
+### Go ガイドライン
 
 - [Effective Go](https://go.dev/doc/effective_go) に従う
 - `gofmt` でフォーマット
@@ -169,15 +216,15 @@ show lb as
 
 ### 命名規則
 
-- **パッケージ名**: 小文字、単数形
-- **型名**: 大文字始まり、PascalCase
-- **関数名**: 大文字始まり（公開）、小文字始まり（非公開）
-- **定数**: 大文字、UPPER_SNAKE_CASE
+- **パッケージ**: 小文字、単数形
+- **型**: PascalCase
+- **関数**: PascalCase（エクスポート）、camelCase（非エクスポート）
+- **定数**: PascalCase（エクスポート）、camelCase（非エクスポート）
 
 ### エラーハンドリング
 
 ```go
-// エラーは明示的に処理
+// エラーを明示的に処理
 if err != nil {
     return fmt.Errorf("context: %w", err)
 }
@@ -186,11 +233,11 @@ if err != nil {
 ### ログ
 
 ```go
-// 構造化ログを使用
-logger.WithFields(logrus.Fields{
-    "vip_id": vipID,
-    "error": err,
-}).Error("Failed to create VIP")
+// log/slog で構造化ログ (v2)
+slog.Info("VIP reconciled",
+    "vip", vipName,
+    "backends", len(backends),
+)
 ```
 
 ## テスト
@@ -202,23 +249,20 @@ logger.WithFields(logrus.Fields{
 make test
 
 # 特定のパッケージのテスト
-go test ./internal/controller/api/...
+go test ./internal/agent/reconciler/...
 
-# レース検出付きテスト
+# レースディテクター
 go test -race ./...
 ```
 
 ### 統合テスト
 
 ```bash
-# 統合テストを実行
+# 統合テストの実行
 go test -tags=integration ./test/integration/...
-
-# 短いテストをスキップ
-go test -tags=integration -short=false ./test/integration/...
 ```
 
-### テストカバレッジ
+### カバレッジ
 
 ```bash
 # カバレッジレポートの生成
@@ -226,24 +270,33 @@ go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
+## 主な Makefile ターゲット
+
+```bash
+make help          # すべてのターゲットを表示
+make build-v2      # v2 Operator + Agent をビルド
+make test          # レースディテクター付きテスト実行
+make lint          # golangci-lint を実行
+make manifests     # CRD マニフェスト生成
+make generate      # DeepCopy メソッド生成
+make fmt           # コードフォーマット
+make vet           # go vet を実行
+make clean         # ビルド成果物を削除
+```
+
 ## リリース
 
 ### バージョンタグ
 
 ```bash
-# バージョンタグの作成
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin v1.0.0
+git tag -a v2.0.0 -m "Release v2.0.0"
+git push origin v2.0.0
 ```
 
 ### Docker イメージのビルド
 
 ```bash
-# Docker イメージのビルド
 make docker
-
-# 特定のタグでビルド
-docker build -f deploy/docker/Dockerfile.controller -t arcalb-controller:v1.0.0 .
 ```
 
 ## トラブルシューティング
@@ -264,17 +317,15 @@ go clean -testcache
 go test ./...
 ```
 
-### リンターエラー
+### CRD が更新されない
 
 ```bash
-# リンターの実行
-make lint
-
-# 自動修正可能な問題を修正
-golangci-lint run --fix
+# 再生成して再適用
+make manifests
+kubectl apply -f config/crd/bases/
 ```
 
 ## 次のステップ
 
-- [アーキテクチャ詳細](./architecture.ja.md) を参照して、システムの設計を理解します
+- [アーキテクチャ](./architecture.ja.md) を参照して、システム設計を理解します
 - [コントリビューションガイド](./contributing.ja.md) を参照して、プロジェクトに貢献します

@@ -2,222 +2,278 @@
 
 このドキュメントでは、arca-lb の一般的な問題とその解決方法を説明します。
 
-## Controller の問題
+## Operator の問題 (v2)
 
-### Controller が起動しない
+### Operator が起動しない
 
-**症状**: Controller が起動せず、エラーメッセージが表示される
-
-**原因と解決方法**:
-
-1. **データストア接続エラー**
-   - etcd または MySQL が起動しているか確認
-   - 接続情報が正しいか確認
-   - ネットワーク接続を確認
-
-2. **ポートが既に使用されている**
-   - 別のプロセスがポート 8080 または 50051 を使用していないか確認
-   - 設定ファイルでポートを変更
-
-3. **設定ファイルの構文エラー**
-   - YAML の構文を確認
-   - 必須パラメータが設定されているか確認
-
-### REST API が応答しない
-
-**症状**: REST API へのリクエストがタイムアウトする
+**症状**: Operator Pod が CrashLoopBackOff になる。
 
 **原因と解決方法**:
 
-1. **Controller が起動していない**
-   - Controller のプロセスが実行中か確認
-   - ログを確認してエラーがないか確認
+1. **CRD が未インストール**
+   - CRD をインストール: `kubectl apply -f config/crd/bases/`
+   - 確認: `kubectl get crd virtualips.arca.io`
 
-2. **ファイアウォールの設定**
-   - ポート 8080 が開いているか確認
-   - セキュリティグループの設定を確認
+2. **RBAC の設定ミス**
+   - RBAC を適用: `kubectl apply -f config/rbac/`
+   - ServiceAccount の権限を確認。
 
-3. **データストアの問題**
-   - データストアへの接続を確認
-   - `/readyz` エンドポイントでレディネスを確認
+3. **イメージが見つからない**
+   - Deployment のイメージ名とタグを確認。
+   - 手動プル: `docker pull <image>`
 
-## Agent の問題
+### VirtualIP のステータスが更新されない
+
+**症状**: VirtualIP にステータスが表示されない、または古いステータスのまま。
+
+**原因と解決方法**:
+
+1. **Operator が動作していない**
+   - Pod の状態を確認: `kubectl get pods -l app=arcalb-operator`
+   - ログを確認: `kubectl logs -l app=arcalb-operator`
+
+2. **RBAC の問題**
+   - Operator は `virtualips/status` の `update` 権限が必要。
+   - `config/rbac/role.yaml` を確認。
+
+3. **Finalizer が残っている**
+   - メタデータを確認: `kubectl get vip <name> -o yaml`
+   - 必要に応じて finalizer を削除: `kubectl edit vip <name>`
+
+### Webhook バリデーションが失敗する
+
+**症状**: `kubectl apply` でアドミッションエラーが返される。
+
+**原因と解決方法**:
+
+1. **不正なフィールド値**
+   - エラーメッセージで具体的なフィールドを確認。
+   - 有効な値については [API リファレンス](./api.ja.md) を参照。
+
+2. **Webhook が未登録**
+   - Webhook 設定が存在するか確認。
+   - cert-manager または Webhook 証明書が有効か確認。
+
+## Agent の問題 (v2)
 
 ### Agent が起動しない
 
-**症状**: Agent が起動せず、エラーメッセージが表示される
+**症状**: Agent Pod が CrashLoopBackOff になる、または起動に失敗する。
 
 **原因と解決方法**:
 
-1. **VPP 接続エラー**
-   - VPP が起動しているか確認: `systemctl status vpp`
-   - VPP ソケットパスが正しいか確認: `/run/vpp/api.sock`
-   - VPP のログを確認: `journalctl -u vpp`
+1. **設定ファイルが見つからない**
+   - ConfigMap のマウント先を確認: `/etc/arca-lb/agent.v2.yaml`
+   - コンテナの args に `--v2` フラグがあるか確認。
 
-2. **Controller への接続エラー**
-   - Controller の gRPC エンドポイントが正しいか確認
-   - ネットワーク接続を確認
-   - ファイアウォールの設定を確認
+2. **Kubernetes API 接続エラー**
+   - Agent の ServiceAccount の RBAC を確認。
+   - kubeconfig / in-cluster 認証を確認。
 
-3. **権限の問題**
-   - VPP ソケットへのアクセス権限を確認
-   - `sudo` で実行するか、適切なグループに所属しているか確認
+3. **VPP 接続エラー**
+   - VPP が動作中か確認: `systemctl status vpp`
+   - VPP ソケットパスを確認: `/run/vpp/api.sock`
+   - DaemonSet spec でのソケットマウントを確認。
 
-### VPP への設定が反映されない
+4. **権限の問題**
+   - Agent は VPP ソケットへのアクセスが必要。
+   - Pod が適切な権限で実行されているか確認。
 
-**症状**: VIP やバックエンドを追加しても VPP に反映されない
+### VIP が VPP に適用されない
+
+**症状**: Kubernetes で VirtualIP が作成されているが VPP に反映されない。
 
 **原因と解決方法**:
 
-1. **VPP 接続の問題**
-   - Agent のログで VPP 接続エラーがないか確認
-   - VPP の API が利用可能か確認
+1. **Watcher がイベントを受信していない**
+   - Agent ログで watch エラーを確認。
+   - `kubernetes.watchNamespaces` の設定を確認。
+   - `kubernetes.labelSelector` の設定を確認。
 
-2. **リコンシリエーションの問題**
-   - Agent のログでリコンシリエーションエラーがないか確認
-   - リコンシリエーション間隔を確認
+2. **Reconciler のエラー**
+   - Agent ログでリコンシリエーションエラーを確認。
+   - DataPlane / Router のエラーを確認。
 
 3. **VPP LB プラグインの問題**
-   - VPP の LB プラグインが有効になっているか確認
-   - VPP の設定を確認
+   - VPP LB プラグインが有効か確認。
+   - VPP の設定を確認: `vppctl show lb vip`
 
-### ヘルスチェックが動作しない
+### ヘルスチェックが失敗する
 
-**症状**: バックエンドのヘルスチェックが失敗する
+**症状**: バックエンドのヘルスチェックが失敗と報告される。
 
 **原因と解決方法**:
 
-1. **ネットワーク接続の問題**
-   - Agent からバックエンドへのネットワーク接続を確認
-   - ファイアウォールの設定を確認
+1. **ネットワーク接続性**
+   - Agent からバックエンドへの接続を確認。
+   - ファイアウォールルールを確認。
 
-2. **ヘルスチェック設定の問題**
-   - ヘルスチェックの設定が正しいか確認
-   - ポート、パス、期待されるステータスコードを確認
+2. **ヘルスチェック設定**
+   - VirtualIP CR のヘルスチェック設定を確認（port、path、expectedCodes）。
+   - VirtualIP のステータスを確認: `kubectl get vip <name> -o yaml`
 
 3. **タイムアウト設定**
-   - タイムアウトが短すぎないか確認
-   - ネットワーク遅延を考慮してタイムアウトを調整
+   - タイムアウトが短すぎないか確認。
+   - VirtualIP spec の `healthCheck.timeoutSeconds` を調整。
 
-### FRR BGP 経路広報が動作しない
+### FRR BGP 経路広報が機能しない
 
-**症状**: VIP の BGP 経路が広報されない
+**症状**: VIP 経路が BGP で広報されない。
 
 **原因と解決方法**:
 
-1. **FRR の設定**
-   - FRR が起動しているか確認: `systemctl status frr`
-   - FRR の BGP 設定を確認
-   - `vtysh` コマンドが利用可能か確認
+1. **FRR が動作していない**
+   - FRR が動作中か確認: `systemctl status frr`
+   - Agent 設定で `routing.type: frr` になっているか確認。
 
-2. **Agent の設定**
-   - FRR 連携が有効になっているか確認
-   - `frr.vtysh` が正しいか確認
+2. **vtysh が見つからない**
+   - Agent 設定の `routing.frr.vtyshPath` を確認。
+   - デフォルト: `/usr/bin/vtysh`
 
-3. **BGP ピアの設定**
-   - BGP ピアが正しく設定されているか確認
-   - BGP セッションが確立されているか確認
+3. **BGP ピア設定**
+   - BGP ピアの設定が正しいか確認。
+   - 確認: `vtysh -c "show bgp summary"`
 
 ## メトリクスの問題
 
-### Prometheus メトリクスが取得できない
+### Prometheus メトリクスを取得できない
 
-**症状**: `/metrics` エンドポイントにアクセスできない
+**症状**: `/metrics` エンドポイントにアクセスできない。
 
 **原因と解決方法**:
 
-1. **メトリクスが有効になっていない**
-   - Agent の設定で `metrics.enabled` が `true` になっているか確認
+1. **メトリクスが無効**
+   - Agent 設定で `metrics.enabled: true` になっているか確認。
 
 2. **ポートの問題**
-   - メトリクスサーバーのポートが正しいか確認
-   - ファイアウォールの設定を確認
+   - メトリクスのポートを確認（デフォルト: `:9090`）。
+   - ファイアウォールルールを確認。
 
-3. **メトリクスサーバーの起動**
-   - Agent のログでメトリクスサーバーの起動エラーがないか確認
+3. **メトリクスサーバーが起動していない**
+   - Agent ログでメトリクスサーバーのエラーを確認。
 
-## ログの確認方法
+## ログの確認
 
-### Controller のログ
+### Operator ログ
 
 ```bash
-# 標準出力にログが出力される場合
-./bin/arcalb-controller --config deploy/config/controller.yaml
+# Operator ログのストリーミング
+kubectl logs -f -l app=arcalb-operator
 
-# ログファイルに出力される場合
-tail -f /var/log/arcalb-controller.log
+# 詳細レベルを上げる
+kubectl logs -f -l app=arcalb-operator -- --zap-log-level=debug
 ```
 
-### Agent のログ
+### Agent ログ (v2)
 
 ```bash
-# 標準出力にログが出力される場合
-export ARCA_AGENT_CONFIG=deploy/config/agent.yaml
-sudo ./bin/arcalb-agent
+# Agent ログ（Kubernetes）
+kubectl logs -f -l app=arcalb-agent
 
-# ログファイルに出力される場合
-tail -f /var/log/arcalb-agent.log
+# スタンドアロン Agent
+sudo ./bin/arcalb-agent --v2 --config deploy/config/agent.v2.example.yaml
 ```
 
-### VPP のログ
+### VPP ログ
 
 ```bash
-# systemd を使用している場合
+# systemd の場合
 journalctl -u vpp -f
 
-# ログファイルを直接確認
+# 直接ログファイル
 tail -f /var/log/vpp/vpp.log
+
+# VPP の状態確認
+vppctl show lb vip verbose
+vppctl show lb as
 ```
 
-### FRR のログ
+### FRR ログ
 
 ```bash
-# systemd を使用している場合
+# systemd の場合
 journalctl -u frr -f
 
-# ログファイルを直接確認
+# 直接ログファイル
 tail -f /var/log/frr/frr.log
 ```
 
-## よくある質問
+## kubectl でのデバッグ
 
-### Q: Agent が Controller に接続できない
+```bash
+# 全 VIP をステータス付きで表示
+kubectl get vip -o wide
+
+# 特定の VIP を詳しく確認
+kubectl get vip web-vip -o yaml
+
+# 変更の監視
+kubectl get vip -w
+
+# イベントの確認
+kubectl describe vip web-vip
+
+# Agent Pod の確認
+kubectl get pods -l app=arcalb-agent -o wide
+
+# Operator Pod の確認
+kubectl get pods -l app=arcalb-operator
+```
+
+## FAQ
+
+### Q: VirtualIP が「Not Ready」のままになる
 
 **A**: 以下を確認してください：
 
-1. Controller が起動しているか
-2. gRPC エンドポイントが正しいか
-3. ネットワーク接続が可能か
-4. ファイアウォールの設定
+1. Agent が正しいネームスペースを監視しているか。
+2. VPP 接続が健全か（Agent ログ）。
+3. バックエンドが健全か（VIP ステータスを確認）。
+4. Operator ログでリコンシリエーションエラーがないか。
 
-### Q: VIP が作成されてもトラフィックが流れない
+### Q: VIP 作成後にトラフィックが流れない
 
 **A**: 以下を確認してください：
 
-1. VPP に VIP が設定されているか: `vppctl show lb vip`
+1. VIP が VPP に設定されているか: `vppctl show lb vip`
 2. バックエンドが追加されているか: `vppctl show lb as`
-3. BGP 経路が広報されているか（FRR を使用している場合）
-4. バックエンドサーバーが正常に動作しているか
+3. BGP 経路が広報されているか（FRR 使用時）: `vtysh -c "show ip route"`
+4. バックエンドが健全で稼働中か。
+5. バックエンドサーバーが正しく設定されているか（[バックエンド設定](./backend-setup.ja.md) 参照）。
 
-### Q: ヘルスチェックが常に失敗する
+### Q: v1 から v2 へ移行するには？
 
-**A**: 以下を確認してください：
+**A**:
 
-1. バックエンドサーバーが起動しているか
-2. ヘルスチェックの設定が正しいか（ポート、パスなど）
-3. ネットワーク接続が可能か
-4. タイムアウト設定が適切か
+1. CRD をインストール: `kubectl apply -f config/crd/bases/`
+2. Operator をデプロイ: `kubectl apply -f config/manager/manager.yaml`
+3. v1 の VIP 定義を VirtualIP CRD に変換して apply。
+4. `--v2` フラグ付きで Agent DaemonSet をデプロイ。
+5. v1 Controller を廃止。
 
-## サポート
+---
 
-問題が解決しない場合は、以下を確認してください：
+## レガシートラブルシューティング (v1)
 
-1. [GitHub Issues](https://github.com/akam1o/arca-lb/issues) で既存の問題を検索
-2. ログファイルを確認してエラーメッセージを特定
-3. 新しい Issue を作成して問題を報告
-4. セキュリティに関する非公開の報告は [GitHub Security Advisory](https://github.com/akam1o/arca-lb/security/advisories/new) を利用してください。
+<details>
+<summary>v1 Controller / Agent の問題</summary>
 
-## 次のステップ
+### Controller が起動しない
 
-- [インストール手順](./installation.ja.md) を参照して、再インストールを試みます
-- [設定ガイド](./configuration.ja.md) を参照して、設定を見直します
+1. データストア（etcd/MySQL）が動作中か確認。
+2. ポート 8080 / 50051 が空いているか確認。
+3. YAML の構文を確認。
+
+### Agent が Controller に接続できない
+
+1. Controller の gRPC エンドポイントが正しいか確認。
+2. ネットワーク接続を確認。
+3. ファイアウォールルールを確認。
+
+### REST API が応答しない
+
+1. Controller が動作中か確認。
+2. ポート 8080 / ファイアウォールルールを確認。
+3. データストアへの接続を確認。
+
+</details>

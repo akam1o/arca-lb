@@ -36,9 +36,10 @@
 何が起こったか説明してください。
 
 ## 環境
-- OS: 
-- Go バージョン: 
-- arca-lb バージョン: 
+- OS:
+- Go バージョン:
+- Kubernetes バージョン:
+- arca-lb バージョン:
 ```
 
 ### 2. ブランチの作成
@@ -48,31 +49,32 @@
 git checkout main
 git pull origin main
 
-# 機能ブランチを作成
+# フィーチャーブランチの作成
 git checkout -b feature/my-feature
 # または
 git checkout -b fix/my-bugfix
 ```
 
-### 3. コードの変更
+### 3. 変更の実装
 
-- コードスタイルに従う（[開発環境セットアップ](./development.ja.md) を参照）
-- テストを追加・更新
-- ドキュメントを更新
+- コードスタイルに従ってください（[開発環境](./development.ja.md) 参照）。
+- テストを追加または更新してください。
+- ドキュメントを更新してください。
+- CRD 型を変更した場合は `make manifests generate` を実行してください。
 
 ### 4. コミット
 
 ```bash
-# 変更をステージング
+# 変更をステージ
 git add .
 
-# コミット（明確なメッセージを付ける）
-git commit -m "feat: add new feature"
+# 明確なメッセージでコミット
+git commit -m "feat: 新機能の追加"
 # または
-git commit -m "fix: fix bug in VIP creation"
+git commit -m "fix: VIP 作成時のバグを修正"
 ```
 
-**コミットメッセージの形式**:
+**コミットメッセージのプレフィックス**:
 
 - `feat:` - 新機能
 - `fix:` - バグ修正
@@ -81,22 +83,22 @@ git commit -m "fix: fix bug in VIP creation"
 - `refactor:` - リファクタリング
 - `chore:` - その他
 
-### 5. プッシュと Pull Request
+### 5. プッシュとプルリクエスト
 
 ```bash
 # ブランチをプッシュ
 git push origin feature/my-feature
 ```
 
-GitHub で Pull Request を作成してください。
+その後、GitHub でプルリクエストを作成してください。
 
 ## Developer Certificate of Origin (DCO)
 
-個人・企業を問わずコントリビューションをしやすくするため、軽量なサインオフ（sign-off）プロセスを採用しています。
+個人および企業からの貢献を容易にするため、軽量なサインオフプロセスを使用しています。
 
-コントリビューションを行うことで、あなたの作業が本プロジェクトのライセンスの下で提出され、かつ提出する権利を有していることに同意したものとみなされます。
+貢献することで、その作品がプロジェクトのライセンスの下で提出され、提出する権利があることに同意するものとします。
 
-コミット時にサインオフしてください：
+コミットにサインオフしてください：
 
 ```bash
 git commit -s
@@ -104,17 +106,18 @@ git commit -s
 
 ## コードレビュー
 
-### Pull Request のチェックリスト
+### プルリクエストのチェックリスト
 
 - [ ] コードが既存のスタイルに従っている
-- [ ] テストが追加・更新されている
+- [ ] テストが追加または更新されている
 - [ ] ドキュメントが更新されている
 - [ ] リンターエラーがない
-- [ ] すべてのテストがパスしている
+- [ ] 全テストがパスする
+- [ ] CRD マニフェストが再生成されている（型を変更した場合）: `make manifests generate`
 
-### レビューの観点
+### レビューの重点
 
-- コードの品質
+- コード品質
 - テストカバレッジ
 - パフォーマンスへの影響
 - セキュリティへの影響
@@ -122,7 +125,7 @@ git commit -s
 
 ## コーディング規約
 
-### Go コーディング規約
+### Go ガイドライン
 
 - [Effective Go](https://go.dev/doc/effective_go) に従う
 - `gofmt` でフォーマット
@@ -130,46 +133,54 @@ git commit -s
 
 ### 命名規則
 
-- **パッケージ名**: 小文字、単数形
-- **型名**: 大文字始まり、PascalCase
-- **関数名**: 大文字始まり（公開）、小文字始まり（非公開）
-- **定数**: 大文字、UPPER_SNAKE_CASE
+- **パッケージ**: 小文字、単数形
+- **型**: PascalCase
+- **関数**: PascalCase（公開）、camelCase（非公開）
+- **定数**: PascalCase または UPPER_SNAKE_CASE
 
 ### エラーハンドリング
 
 ```go
-// エラーは明示的に処理
+// エラーを明示的にハンドリング
 if err != nil {
     return fmt.Errorf("context: %w", err)
 }
 ```
 
-### ログ
+### ロギング
 
 ```go
-// 構造化ログを使用
-logger.WithFields(logrus.Fields{
-    "vip_id": vipID,
-    "error": err,
-}).Error("Failed to create VIP")
+// 構造化ロギングを使用（log/slog）
+slog.Info("VIP reconciled",
+    "vip", vipName,
+    "backends", len(backends),
+)
+
+slog.Error("failed to apply VIP",
+    "vip", vipName,
+    "error", err,
+)
 ```
 
 ## テスト
 
 ### テストの追加
 
-- 新機能には必ずテストを追加
-- バグ修正には回帰テストを追加
-- テストカバレッジを維持
+- 新機能にはテストを追加してください。
+- バグ修正にはリグレッションテストを追加してください。
+- カバレッジを維持してください。
 
 ### テストの実行
 
 ```bash
-# すべてのテスト
+# 全テスト
 make test
 
 # 特定のパッケージ
-go test ./internal/controller/api/...
+go test ./internal/operator/...
+
+# v2 Agent テスト
+go test ./internal/agent/dataplane/ ./internal/agent/routing/ ./internal/agent/store/
 
 # カバレッジ
 go test -coverprofile=coverage.out ./...
@@ -179,30 +190,23 @@ go test -coverprofile=coverage.out ./...
 
 ### ドキュメントの更新
 
-- 新機能にはドキュメントを追加
-- API の変更には API ドキュメントを更新
-- 設定の変更には設定ガイドを更新
+- 新機能にはドキュメントを追加してください。
+- CRD スキーマの変更には API ドキュメントを更新してください。
+- 設定の変更には設定ドキュメントを更新してください。
+- 英語版と日本語版の両方を同期してください。
 
 ### ドキュメントの場所
 
-- `docs/` - ユーザードキュメント
-- `README.md` - プロジェクト概要
+- `docs/` - ユーザードキュメント（英語 + 日本語のペア）
+- `README.md` / `README.ja.md` - プロジェクト概要
+- `SPEC.md` - 技術仕様
 
 ## ライセンス
 
-コントリビューションは Apache License 2.0 の下で提供されることに同意したものとみなされます。詳細は [LICENSE](../LICENSE) を参照してください。
+コントリビューションは Apache License 2.0 の下で提供されます。[LICENSE](../LICENSE) を参照してください。
 
 ## 行動規範
 
-- 建設的なフィードバックを提供
-- 他者を尊重
-- オープンで包括的なコミュニティを維持
-
-## 質問
-
-質問がある場合は、GitHub Issues で質問してください。
-
-## 次のステップ
-
-- [開発環境セットアップ](./development.ja.md) を参照して、開発を開始します
-- [アーキテクチャ詳細](./architecture.ja.md) を参照して、システムの設計を理解します
+- 建設的なフィードバックを提供してください。
+- 敬意を持って接してください。
+- オープンで包括的なコミュニティを維持してください。

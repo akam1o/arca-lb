@@ -4,225 +4,237 @@ This document describes the architecture and design principles of arca-lb.
 
 ## Overview
 
-arca-lb is a centralized load balancer management system. The Controller centrally manages VIPs and backends, and Agents control VPP on each node to perform load balancing.
+arca-lb is a Kubernetes-native load balancer management system. Users define VIPs as `VirtualIP` Custom Resources, an Operator handles validation and status, and Agents on each LB node watch the CRDs via K8s Informers to program VPP and FRR.
 
 ## System Architecture
 
 ```
 ┌─────────────────────────────────────────┐
-│             REST API Client             │
-│      (kubectl, curl, management UI)     │
-└────────────┬────────────────────────────┘
-             │ HTTP/REST
-             ▼
-┌─────────────────────────────────────────┐
-│               Controller                │
-│  ┌──────────────────────────────────┐  │
-│  │  REST API Server (Gin)            │  │
-│  │  - VIP/Backend CRUD               │  │
-│  │  - Config management              │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  gRPC Server                      │  │
-│  │  - Config delivery to Agents      │  │
-│  │  - Agent registration             │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  DataStore (etcd/MySQL)           │  │
-│  │  - VIP/Backend persistence        │  │
-│  │  - Revision management            │  │
-│  └──────────────────────────────────┘  │
-└────────────┬────────────────────────────┘
-             │ gRPC
-             ▼
-┌─────────────────────────────────────────┐
-│      Agent (per load balancer node)     │
-│  ┌──────────────────────────────────┐  │
-│  │  gRPC Client                      │  │
-│  │  - Receives config from Controller │ │
-│  │  - Sends heartbeats               │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  State Manager                   │  │
-│  │  - Stores current config state   │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  Reconciler                      │  │
-│  │  - Detects config drift          │  │
-│  │  - Syncs to components           │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  VPP Syncer                      │  │
-│  │  - Controls VPP LB plugin        │  │
-│  │  - Applies VIP/Backend config    │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  Health Check Manager            │  │
-│  │  - Backend health checks         │  │
-│  │  - State management              │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  FRR Manager                     │  │
-│  │  - Controls BGP announcements    │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  Metrics Server                  │  │
-│  │  - Exposes Prometheus metrics    │  │
-│  └──────────────────────────────────┘  │
+│           kubectl / GitOps              │
+│   (apply VirtualIP CRD manifests)       │
 └────────────┬────────────────────────────┘
              │
              ▼
 ┌─────────────────────────────────────────┐
-│      VPP (Vector Packet Processing)      │
-│  - L4 Load Balancer Plugin               │
-│  - High-speed packet processing          │
-└─────────────────────────────────────────┘
+│      Kubernetes API Server              │
+│  - VirtualIP CRD (arca.io/v1alpha1)     │
+│  - Admission Webhook validation         │
+└──────┬──────────────────────┬───────────┘
+       │                      │
+       ▼                      ▼
+┌──────────────────┐ ┌───────────────────────────┐
+│     Operator     │ │   Agent (per LB node)     │
+│ ┌──────────────┐ │ │ ┌───────────────────────┐ │
+│ │ VirtualIP    │ │ │ │ K8s Watcher           │ │
+│ │ Reconciler   │ │ │ │ (Informer + EventHandler)│
+│ │ - Validate   │ │ │ └───────────┬───────────┘ │
+│ │ - Status     │ │ │             │              │
+│ │ - Finalizer  │ │ │             ▼              │
+│ └──────────────┘ │ │ ┌───────────────────────┐ │
+│ ┌──────────────┐ │ │ │ Per-VIP Reconciler    │ │
+│ │ Admission    │ │ │ │ (goroutine per VIP)   │ │
+│ │ Webhook      │ │ │ └──┬─────────┬──────┬──┘ │
+│ └──────────────┘ │ │    │         │      │     │
+└──────────────────┘ │    ▼         ▼      ▼     │
+                     │ ┌──────┐ ┌──────┐ ┌─────┐ │
+                     │ │ Data │ │Router│ │ HC  │ │
+                     │ │Plane │ │(FRR) │ │Engine│ │
+                     │ └──┬───┘ └──────┘ └─────┘ │
+                     │    │                       │
+                     │ ┌──┴───────────────┐       │
+                     │ │ bbolt Local Store│       │
+                     │ └──────────────────┘       │
+                     │ ┌──────────────────┐       │
+                     │ │ OTel + Prometheus│       │
+                     │ └──────────────────┘       │
+                     └────────────┬───────────────┘
+                                  │
+                                  ▼
+                     ┌────────────────────────────┐
+                     │ VPP (Vector Packet Processing) │
+                     │ - L4 Load Balancer Plugin       │
+                     │ - Maglev Hashing                │
+                     └────────────────────────────┘
 ```
 
 ## Component Details
 
-### Controller
+### Operator
 
-The Controller is the central component and is responsible for:
+The Operator runs as a Deployment in the Kubernetes cluster:
 
-1. **REST API Server**: Provides VIP and backend CRUD
-2. **gRPC Server**: Delivers configs to Agents and manages Agent registration
-3. **DataStore**: Persists VIPs and backends (etcd or MySQL)
+1. **VirtualIPReconciler**: Watches VirtualIP CRDs, updates `.status` fields (observedGeneration, healthyBackends, conditions), manages Finalizers
+2. **Admission Webhook**: Validates VirtualIP resources at creation/update time (IP format, port range, protocol, DSCP, backend weights, health check config)
 
 ### Agent
 
-The Agent runs on each load balancer node and is responsible for:
+The Agent runs as a DaemonSet on each load balancer node:
 
-1. **gRPC Client**: Receives configs from the Controller
-2. **State Manager**: Stores current config state
-3. **Reconciler**: Detects config drift and syncs components
-4. **VPP Syncer**: Controls the VPP LB plugin
-5. **Health Check Manager**: Executes backend health checks
-6. **FRR Manager**: Controls BGP route announcements
-7. **Metrics Server**: Exposes Prometheus metrics
+1. **Watcher**: Uses K8s Informers to watch VirtualIP CRDs and emit Add/Update/Delete events
+2. **Per-VIP Reconciler**: Spawns one goroutine per VIP; on each event, computes the desired state diff and syncs DataPlane + Router
+3. **DataPlane (interface)**: Abstracts VPP control. Implementations: `VPPDataPlane` (production), `NoopDataPlane` (testing)
+4. **Router (interface)**: Abstracts FRR/BGP route management. Implementations: `FRRRouter` (production), `NoopRouter` (testing)
+5. **HealthCheck Engine**: Runs probes (HTTP/HTTPS, TCP, Ping) per VIP, fires callbacks on state transitions to trigger reconciliation
+6. **bbolt Store**: Local embedded key-value store for caching VIP state and health check results; provides resilience against K8s API unavailability
+7. **Metrics / Telemetry**: Prometheus endpoint + OpenTelemetry (OTLP) for traces and metrics
 
 ## Data Flows
 
 ### VIP creation flow
 
 ```
-1. REST API Client → Controller REST API
-   POST /api/v1/vips
+1. User → Kubernetes API
+   kubectl apply -f virtualip.yaml
 
-2. Controller → DataStore
-   CreateVIP()
+2. API Server → Admission Webhook (Operator)
+   Validate VirtualIP spec
 
-3. Controller → Agent (gRPC)
-   ConfigSync.GetConfig() or WatchConfig()
+3. API Server → etcd
+   Store VirtualIP resource
 
-4. Agent → State Manager
-   UpdateConfig()
+4. Informer (Agent) → Watcher
+   Receive Add event
 
-5. Agent → Reconciler
-   TriggerReconcile()
+5. Watcher → Per-VIP Reconciler
+   OnVIPUpdate(vip)
 
-6. Agent → VPP Syncer
-   SyncVIP()
+6. Reconciler → DataPlane (VPP)
+   EnsureVIP() + SyncBackends()
 
-7. Agent → FRR Manager (optional)
+7. Reconciler → Router (FRR)
    AnnounceRoute()
 
-8. Agent → Health Check Manager
-   StartHealthCheck()
+8. Watcher → HealthCheck Engine
+   UpdateVIP() → start probes
 ```
 
 ### Health check flow
 
 ```
-1. Health Check Manager → Prober
-   Probe()
+1. HealthCheck Engine → Prober
+   Probe() at configured interval
 
 2. Prober → Backend Server
    HTTP/TCP/Ping request
 
-3. Prober → Health Check Manager
-   ProbeResult
+3. Prober → HealthCheck Engine
+   V2ProbeResult (success/failure)
 
-4. Health Check Manager → State Tracker
-   UpdateState()
+4. HealthCheck Engine → State Tracker
+   Update rise/fall counters
 
-5. Health Check Manager → VPP Syncer (if needed)
-   UpdateBackendState()
+5. HealthCheck Engine → Reconciler (callback)
+   OnHealthChange(vipName)
+
+6. Reconciler → DataPlane (VPP)
+   SyncBackends() (add/remove unhealthy backends)
+
+7. Reconciler → Router (FRR)
+   WithdrawRoute() if no healthy backends
+```
+
+### VIP deletion flow
+
+```
+1. User → Kubernetes API
+   kubectl delete virtualip web-vip
+
+2. Informer (Agent) → Watcher
+   Receive Delete event
+
+3. Watcher → HealthCheck Engine
+   StopVIP()
+
+4. Watcher → Per-VIP Reconciler
+   OnVIPDelete(vip)
+
+5. Reconciler → DataPlane (VPP)
+   DeleteVIP()
+
+6. Reconciler → Router (FRR)
+   WithdrawRoute()
 ```
 
 ## Design Principles
 
-### 1. Centralized control
+### 1. Kubernetes-native
 
-- The Controller is the single source of truth.
-- Agents passively receive configs from the Controller.
+- VirtualIP CRD is the single source of truth.
+- Users manage VIPs declaratively with `kubectl` or GitOps.
+- No custom REST API or datastore required.
 
 ### 2. Declarative configuration
 
-- Users specify the desired state.
+- Users specify the desired state in VirtualIP resources.
 - Agents detect drift between current and desired states and reconcile.
 
 ### 3. Event-driven
 
-- Config changes are delivered in real time via gRPC streams.
-- Agents apply changes immediately.
+- K8s Informers deliver changes to Agents in real time.
+- Health check state changes trigger immediate reconciliation.
 
 ### 4. Resilience
 
-- Agents continue running even if the Controller connection drops.
+- Agents continue running even if the K8s API is unavailable, using the local bbolt store.
 - VPP configuration persists after Agent shutdown (graceful shutdown).
 
-### 5. Observability
+### 5. Pluggable interfaces
 
-- Prometheus metrics for monitoring.
-- Structured logs for debugging.
+- DataPlane and Router are Go interfaces, enabling test doubles and alternative backends.
+- Noop implementations simplify development and testing without VPP/FRR.
+
+### 6. Observability
+
+- OpenTelemetry for traces and metrics (OTLP export).
+- Prometheus metrics endpoint for monitoring.
+- Structured logs (`log/slog`) for debugging.
 
 ## Technology Stack
 
-### Controller
+### Operator
 
-- **Language**: Go 1.23
-- **Web framework**: Gin
-- **gRPC**: google.golang.org/grpc
-- **Datastore**: etcd (recommended) or MySQL
+- **Language**: Go 1.24+
+- **Framework**: controller-runtime (sigs.k8s.io/controller-runtime)
+- **Webhook**: Admission webhook for CRD validation
 
 ### Agent
 
-- **Language**: Go 1.23
+- **Language**: Go 1.24+
+- **K8s integration**: client-go Informers
 - **VPP integration**: go.fd.io/govpp v0.13.0
 - **FRR integration**: via `vtysh`
-- **Metrics**: Prometheus `client_golang`
+- **Local store**: go.etcd.io/bbolt
+- **Metrics**: Prometheus client_golang + OpenTelemetry
 
 ## Scalability
 
 ### Horizontal scaling
 
-- Controller: run multiple instances sharing the datastore
-- Agent: one per node (deploy as a DaemonSet)
+- Operator: single instance with leader election (or multiple replicas)
+- Agent: one per LB node (deployed as a DaemonSet)
 
 ### Performance
 
 - High-speed packet processing with VPP (user space)
-- Asynchronous, parallel health checks
+- Per-VIP reconciler goroutines enable parallel processing
+- Asynchronous, parallel health checks with worker pool
 - Efficient reconciliation (updates only the diffs)
 
 ## Security
 
 ### Current implementation
 
-- Authentication/authorization not implemented (must be added for production)
-- TLS is optional (supported for gRPC)
+- K8s RBAC restricts access to VirtualIP CRDs
+- Admission webhook validates all VirtualIP specs
+- Agent runs with least-privilege RBAC (read-only for VirtualIP resources)
 
 ### Recommendations
 
-- Encrypt Controller-Agent traffic with TLS
-- Implement authentication/authorization for the REST API
-- Restrict datastore access appropriately
+- Enable TLS for Agent ↔ K8s API communication
+- Use NetworkPolicy to restrict Agent traffic
+- Run VPP with appropriate security profiles
 
 ## Next Steps
 
 - See [Development Environment](./development.md) to get started
 - See the [Contribution Guide](./contributing.md) to contribute to the project
-
-
-

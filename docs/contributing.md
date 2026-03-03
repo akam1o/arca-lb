@@ -38,6 +38,7 @@ What actually happened?
 ## Environment
 - OS:
 - Go version:
+- Kubernetes version:
 - arca-lb version:
 ```
 
@@ -59,6 +60,7 @@ git checkout -b fix/my-bugfix
 - Follow the code style (see [Development Environment](./development.md)).
 - Add or update tests.
 - Update documentation.
+- If modifying CRD types, run `make manifests generate`.
 
 ### 4. Commit
 
@@ -111,6 +113,7 @@ git commit -s
 - [ ] Documentation is updated
 - [ ] No linter errors
 - [ ] All tests pass
+- [ ] CRD manifests regenerated (if types changed): `make manifests generate`
 
 ### Review focus
 
@@ -133,7 +136,7 @@ git commit -s
 - **Packages**: lowercase, singular
 - **Types**: PascalCase
 - **Functions**: PascalCase (exported), camelCase (unexported)
-- **Constants**: UPPER_SNAKE_CASE
+- **Constants**: PascalCase or UPPER_SNAKE_CASE
 
 ### Error handling
 
@@ -147,11 +150,16 @@ if err != nil {
 ### Logging
 
 ```go
-// Use structured logging
-logger.WithFields(logrus.Fields{
-    "vip_id": vipID,
-    "error": err,
-}).Error("Failed to create VIP")
+// Use structured logging (log/slog)
+slog.Info("VIP reconciled",
+    "vip", vipName,
+    "backends", len(backends),
+)
+
+slog.Error("failed to apply VIP",
+    "vip", vipName,
+    "error", err,
+)
 ```
 
 ## Testing
@@ -169,7 +177,10 @@ logger.WithFields(logrus.Fields{
 make test
 
 # Specific package
-go test ./internal/controller/api/...
+go test ./internal/operator/...
+
+# v2 agent tests
+go test ./internal/agent/dataplane/ ./internal/agent/routing/ ./internal/agent/store/
 
 # Coverage
 go test -coverprofile=coverage.out ./...
@@ -180,13 +191,15 @@ go test -coverprofile=coverage.out ./...
 ### Update docs
 
 - Add docs for new features.
-- Update API docs for API changes.
+- Update API docs for CRD schema changes.
 - Update configuration docs for config changes.
+- Keep both English and Japanese versions in sync.
 
 ### Doc locations
 
-- `docs/` - User documentation
-- `README.md` - Project overview
+- `docs/` - User documentation (English + Japanese pairs)
+- `README.md` / `README.ja.md` - Project overview
+- `SPEC.md` - Technical specification
 
 ## License
 
@@ -197,14 +210,3 @@ Contributions are provided under the Apache License 2.0. See [LICENSE](../LICENS
 - Provide constructive feedback.
 - Be respectful.
 - Maintain an open and inclusive community.
-
-## Questions
-
-If you have questions, ask in GitHub Issues.
-
-## Next Steps
-
-- See [Development Environment](./development.md) to get started
-- See [Architecture](./architecture.md) to understand the system design
-
-

@@ -6,17 +6,19 @@ This document explains how to set up the development environment for arca-lb.
 
 ### Required
 
-- **Go**: 1.23+
+- **Go**: 1.24+
 - **Git**: 2.0+
 - **Make**: 3.0+
-- **Docker**: 20.10+ (optional, for integration tests)
-- **Docker Compose**: 2.0+ (optional, for integration tests)
+- **Kubernetes**: 1.28+ (for integration testing)
+- **kubectl**: configured for dev cluster
 
 ### Optional
 
 - **golangci-lint**: Code quality checks
-- **protoc**: Protocol Buffers compiler (for gRPC code generation)
-- **etcd**: Datastore (for development)
+- **controller-gen**: CRD and DeepCopy code generation
+- **protoc**: Protocol Buffers compiler (for v1 gRPC code generation)
+- **Docker**: 20.10+ (for container images)
+- **kind**: Local K8s cluster for testing
 
 ## Setup Steps
 
@@ -35,6 +37,14 @@ make deps
 
 ### 3. Install developer tools
 
+#### controller-gen (required for CRD development)
+
+```bash
+make install-controller-gen
+# or
+go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+```
+
 #### golangci-lint
 
 ```bash
@@ -45,7 +55,7 @@ brew install golangci-lint
 curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
 ```
 
-#### protoc
+#### protoc (v1 only)
 
 ```bash
 # macOS
@@ -59,20 +69,15 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 ```
 
-### 4. Start local services
-
-#### Launch etcd (Docker Compose)
+### 4. Set up a dev Kubernetes cluster (optional)
 
 ```bash
-cd deploy/docker-compose
-docker compose -f docker-compose.dev.yml up -d etcd
-```
+# Using kind
+kind create cluster --name arca-lb-dev
 
-#### Prepare config files
-
-```bash
-cp deploy/config/controller.example.yaml deploy/config/controller.yaml
-cp deploy/config/agent.example.yaml deploy/config/agent.yaml
+# Install CRDs
+make manifests
+kubectl apply -f config/crd/bases/
 ```
 
 ## Development Workflow
@@ -96,7 +101,22 @@ make lint
 make test
 ```
 
-### 2. Update Protocol Buffers
+### 2. Update CRD types
+
+When modifying `api/v1alpha1/types.go`:
+
+```bash
+# Regenerate CRD manifests
+make manifests
+
+# Regenerate DeepCopy methods
+make generate
+
+# Re-apply CRDs to the dev cluster
+kubectl apply -f config/crd/bases/
+```
+
+### 3. Update Protocol Buffers (v1 only)
 
 ```bash
 # Edit proto files
@@ -106,10 +126,13 @@ make test
 make proto
 ```
 
-### 3. Build and test
+### 4. Build and test
 
 ```bash
-# Build
+# Build v2 only
+make build-v2
+
+# Build everything (v1 + v2)
 make build
 
 # Test
@@ -120,30 +143,41 @@ go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
-### 4. Run integration tests
+### 5. Run locally
 
 ```bash
-# Run integration tests (requires etcd)
-go test -tags=integration ./test/integration/...
+# Run the Operator (connects to current kubeconfig context)
+./bin/arcalb-operator --metrics-bind-address=:8080
+
+# Run the Agent (with noop data plane for testing)
+./bin/arcalb-agent-v2 --config deploy/config/agent.yaml
 ```
 
 ## Debugging
 
-### Debug the Controller
+### Debug the Operator
 
 ```bash
-# Start with debug log level
-./bin/arcalb-controller --config deploy/config/controller.yaml
-# Or set log.level: "debug" in the config file
+# Run with verbose logging
+./bin/arcalb-operator --metrics-bind-address=:8080
+# controller-runtime uses zap logger in dev mode by default
 ```
 
 ### Debug the Agent
 
 ```bash
-# Start with debug log level
-export ARCA_AGENT_CONFIG=deploy/config/agent.yaml
-sudo ./bin/arcalb-agent
-# Or set log.level: "debug" in the config file
+# Set log.level: "debug" in the agent config file
+./bin/arcalb-agent-v2 --config deploy/config/agent.yaml
+```
+
+Use the `noop` data plane and router for development without VPP/FRR:
+
+```yaml
+dataplane:
+  type: "noop"
+routing:
+  enabled: false
+  type: "noop"
 ```
 
 ### Debug VPP
@@ -159,6 +193,19 @@ show lb vip
 show lb as
 ```
 
+### Inspect VirtualIP resources
+
+```bash
+# List all VIPs
+kubectl get vip -o wide
+
+# View detailed status
+kubectl get vip web-vip -o yaml
+
+# Watch for changes
+kubectl get vip -w
+```
+
 ## Code Style
 
 ### Go guidelines
@@ -172,7 +219,7 @@ show lb as
 - **Packages**: lowercase, singular
 - **Types**: PascalCase
 - **Functions**: PascalCase (exported), camelCase (unexported)
-- **Constants**: UPPER_SNAKE_CASE
+- **Constants**: PascalCase for exported, camelCase for unexported
 
 ### Error handling
 
@@ -186,11 +233,11 @@ if err != nil {
 ### Logging
 
 ```go
-// Use structured logging
-logger.WithFields(logrus.Fields{
-    "vip_id": vipID,
-    "error": err,
-}).Error("Failed to create VIP")
+// Use log/slog for structured logging (v2)
+slog.Info("VIP reconciled",
+    "vip", vipName,
+    "backends", len(backends),
+)
 ```
 
 ## Testing
@@ -202,7 +249,7 @@ logger.WithFields(logrus.Fields{
 make test
 
 # Run a specific package
-go test ./internal/controller/api/...
+go test ./internal/agent/reconciler/...
 
 # Race detector
 go test -race ./...
@@ -213,9 +260,6 @@ go test -race ./...
 ```bash
 # Run integration tests
 go test -tags=integration ./test/integration/...
-
-# Do not skip slow tests
-go test -tags=integration -short=false ./test/integration/...
 ```
 
 ### Coverage
@@ -226,24 +270,33 @@ go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
+## Key Makefile Targets
+
+```bash
+make help          # Show all targets
+make build-v2      # Build v2 Operator + Agent
+make test          # Run tests with race detector
+make lint          # Run golangci-lint
+make manifests     # Generate CRD manifests
+make generate      # Generate DeepCopy methods
+make fmt           # Format code
+make vet           # Run go vet
+make clean         # Remove build artifacts
+```
+
 ## Release
 
 ### Version tags
 
 ```bash
-# Create a version tag
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin v1.0.0
+git tag -a v2.0.0 -m "Release v2.0.0"
+git push origin v2.0.0
 ```
 
 ### Build Docker images
 
 ```bash
-# Build Docker images
 make docker
-
-# Build with a specific tag
-docker build -f deploy/docker/Dockerfile.controller -t arcalb-controller:v1.0.0 .
 ```
 
 ## Troubleshooting
@@ -264,14 +317,12 @@ go clean -testcache
 go test ./...
 ```
 
-### Linter errors
+### CRD not updating
 
 ```bash
-# Run linters
-make lint
-
-# Auto-fix applicable issues
-golangci-lint run --fix
+# Regenerate and reapply
+make manifests
+kubectl apply -f config/crd/bases/
 ```
 
 ## Next Steps

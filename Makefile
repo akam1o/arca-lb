@@ -5,6 +5,8 @@ SHELL := /bin/bash
 BIN_DIR := bin
 CONTROLLER_BIN := $(BIN_DIR)/arcalb-controller
 AGENT_BIN := $(BIN_DIR)/arcalb-agent
+OPERATOR_BIN := $(BIN_DIR)/arcalb-operator
+AGENT_V2_BIN := $(BIN_DIR)/arcalb-agent-v2
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 GOMODCACHE_DIR := $(CURDIR)/.gomodcache
@@ -19,6 +21,11 @@ DOCKER_CONTROLLER_FILE ?= deploy/docker/Dockerfile.controller
 DOCKER_AGENT_FILE ?= deploy/docker/Dockerfile.agent
 DOCKER_CONTROLLER_IMAGE ?= arcalb-controller:latest
 DOCKER_AGENT_IMAGE ?= arcalb-agent:latest
+DOCKER_OPERATOR_IMAGE ?= arcalb-operator:latest
+DOCKER_AGENT_V2_IMAGE ?= arcalb-agent-v2:latest
+
+CONTROLLER_GEN ?= $(shell command -v controller-gen 2>/dev/null)
+CRD_OPTIONS ?= crd:generateEmbeddedObjectMeta=true
 
 define ensure_tool
 	@command -v $(1) >/dev/null 2>&1 || { echo "error: $(1) is required"; exit 1; }
@@ -33,10 +40,18 @@ goenv: ## Prepare local Go cache directories
 	@mkdir -p $(GOCACHE_DIR) $(GOMODCACHE_DIR) $(GOTMP_DIR)
 
 .PHONY: build
-build: goenv ## Build controller and agent binaries
+build: goenv ## Build all binaries (v1 + v2)
 	@mkdir -p $(BIN_DIR)
 	$(GO_ENV) go build -o $(CONTROLLER_BIN) ./cmd/arcalb-controller
 	$(GO_ENV) go build -o $(AGENT_BIN) ./cmd/arcalb-agent
+	$(GO_ENV) go build -o $(OPERATOR_BIN) ./cmd/operator
+	$(GO_ENV) go build -o $(AGENT_V2_BIN) ./cmd/agent
+
+.PHONY: build-v2
+build-v2: goenv ## Build v2 operator and agent binaries only
+	@mkdir -p $(BIN_DIR)
+	$(GO_ENV) go build -o $(OPERATOR_BIN) ./cmd/operator
+	$(GO_ENV) go build -o $(AGENT_V2_BIN) ./cmd/agent
 
 .PHONY: test
 test: goenv ## Run unit tests with race detector and coverage
@@ -87,3 +102,25 @@ vet: goenv ## Run go vet
 .PHONY: deps
 deps: goenv ## Download dependencies
 	$(GO_ENV) go mod download
+
+##@ v2 CRD / Code Generation
+
+.PHONY: manifests
+manifests: ## Generate CRD manifests via controller-gen
+	$(call ensure_tool,controller-gen)
+	$(CONTROLLER_GEN) $(CRD_OPTIONS) paths="./api/..." output:crd:artifacts:config=config/crd/bases
+
+.PHONY: generate
+generate: ## Generate deepcopy methods via controller-gen
+	$(call ensure_tool,controller-gen)
+	$(CONTROLLER_GEN) object:headerFile="" paths="./api/..."
+
+.PHONY: install-controller-gen
+install-controller-gen: goenv ## Install controller-gen tool
+	$(GO_ENV) go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+
+.PHONY: docker-v2
+docker-v2: ## Build v2 operator and agent Docker images
+	$(call ensure_tool,docker)
+	docker build -f deploy/docker/Dockerfile.operator -t $(DOCKER_OPERATOR_IMAGE) .
+	docker build -f deploy/docker/Dockerfile.agent-v2 -t $(DOCKER_AGENT_V2_IMAGE) .

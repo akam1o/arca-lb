@@ -4,51 +4,88 @@ This document explains how to install arca-lb.
 
 ## Prerequisites
 
-### Controller
+### Operator
 
-- **Go**: 1.23+ (for builds)
-- **MySQL**: 8.0+ (optional; not needed if you use etcd)
-- **etcd**: 3.5+ (optional; not needed if you use MySQL)
-- **Docker**: 20.10+ (optional; when running in containers)
+- **Kubernetes**: 1.28+ (cluster)
+- **kubectl**: configured for the target cluster
+- **controller-gen**: for CRD generation (development only)
 
 ### Agent
 
-- **Go**: 1.23+ (for builds)
+- **Kubernetes**: 1.28+ (cluster, for VirtualIP CRD watching)
 - **VPP**: 24.10 (recommended, runtime)
 - **FRRouting**: 8.0+ (runtime, required for BGP advertisements)
-- **Docker**: 20.10+ (optional; when running in containers)
+
+### Build tools
+
+- **Go**: 1.24+ (for building from source)
+- **Docker**: 20.10+ (optional, for container images)
 
 ## Installation Methods
 
-### Method 1: Build binaries
+### Method 1: Kubernetes (recommended)
 
-#### 1. Clone the repository
+#### 1. Build binaries (or use pre-built images)
 
 ```bash
 git clone https://github.com/akam1o/arca-lb.git
 cd arca-lb
+make build-v2
 ```
 
-#### 2. Install dependencies
+#### 2. Generate and install the CRD
 
 ```bash
-make deps
+make manifests
+kubectl apply -f config/crd/bases/
 ```
 
-#### 3. Build
+Verify the CRD is registered:
 
 ```bash
-make build
+kubectl get crd virtualips.arca.io
 ```
 
-After a successful build, the following binaries are created in `bin/`:
+#### 3. Deploy the Operator
 
-- `bin/arcalb-controller` - Controller binary
-- `bin/arcalb-agent` - Agent binary
+```bash
+kubectl apply -f config/rbac/
+kubectl apply -f config/manager/
+```
+
+Verify the Operator is running:
+
+```bash
+kubectl get pods -l app=arca-lb-operator
+```
+
+#### 4. Deploy the Agent (DaemonSet)
+
+```bash
+kubectl apply -f config/agent/
+```
+
+Verify the Agent is running on each LB node:
+
+```bash
+kubectl get pods -l app=arca-lb-agent
+```
+
+#### 5. Create a VirtualIP
+
+```bash
+kubectl apply -f config/samples/virtualip_sample.yaml
+```
+
+Verify:
+
+```bash
+kubectl get vip
+```
 
 ### Method 2: Build Docker images
 
-#### 1. Build Docker images
+#### 1. Build images
 
 ```bash
 make docker
@@ -57,56 +94,33 @@ make docker
 Or build individually:
 
 ```bash
-docker build -f deploy/docker/Dockerfile.controller -t arcalb-controller:latest .
+docker build -f deploy/docker/Dockerfile.controller -t arcalb-operator:latest .
 docker build -f deploy/docker/Dockerfile.agent -t arcalb-agent:latest .
 ```
 
-#### 2. Start with Docker Compose
+#### 2. Push to your registry and update manifests
+
+Edit `config/manager/` and `config/agent/` manifests to reference your image registry.
+
+### Method 3: Run Agent outside Kubernetes
+
+The Agent can connect to a K8s API server from outside the cluster using a kubeconfig file:
 
 ```bash
-cd deploy/docker-compose
-docker compose -f docker-compose.dev.yml up -d
+./bin/arcalb-agent-v2 --config /path/to/agent.yaml
 ```
 
-### Method 3: Deploy to Kubernetes
+With the agent config pointing to a kubeconfig:
 
-#### 1. Create a namespace
-
-```bash
-kubectl create namespace arca-lb
+```yaml
+kubernetes:
+  kubeconfig: "/path/to/kubeconfig"
+  namespace: "default"
 ```
 
-#### 2. Deploy the Controller
-
-```bash
-kubectl apply -f deploy/kubernetes/controller-deployment.yaml
-```
-
-#### 3. Deploy the Agent
-
-```bash
-kubectl apply -f deploy/kubernetes/agent-daemonset.yaml
-```
-
-#### 4. Deploy vpp-exporter (optional)
-
-```bash
-kubectl apply -f deploy/kubernetes/vpp-exporter-daemonset.yaml
-```
+**Note**: The Agent requires `sudo` if VPP socket access requires elevated privileges.
 
 ## Initial Configuration
-
-### Controller configuration
-
-1. Copy the example config
-
-```bash
-cp deploy/config/controller.example.yaml deploy/config/controller.yaml
-```
-
-2. Edit the config
-
-Update `deploy/config/controller.yaml` with your datastore (MySQL or etcd) connection details.
 
 ### Agent configuration
 
@@ -118,80 +132,58 @@ cp deploy/config/agent.example.yaml deploy/config/agent.yaml
 
 2. Edit the config
 
-Update `deploy/config/agent.yaml` with the Controller gRPC endpoint and VPP settings.
-
-## Start the Services
-
-### Start the Controller
-
-```bash
-./bin/arcalb-controller --config deploy/config/controller.yaml
-```
-
-Or with Docker:
-
-```bash
-docker run -d \
-  --name arcalb-controller \
-  -v $(pwd)/deploy/config/controller.yaml:/app/config/controller.yaml:ro \
-  -p 8080:8080 \
-  -p 50051:50051 \
-  arcalb-controller:latest
-```
-
-### Start the Agent
-
-```bash
-# Set the config path via environment variable
-export ARCA_AGENT_CONFIG=deploy/config/agent.yaml
-sudo ./bin/arcalb-agent
-```
-
-**Note**: The Agent may need `sudo` to access the VPP socket. It reads the config path from the `ARCA_AGENT_CONFIG` environment variable, not from a `--config` flag.
-
-Or with Docker (host network mode):
-
-```bash
-docker run -d \
-  --name arcalb-agent \
-  --privileged \
-  --network host \
-  -v /run/vpp/api.sock:/run/vpp/api.sock:ro \
-  -v /run/vpp/stats.sock:/run/vpp/stats.sock:ro \
-  -v $(pwd)/deploy/config/agent.yaml:/app/config/agent.yaml:ro \
-  arcalb-agent:latest
-```
+Update `deploy/config/agent.yaml` with your data plane (VPP socket path), routing (FRR settings), and Kubernetes connection settings. See the [Configuration Guide](./configuration.md) for full reference.
 
 ## Verification
 
-### Check the Controller
+### Check the Operator
 
 ```bash
-curl http://localhost:8080/healthz
-```
-
-A healthy response looks like:
-
-```json
-{
-  "status": "healthy",
-  "time": "2025-12-20T10:00:00Z"
-}
+kubectl logs -l app=arca-lb-operator --tail=20
 ```
 
 ### Check the Agent
 
-Inspect the Agent logs to confirm it started successfully:
+```bash
+kubectl logs -l app=arca-lb-agent --tail=20
+```
+
+If metrics are enabled:
 
 ```bash
-# Verify there are no errors in the logs
-# If metrics are enabled (metrics.enabled: true)
+# Port-forward to the agent metrics port
+kubectl port-forward ds/arca-lb-agent 9090:9090
 curl http://localhost:9090/metrics
 ```
 
-**Note**: Metrics are disabled by default (`metrics.enabled: false`). To enable them, set `metrics.enabled: true` in the config file.
+### Create and verify a VirtualIP
+
+```bash
+# Create a VIP
+kubectl apply -f - <<EOF
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: test-vip
+spec:
+  address: 203.0.113.100
+  port: 80
+  protocol: TCP
+  encapType: L3DSR
+  dscp: 10
+  backends:
+    - address: 10.0.1.1
+      weight: 100
+EOF
+
+# Check status
+kubectl get vip test-vip -o yaml
+
+# Clean up
+kubectl delete vip test-vip
+```
 
 ## Next Steps
 
 - See the [Configuration Guide](./configuration.md) for detailed settings
-- See the [REST API Reference](./api.md) for API usage
+- See the [API Reference](./api.md) for the VirtualIP CRD schema

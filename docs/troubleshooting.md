@@ -2,88 +2,105 @@
 
 This document covers common arca-lb issues and how to resolve them.
 
-## Controller Issues
+## Operator Issues (v2)
 
-### Controller does not start
+### Operator does not start
 
-**Symptoms**: Controller fails to start and shows an error.
-
-**Causes and fixes**:
-
-1. **Datastore connection error**
-   - Ensure etcd or MySQL is running.
-   - Verify connection settings.
-   - Check network connectivity.
-
-2. **Port already in use**
-   - Ensure no other process uses ports 8080 or 50051.
-   - Change ports in the config file.
-
-3. **Config syntax error**
-   - Validate YAML syntax.
-   - Ensure required parameters are set.
-
-### REST API not responding
-
-**Symptoms**: REST API requests time out.
+**Symptoms**: Operator Pod is in CrashLoopBackOff.
 
 **Causes and fixes**:
 
-1. **Controller not running**
-   - Confirm the Controller process is running.
-   - Check logs for errors.
+1. **CRD not installed**
+   - Install CRDs: `kubectl apply -f config/crd/bases/`
+   - Verify: `kubectl get crd virtualips.arca.io`
 
-2. **Firewall rules**
-   - Verify port 8080 is open.
-   - Review security group rules.
+2. **RBAC misconfiguration**
+   - Apply RBAC: `kubectl apply -f config/rbac/`
+   - Check ServiceAccount permissions.
 
-3. **Datastore issues**
-   - Verify datastore connectivity.
-   - Check `/readyz` for readiness.
+3. **Image not found**
+   - Verify image name and tag in the Deployment.
+   - Pull manually: `docker pull <image>`
 
-## Agent Issues
+### VirtualIP status not updating
+
+**Symptoms**: VirtualIP shows no status or stale status.
+
+**Causes and fixes**:
+
+1. **Operator not running**
+   - Check Pod status: `kubectl get pods -l app=arcalb-operator`
+   - Review logs: `kubectl logs -l app=arcalb-operator`
+
+2. **RBAC issue**
+   - Operator needs `update` on `virtualips/status`.
+   - Check `config/rbac/role.yaml`.
+
+3. **Finalizer stuck**
+   - Inspect metadata: `kubectl get vip <name> -o yaml`
+   - Remove finalizer if needed: `kubectl edit vip <name>`
+
+### Webhook validation failing
+
+**Symptoms**: `kubectl apply` returns admission error.
+
+**Causes and fixes**:
+
+1. **Invalid field values**
+   - Check error message for specific field.
+   - See [API Reference](./api.md) for valid values.
+
+2. **Webhook not registered**
+   - Verify the webhook config exists.
+   - Ensure cert-manager or webhook certificates are valid.
+
+## Agent Issues (v2)
 
 ### Agent does not start
 
-**Symptoms**: Agent fails to start and shows an error.
+**Symptoms**: Agent Pod is in CrashLoopBackOff or fails to start.
 
 **Causes and fixes**:
 
-1. **VPP connection error**
+1. **Config file not found**
+   - Verify ConfigMap mount at `/etc/arca-lb/agent.v2.yaml`.
+   - Check `--v2` flag is set in the container args.
+
+2. **Kubernetes API connection failure**
+   - Verify RBAC for the Agent ServiceAccount.
+   - Check kubeconfig/in-cluster auth.
+
+3. **VPP connection error**
    - Verify VPP is running: `systemctl status vpp`
    - Confirm VPP socket path: `/run/vpp/api.sock`
-   - Check VPP logs: `journalctl -u vpp`
+   - Check socket mount in the DaemonSet spec.
 
-2. **Controller connection error**
-   - Confirm the Controller gRPC endpoint is correct.
-   - Check network connectivity.
-   - Review firewall rules.
+4. **Permission issue**
+   - Agent needs access to the VPP socket.
+   - Ensure the Pod runs with appropriate privileges.
 
-3. **Permission issue**
-   - Check access to the VPP socket.
-   - Run with `sudo` or add the user to the correct group.
+### VIP not applied to VPP
 
-### Config not applied to VPP
-
-**Symptoms**: VIPs or backends are not reflected in VPP.
+**Symptoms**: VirtualIP is created in Kubernetes but not applied to VPP.
 
 **Causes and fixes**:
 
-1. **VPP connection problem**
-   - Check Agent logs for VPP errors.
-   - Verify VPP API availability.
+1. **Watcher not receiving events**
+   - Check Agent logs for watch errors.
+   - Verify `kubernetes.watchNamespaces` config.
+   - Verify `kubernetes.labelSelector` config.
 
-2. **Reconciliation issues**
+2. **Reconciler errors**
    - Check Agent logs for reconciliation errors.
-   - Confirm reconciliation interval.
+   - Look for DataPlane/Router errors.
 
 3. **VPP LB plugin issues**
    - Verify the VPP LB plugin is enabled.
-   - Inspect VPP configuration.
+   - Inspect VPP config: `vppctl show lb vip`
 
 ### Health checks failing
 
-**Symptoms**: Backend health checks fail.
+**Symptoms**: Backend health checks report failures.
 
 **Causes and fixes**:
 
@@ -92,30 +109,30 @@ This document covers common arca-lb issues and how to resolve them.
    - Check firewall rules.
 
 2. **Health check configuration**
-   - Confirm health check settings (port, path, expected codes).
+   - Confirm health check settings in the VirtualIP CR (port, path, expected codes).
+   - Review VirtualIP status: `kubectl get vip <name> -o yaml`
 
 3. **Timeout settings**
    - Ensure timeouts are not too short.
-   - Adjust for network latency.
+   - Adjust `healthCheck.timeoutSeconds` in the VirtualIP spec.
 
 ### FRR BGP announcements not working
 
-**Symptoms**: VIP routes are not announced.
+**Symptoms**: VIP routes are not announced via BGP.
 
 **Causes and fixes**:
 
-1. **FRR configuration**
+1. **FRR not running**
    - Confirm FRR is running: `systemctl status frr`
-   - Check FRR BGP config.
-   - Ensure `vtysh` is available.
+   - Ensure `routing.type: frr` in Agent config.
 
-2. **Agent configuration**
-   - Verify FRR integration is enabled.
-   - Ensure `frr.vtysh` path is correct.
+2. **vtysh not found**
+   - Verify `routing.frr.vtyshPath` in Agent config.
+   - Default: `/usr/bin/vtysh`
 
 3. **BGP peer configuration**
    - Verify BGP peers are configured correctly.
-   - Ensure BGP sessions are established.
+   - Check: `vtysh -c "show bgp summary"`
 
 ## Metrics Issues
 
@@ -126,10 +143,10 @@ This document covers common arca-lb issues and how to resolve them.
 **Causes and fixes**:
 
 1. **Metrics disabled**
-   - Ensure `metrics.enabled` is `true` in the Agent config.
+   - Ensure `metrics.enabled: true` in Agent config.
 
 2. **Port issues**
-   - Verify the metrics port.
+   - Verify the metrics port (default: `:9090`).
    - Check firewall rules.
 
 3. **Metrics server not running**
@@ -137,25 +154,24 @@ This document covers common arca-lb issues and how to resolve them.
 
 ## Viewing Logs
 
-### Controller logs
+### Operator logs
 
 ```bash
-# If logging to stdout
-./bin/arcalb-controller --config deploy/config/controller.yaml
+# Stream operator logs
+kubectl logs -f -l app=arcalb-operator
 
-# If logging to a file
-tail -f /var/log/arcalb-controller.log
+# With increased verbosity
+kubectl logs -f -l app=arcalb-operator -- --zap-log-level=debug
 ```
 
-### Agent logs
+### Agent logs (v2)
 
 ```bash
-# If logging to stdout
-export ARCA_AGENT_CONFIG=deploy/config/agent.yaml
-sudo ./bin/arcalb-agent
+# Stream agent logs (Kubernetes)
+kubectl logs -f -l app=arcalb-agent
 
-# If logging to a file
-tail -f /var/log/arcalb-agent.log
+# Standalone agent
+sudo ./bin/arcalb-agent --v2 --config deploy/config/agent.v2.example.yaml
 ```
 
 ### VPP logs
@@ -166,6 +182,10 @@ journalctl -u vpp -f
 
 # Direct log file
 tail -f /var/log/vpp/vpp.log
+
+# Check VPP state
+vppctl show lb vip verbose
+vppctl show lb as
 ```
 
 ### FRR logs
@@ -178,16 +198,38 @@ journalctl -u frr -f
 tail -f /var/log/frr/frr.log
 ```
 
+## Debugging with kubectl
+
+```bash
+# List all VIPs with status
+kubectl get vip -o wide
+
+# Inspect specific VIP
+kubectl get vip web-vip -o yaml
+
+# Watch for changes
+kubectl get vip -w
+
+# Describe for events
+kubectl describe vip web-vip
+
+# Check Agent pods
+kubectl get pods -l app=arcalb-agent -o wide
+
+# Check Operator pods
+kubectl get pods -l app=arcalb-operator
+```
+
 ## FAQ
 
-### Q: Agent cannot connect to the Controller
+### Q: VirtualIP stays in "Not Ready" state
 
 **A**: Check the following:
 
-1. Controller is running.
-2. gRPC endpoint is correct.
-3. Network connectivity is available.
-4. Firewall rules allow the connection.
+1. Agent is running and watching the correct namespace.
+2. VPP connection is healthy (Agent logs).
+3. Backends are healthy (check VIP status).
+4. Check Operator logs for reconciliation errors.
 
 ### Q: Traffic does not flow after creating a VIP
 
@@ -195,28 +237,43 @@ tail -f /var/log/frr/frr.log
 
 1. VIP is configured in VPP: `vppctl show lb vip`
 2. Backends are added: `vppctl show lb as`
-3. BGP routes are announced (if using FRR)
-4. Backends are healthy and running
+3. BGP routes are announced (if using FRR): `vtysh -c "show ip route"`
+4. Backends are healthy and running.
+5. Backend server is configured correctly (see [Backend Setup](./backend-setup.md)).
 
-### Q: Health checks always fail
+### Q: How do I migrate from v1 to v2?
 
-**A**: Check the following:
+**A**:
 
-1. Backends are running.
-2. Health check settings are correct (port, path, etc.).
-3. Network connectivity is available.
-4. Timeout settings are appropriate.
+1. Install CRDs: `kubectl apply -f config/crd/bases/`
+2. Deploy the Operator: `kubectl apply -f config/manager/manager.yaml`
+3. Convert v1 VIP definitions to VirtualIP CRDs and apply.
+4. Deploy Agent DaemonSet with `--v2` flag.
+5. Decommission the v1 Controller.
 
-## Support
+---
 
-If the issue persists:
+## Legacy Troubleshooting (v1)
 
-1. Search existing issues on [GitHub Issues](https://github.com/akam1o/arca-lb/issues).
-2. Review logs to identify error messages.
-3. Open a new issue to report the problem.
-4. For security-related private reports, use [GitHub Security Advisories](https://github.com/akam1o/arca-lb/security/advisories/new).
+<details>
+<summary>v1 Controller / Agent issues</summary>
 
-## Next Steps
+### Controller does not start
 
-- Try reinstalling via the [Installation Guide](./installation.md)
-- Review settings in the [Configuration Guide](./configuration.md)
+1. Verify datastore (etcd/MySQL) is running.
+2. Check ports 8080 / 50051 are free.
+3. Validate config YAML syntax.
+
+### Agent does not connect to Controller
+
+1. Verify the Controller gRPC endpoint is correct.
+2. Check network connectivity.
+3. Review firewall rules.
+
+### REST API not responding
+
+1. Confirm Controller is running.
+2. Check port 8080 / firewall rules.
+3. Check datastore connectivity.
+
+</details>

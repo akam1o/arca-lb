@@ -1,223 +1,238 @@
 # arca-lb アーキテクチャ
 
-このドキュメントでは、arca-lb のアーキテクチャと設計思想について説明します。
+このドキュメントでは、arca-lb のアーキテクチャと設計思想を説明します。
 
 ## 概要
 
-arca-lb は、中央集約型のロードバランサー管理システムです。Controller が中央で VIP とバックエンドを管理し、Agent が各ノードで VPP を制御して実際のロードバランシングを実行します。
+arca-lb は Kubernetes ネイティブなロードバランサー管理システムです。ユーザーは VIP を `VirtualIP` Custom Resource として定義し、Operator がバリデーションとステータス管理を行い、各 LB ノード上の Agent が K8s Informer 経由で CRD を監視して VPP と FRR を制御します。
 
 ## システムアーキテクチャ
 
 ```
 ┌─────────────────────────────────────────┐
-│         REST API Client                  │
-│  (kubectl, curl, 管理ツール)              │
-└────────────┬────────────────────────────┘
-             │ HTTP/REST
-             ▼
-┌─────────────────────────────────────────┐
-│      Controller                         │
-│  ┌──────────────────────────────────┐  │
-│  │  REST API Server (Gin)            │  │
-│  │  - VIP/Backend CRUD               │  │
-│  │  - 設定管理                        │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  gRPC Server                      │  │
-│  │  - Agent への設定配信              │  │
-│  │  - Agent 登録管理                 │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  DataStore (etcd/MySQL)           │  │
-│  │  - VIP/Backend 永続化              │  │
-│  │  - リビジョン管理                  │  │
-│  └──────────────────────────────────┘  │
-└────────────┬────────────────────────────┘
-             │ gRPC
-             ▼
-┌─────────────────────────────────────────┐
-│      Agent (各ロードバランサーノード)     │
-│  ┌──────────────────────────────────┐  │
-│  │  gRPC Client                      │  │
-│  │  - Controller からの設定受信      │  │
-│  │  - ハートビート送信                │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  State Manager                   │  │
-│  │  - 現在の設定状態保持              │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  Reconciler                      │  │
-│  │  - 設定差分検出                   │  │
-│  │  - 各コンポーネントへの同期        │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  VPP Syncer                      │  │
-│  │  - VPP LB プラグイン制御          │  │
-│  │  - VIP/Backend 設定               │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  Health Check Manager            │  │
-│  │  - バックエンドヘルスチェック      │  │
-│  │  - 状態管理                       │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  FRR Manager                     │  │
-│  │  - BGP 経路広報制御               │  │
-│  └──────────────────────────────────┘  │
-│  ┌──────────────────────────────────┐  │
-│  │  Metrics Server                  │  │
-│  │  - Prometheus メトリクス公開       │  │
-│  └──────────────────────────────────┘  │
+│           kubectl / GitOps              │
+│   (VirtualIP CRD マニフェスト適用)       │
 └────────────┬────────────────────────────┘
              │
              ▼
 ┌─────────────────────────────────────────┐
-│      VPP (Vector Packet Processing)      │
-│  - L4 Load Balancer Plugin               │
-│  - 高速パケット処理                       │
-└─────────────────────────────────────────┘
+│      Kubernetes API Server              │
+│  - VirtualIP CRD (arca.io/v1alpha1)     │
+│  - Admission Webhook バリデーション      │
+└──────┬──────────────────────┬───────────┘
+       │                      │
+       ▼                      ▼
+┌──────────────────┐ ┌───────────────────────────┐
+│     Operator     │ │   Agent (各 LB ノード)    │
+│ ┌──────────────┐ │ │ ┌───────────────────────┐ │
+│ │ VirtualIP    │ │ │ │ K8s Watcher           │ │
+│ │ Reconciler   │ │ │ │ (Informer + EventHandler)│
+│ │ - Validate   │ │ │ └───────────┬───────────┘ │
+│ │ - Status     │ │ │             │              │
+│ │ - Finalizer  │ │ │             ▼              │
+│ └──────────────┘ │ │ ┌───────────────────────┐ │
+│ ┌──────────────┐ │ │ │ VIP 別 Reconciler     │ │
+│ │ Admission    │ │ │ │ (VIP ごとの goroutine)│ │
+│ │ Webhook      │ │ │ └──┬─────────┬──────┬──┘ │
+│ └──────────────┘ │ │    │         │      │     │
+└──────────────────┘ │    ▼         ▼      ▼     │
+                     │ ┌──────┐ ┌──────┐ ┌─────┐ │
+                     │ │ Data │ │Router│ │ HC  │ │
+                     │ │Plane │ │(FRR) │ │Engine│ │
+                     │ └──┬───┘ └──────┘ └─────┘ │
+                     │    │                       │
+                     │ ┌──┴───────────────┐       │
+                     │ │ bbolt ローカルストア│      │
+                     │ └──────────────────┘       │
+                     │ ┌──────────────────┐       │
+                     │ │ OTel + Prometheus│       │
+                     │ └──────────────────┘       │
+                     └────────────┬───────────────┘
+                                  │
+                                  ▼
+                     ┌────────────────────────────┐
+                     │ VPP (Vector Packet Processing) │
+                     │ - L4 Load Balancer Plugin       │
+                     │ - Maglev Hashing                │
+                     └────────────────────────────┘
 ```
 
 ## コンポーネント詳細
 
-### Controller
+### Operator
 
-Controller は中央管理コンポーネントで、以下の責務を持ちます：
+Operator は Kubernetes クラスター内に Deployment として配置されます：
 
-1. **REST API Server**: VIP とバックエンドの CRUD 操作を提供
-2. **gRPC Server**: Agent への設定配信と Agent 登録管理
-3. **DataStore**: VIP とバックエンドの永続化（etcd または MySQL）
+1. **VirtualIPReconciler**: VirtualIP CRD を監視し、`.status` フィールドを更新（observedGeneration, healthyBackends, conditions）、Finalizer を管理
+2. **Admission Webhook**: VirtualIP リソースの作成/更新時にバリデーションを実行（IP フォーマット、ポート範囲、プロトコル、DSCP、バックエンド Weight、ヘルスチェック設定）
 
 ### Agent
 
-Agent は各ロードバランサーノードで実行されるコンポーネントで、以下の責務を持ちます：
+Agent は各ロードバランサーノードに DaemonSet として配置されます：
 
-1. **gRPC Client**: Controller からの設定を受信
-2. **State Manager**: 現在の設定状態を保持
-3. **Reconciler**: 設定差分を検出し、各コンポーネントに同期
-4. **VPP Syncer**: VPP の LB プラグインを制御
-5. **Health Check Manager**: バックエンドのヘルスチェックを実行
-6. **FRR Manager**: BGP 経路広報を制御
-7. **Metrics Server**: Prometheus メトリクスを公開
+1. **Watcher**: K8s Informer で VirtualIP CRD を監視し、Add/Update/Delete イベントを発火
+2. **VIP 別 Reconciler**: VIP ごとに goroutine を生成し、イベント受信時に desired state との差分を計算して DataPlane + Router を同期
+3. **DataPlane (インターフェース)**: VPP 制御を抽象化。実装: `VPPDataPlane` (本番), `NoopDataPlane` (テスト)
+4. **Router (インターフェース)**: FRR/BGP 経路管理を抽象化。実装: `FRRRouter` (本番), `NoopRouter` (テスト)
+5. **HealthCheck Engine**: VIP ごとにプローブ (HTTP/HTTPS, TCP, Ping) を実行し、状態遷移時にコールバックで Reconcile をトリガー
+6. **bbolt Store**: ローカルの組み込み KVS で VIP 状態とヘルスチェック結果をキャッシュ。K8s API 接続断時のフォールバックを提供
+7. **Metrics / Telemetry**: Prometheus エンドポイント + OpenTelemetry (OTLP) によるトレースとメトリクス
 
 ## データフロー
 
 ### VIP 作成フロー
 
 ```
-1. REST API Client → Controller REST API
-   POST /api/v1/vips
+1. User → Kubernetes API
+   kubectl apply -f virtualip.yaml
 
-2. Controller → DataStore
-   CreateVIP()
+2. API Server → Admission Webhook (Operator)
+   VirtualIP spec のバリデーション
 
-3. Controller → Agent (gRPC)
-   ConfigSync.GetConfig() または WatchConfig()
+3. API Server → etcd
+   VirtualIP リソースの保存
 
-4. Agent → State Manager
-   UpdateConfig()
+4. Informer (Agent) → Watcher
+   Add イベントの受信
 
-5. Agent → Reconciler
-   TriggerReconcile()
+5. Watcher → VIP 別 Reconciler
+   OnVIPUpdate(vip)
 
-6. Agent → VPP Syncer
-   SyncVIP()
+6. Reconciler → DataPlane (VPP)
+   EnsureVIP() + SyncBackends()
 
-7. Agent → FRR Manager (オプション)
+7. Reconciler → Router (FRR)
    AnnounceRoute()
 
-8. Agent → Health Check Manager
-   StartHealthCheck()
+8. Watcher → HealthCheck Engine
+   UpdateVIP() → プローブ開始
 ```
 
 ### ヘルスチェックフロー
 
 ```
-1. Health Check Manager → Prober
-   Probe()
+1. HealthCheck Engine → Prober
+   設定された間隔で Probe() を実行
 
 2. Prober → Backend Server
    HTTP/TCP/Ping リクエスト
 
-3. Prober → Health Check Manager
-   ProbeResult
+3. Prober → HealthCheck Engine
+   V2ProbeResult (成功/失敗)
 
-4. Health Check Manager → State Tracker
-   UpdateState()
+4. HealthCheck Engine → State Tracker
+   rise/fall カウンター更新
 
-5. Health Check Manager → VPP Syncer (必要に応じて)
-   UpdateBackendState()
+5. HealthCheck Engine → Reconciler (コールバック)
+   OnHealthChange(vipName)
+
+6. Reconciler → DataPlane (VPP)
+   SyncBackends() (不健全なバックエンドを追加/除外)
+
+7. Reconciler → Router (FRR)
+   健全なバックエンドがない場合 WithdrawRoute()
+```
+
+### VIP 削除フロー
+
+```
+1. User → Kubernetes API
+   kubectl delete virtualip web-vip
+
+2. Informer (Agent) → Watcher
+   Delete イベントの受信
+
+3. Watcher → HealthCheck Engine
+   StopVIP()
+
+4. Watcher → VIP 別 Reconciler
+   OnVIPDelete(vip)
+
+5. Reconciler → DataPlane (VPP)
+   DeleteVIP()
+
+6. Reconciler → Router (FRR)
+   WithdrawRoute()
 ```
 
 ## 設計原則
 
-### 1. 中央集約管理
+### 1. Kubernetes ネイティブ
 
-- Controller が単一の真実の源（Single Source of Truth）として機能
-- Agent は Controller からの設定を受動的に受信
+- VirtualIP CRD が単一の真実の源（Single Source of Truth）として機能
+- ユーザーは `kubectl` や GitOps で宣言的に VIP を管理
+- 独自の REST API やデータストアは不要
 
 ### 2. 宣言的設定
 
-- ユーザーは「どのような状態にしたいか」を指定
+- ユーザーは VirtualIP リソースで「どのような状態にしたいか」を指定
 - Agent が「現在の状態」と「望ましい状態」の差分を検出して同期
 
 ### 3. イベント駆動
 
-- 設定変更は gRPC ストリームでリアルタイムに配信
-- Agent は設定変更を即座に反映
+- K8s Informer が設定変更をリアルタイムに Agent に配信
+- ヘルスチェックの状態変化が即座に Reconcile をトリガー
 
 ### 4. 障害耐性
 
-- Agent は Controller との接続が切れても動作を継続
+- Agent は K8s API が利用不可でも、ローカルの bbolt ストアを使用して動作を継続
 - VPP 設定は Agent 停止後も維持（Graceful Shutdown）
 
-### 5. 可観測性
+### 5. プラガブルインターフェース
 
-- Prometheus メトリクスによる監視
-- 構造化ログによるデバッグ支援
+- DataPlane と Router は Go interface として定義され、テストダブルや代替バックエンドの差し替えが可能
+- Noop 実装により、VPP/FRR なしでの開発・テストが容易
+
+### 6. 可観測性
+
+- OpenTelemetry によるトレースとメトリクス（OTLP エクスポート）
+- Prometheus メトリクスエンドポイントによる監視
+- 構造化ログ (`log/slog`) によるデバッグ支援
 
 ## 技術スタック
 
-### Controller
+### Operator
 
-- **言語**: Go 1.23
-- **Web フレームワーク**: Gin
-- **gRPC**: google.golang.org/grpc
-- **データストア**: etcd (推奨) または MySQL
+- **言語**: Go 1.24+
+- **フレームワーク**: controller-runtime (sigs.k8s.io/controller-runtime)
+- **Webhook**: CRD バリデーション用 Admission Webhook
 
 ### Agent
 
-- **言語**: Go 1.23
+- **言語**: Go 1.24+
+- **K8s 連携**: client-go Informers
 - **VPP 連携**: go.fd.io/govpp v0.13.0
 - **FRR 連携**: vtysh コマンド経由
-- **メトリクス**: Prometheus client_golang
+- **ローカルストア**: go.etcd.io/bbolt
+- **メトリクス**: Prometheus client_golang + OpenTelemetry
 
 ## スケーラビリティ
 
 ### 水平スケーリング
 
-- Controller: 複数インスタンスで実行可能（データストアを共有）
-- Agent: 各ノードに 1 インスタンス（DaemonSet として配置）
+- Operator: Leader Election 付きの単一インスタンス（または複数レプリカ）
+- Agent: 各 LB ノードに 1 インスタンス（DaemonSet として配置）
 
 ### パフォーマンス
 
 - VPP による高速パケット処理（ユーザースペース）
-- 非同期ヘルスチェック（並列実行）
+- VIP 別の Reconciler goroutine による並列処理
+- Worker Pool パターンによる非同期ヘルスチェック（並列実行）
 - 効率的なリコンシリエーション（差分のみ更新）
 
 ## セキュリティ
 
 ### 現在の実装
 
-- 認証・認可は未実装（本番環境では実装が必要）
-- TLS はオプション（gRPC でサポート）
+- K8s RBAC による VirtualIP CRD へのアクセス制御
+- Admission Webhook による VirtualIP spec の完全バリデーション
+- Agent は最小権限の RBAC（VirtualIP リソースの読み取り専用）
 
 ### 推奨事項
 
-- Controller と Agent 間の通信は TLS で暗号化
-- REST API は認証・認可を実装
-- データストアへのアクセスは適切に制限
+- Agent ↔ K8s API 間の通信は TLS で暗号化
+- NetworkPolicy で Agent のトラフィックを制限
+- VPP は適切なセキュリティプロファイルで実行
 
 ## 次のステップ
 

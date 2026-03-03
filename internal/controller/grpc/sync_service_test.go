@@ -51,8 +51,8 @@ func setupTestServer(t *testing.T, mockDS *testutil.MockDataStore) (*bufconn.Lis
 
 	t.Cleanup(func() {
 		s.GracefulStop()
-		conn.Close()
-		lis.Close()
+		require.NoError(t, conn.Close())
+		require.NoError(t, lis.Close())
 	})
 
 	return lis, client
@@ -188,8 +188,7 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 			mockDS := testutil.NewMockDataStore()
 			tt.setupMock(mockDS)
 
-			lis, client := setupTestServer(t, mockDS)
-			defer lis.Close()
+			_, client := setupTestServer(t, mockDS)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -341,8 +340,7 @@ func TestConfigSyncService_WatchConfig(t *testing.T) {
 			mockDS := testutil.NewMockDataStore()
 			tt.setupMock(mockDS)
 
-			lis, client := setupTestServer(t, mockDS)
-			defer lis.Close()
+			_, client := setupTestServer(t, mockDS)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -422,8 +420,7 @@ func TestConfigSyncService_Heartbeat(t *testing.T) {
 			mockDS := testutil.NewMockDataStore()
 			tt.setupMock(mockDS)
 
-			lis, client := setupTestServer(t, mockDS)
-			defer lis.Close()
+			_, client := setupTestServer(t, mockDS)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -495,8 +492,7 @@ func TestConfigSyncService_RegisterAgent(t *testing.T) {
 			mockDS := testutil.NewMockDataStore()
 			tt.setupMock(mockDS)
 
-			lis, client := setupTestServer(t, mockDS)
-			defer lis.Close()
+			_, client := setupTestServer(t, mockDS)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

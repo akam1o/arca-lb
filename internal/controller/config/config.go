@@ -140,7 +140,8 @@ func (c *Config) ToDataStoreConfig() *datastore.Config {
 		Type: c.DataStore.Type,
 	}
 
-	if c.DataStore.Type == "etcd" {
+	switch c.DataStore.Type {
+	case "etcd":
 		cfg.EtcdEndpoints = c.DataStore.Etcd.Endpoints
 		cfg.EtcdKeyPrefix = c.DataStore.Etcd.KeyPrefix
 		cfg.EtcdTLS = c.DataStore.Etcd.TLS
@@ -149,7 +150,7 @@ func (c *Config) ToDataStoreConfig() *datastore.Config {
 		cfg.EtcdCAFile = c.DataStore.Etcd.CAFile
 		cfg.EtcdDialTimeout = c.DataStore.Etcd.DialTimeout
 		cfg.EtcdRequestTimeout = c.DataStore.Etcd.RequestTimeout
-	} else if c.DataStore.Type == "mysql" {
+	case "mysql":
 		cfg.MySQLHost = c.DataStore.MySQL.Host
 		cfg.MySQLPort = c.DataStore.MySQL.Port
 		cfg.MySQLUser = c.DataStore.MySQL.User

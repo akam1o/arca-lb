@@ -7,7 +7,7 @@ import (
 
 func TestNoopRouter(t *testing.T) {
 	r := NewNoop()
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	ctx := context.Background()
 
@@ -35,7 +35,7 @@ func TestNoopRouter(t *testing.T) {
 
 func TestNoopWithdrawNonexistent(t *testing.T) {
 	r := NewNoop()
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Should not error
 	if err := r.WithdrawVIP(context.Background(), "10.0.0.1"); err != nil {

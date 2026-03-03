@@ -92,7 +92,7 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 			Timestamp: startTime,
 		}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Set deadline for the entire operation
 	if err := conn.SetDeadline(startTime.Add(p.timeout)); err != nil {

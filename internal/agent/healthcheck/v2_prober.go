@@ -128,7 +128,9 @@ func (p *httpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	if err != nil {
 		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
 
 	success := p.expectedCodes[resp.StatusCode]
 	return V2ProbeResult{
@@ -172,7 +174,7 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	if err != nil {
 		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if p.send != "" {
 		if _, err := conn.Write([]byte(p.send)); err != nil {
@@ -188,8 +190,8 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 		}
 		if !strings.Contains(string(buf[:n]), p.expectedResponse) {
 			return V2ProbeResult{
-				Error:   fmt.Errorf("response did not contain %q", p.expectedResponse),
-				Latency: time.Since(start),
+				Error:     fmt.Errorf("response did not contain %q", p.expectedResponse),
+				Latency:   time.Since(start),
 				Timestamp: start,
 			}
 		}

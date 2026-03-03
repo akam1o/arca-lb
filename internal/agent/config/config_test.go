@@ -107,18 +107,11 @@ func TestApplyDefaults(t *testing.T) {
 
 func TestEnvOverrides(t *testing.T) {
 	// Set environment variables
-	os.Setenv("ARCA_AGENT_ID", "env-agent")
-	os.Setenv("ARCA_CONTROLLER_ADDRESS", "env-controller:9999")
-	os.Setenv("ARCA_VPP_SOCKET", "/env/vpp.sock")
-	os.Setenv("ARCA_LOG_LEVEL", "error")
-	os.Setenv("ARCA_LOG_FORMAT", "text")
-	defer func() {
-		os.Unsetenv("ARCA_AGENT_ID")
-		os.Unsetenv("ARCA_CONTROLLER_ADDRESS")
-		os.Unsetenv("ARCA_VPP_SOCKET")
-		os.Unsetenv("ARCA_LOG_LEVEL")
-		os.Unsetenv("ARCA_LOG_FORMAT")
-	}()
+	t.Setenv("ARCA_AGENT_ID", "env-agent")
+	t.Setenv("ARCA_CONTROLLER_ADDRESS", "env-controller:9999")
+	t.Setenv("ARCA_VPP_SOCKET", "/env/vpp.sock")
+	t.Setenv("ARCA_LOG_LEVEL", "error")
+	t.Setenv("ARCA_LOG_FORMAT", "text")
 
 	cfg := &Config{
 		Agent: AgentConfig{

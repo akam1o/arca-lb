@@ -139,7 +139,9 @@ func (c *Client) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn != nil {
-		c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			c.logger.WithError(err).Warn("failed to close gRPC connection")
+		}
 		c.conn = nil
 		c.client = nil
 	}
@@ -219,7 +221,9 @@ func (c *Client) reconnect() error {
 	c.mu.Lock()
 	c.connected = false
 	if c.conn != nil {
-		c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			c.logger.WithError(err).Warn("failed to close gRPC connection")
+		}
 		c.conn = nil
 		c.client = nil
 	}

@@ -231,7 +231,9 @@ func (m *Manager) StartHealthCheck(vipConfig *models.VIPConfig) error {
 	vipConfigCopy := deepCopyVIPConfigForHealthCheck(vipConfig)
 	if err := m.scheduler.StartVIP(m.ctx, vipConfigCopy, prober); err != nil {
 		// Clean up prober on failure
-		prober.Close()
+		if closeErr := prober.Close(); closeErr != nil {
+			m.logger.WithError(closeErr).Warn("Failed to close prober after scheduler start failure")
+		}
 		delete(m.vipProbers, vipID)
 		delete(m.vipConfigs, vipID)
 		return fmt.Errorf("failed to start scheduler: %w", err)

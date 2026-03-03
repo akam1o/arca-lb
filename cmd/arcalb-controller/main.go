@@ -47,7 +47,11 @@ func main() {
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to initialize datastore")
 	}
-	defer ds.Close()
+	defer func() {
+		if err := ds.Close(); err != nil {
+			logger.WithError(err).Error("Failed to close datastore")
+		}
+	}()
 
 	logger.WithField("type", cfg.DataStore.Type).Info("Datastore initialized")
 

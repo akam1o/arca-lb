@@ -28,7 +28,7 @@ func TestNoopApplyAndRemoveVIP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New noop: %v", err)
 	}
-	defer dp.Close()
+	defer func() { _ = dp.Close() }()
 
 	ctx := context.Background()
 	vip := newTestVIP("test-vip", "203.0.113.1", 80)
@@ -72,7 +72,7 @@ func TestNoopSetBackends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dp.Close()
+	defer func() { _ = dp.Close() }()
 
 	ctx := context.Background()
 	vip := newTestVIP("test-vip", "203.0.113.1", 80)
@@ -101,7 +101,7 @@ func TestNoopAddRemoveBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dp.Close()
+	defer func() { _ = dp.Close() }()
 
 	ctx := context.Background()
 	vip := newTestVIP("test-vip", "203.0.113.1", 80)
@@ -142,7 +142,7 @@ func TestNoopRemoveNonexistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dp.Close()
+	defer func() { _ = dp.Close() }()
 
 	ctx := context.Background()
 	vip := newTestVIP("test-vip", "203.0.113.1", 80)

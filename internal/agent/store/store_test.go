@@ -15,7 +15,11 @@ func tempStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("Open(%s): %v", path, err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 	return st
 }
 

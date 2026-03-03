@@ -18,6 +18,7 @@
 - **Automatic route announcements**: BGP advertisements through FRR integration
 - **Scalable**: One Agent per LB node, deployed as a DaemonSet
 - **Observable**: OpenTelemetry traces/metrics, Prometheus endpoint, structured logging
+- **OpenStack Octavia**: Provider driver for integration with OpenStack LBaaS API
 
 ## Architecture
 
@@ -105,7 +106,8 @@ arca-lb/
 │   │   └── healthcheck/    # Health check engine
 │   ├── pkg/otel/           # OpenTelemetry setup
 │   └── common/             # Shared models (v1)
-├── deploy/                 # Legacy deployment artifacts
+├── octavia-driver/         # OpenStack Octavia provider driver (Python)
+├── deploy/                 # Deployment artifacts
 ├── docs/                   # Documentation
 └── test/                   # Tests
 ```
@@ -181,6 +183,7 @@ For detailed documentation, see the `docs/` directory:
 - [Installation Guide](docs/installation.md) - Installation steps and setup
 - [Configuration Guide](docs/configuration.md) - How to configure Operator and Agent
 - [API Reference](docs/api.md) - CRD API reference and REST API (v1)
+- [OpenStack Octavia Integration](docs/octavia.md) - Octavia provider driver setup
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and fixes
 - [Backend Server Setup Guide](docs/backend-setup.md) - How to configure backend servers
 

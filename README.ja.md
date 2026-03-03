@@ -18,6 +18,7 @@
 - **自動経路広報**: FRR 連携による BGP 経路広報の自動制御
 - **スケーラブル**: LB ノードごとに 1 Agent、DaemonSet として配置
 - **可観測性**: OpenTelemetry トレース/メトリクス、Prometheus エンドポイント、構造化ログ
+- **OpenStack Octavia 連携**: Octavia プロバイダードライバーによる OpenStack LBaaS API 統合
 
 ## アーキテクチャ
 
@@ -105,7 +106,8 @@ arca-lb/
 │   │   └── healthcheck/    # ヘルスチェックエンジン
 │   ├── pkg/otel/           # OpenTelemetry セットアップ
 │   └── common/             # 共通モデル (v1)
-├── deploy/                 # レガシーデプロイメント設定
+├── octavia-driver/         # OpenStack Octavia プロバイダードライバー (Python)
+├── deploy/                 # デプロイメント設定
 ├── docs/                   # ドキュメント
 └── test/                   # テスト
 ```
@@ -181,6 +183,7 @@ make clean         # ビルド成果物を削除
 - [インストールガイド](docs/installation.ja.md) - インストール手順とセットアップ
 - [設定ガイド](docs/configuration.ja.md) - Operator と Agent の設定方法
 - [API リファレンス](docs/api.ja.md) - CRD API リファレンスと REST API (v1)
+- [OpenStack Octavia 連携](docs/octavia.ja.md) - Octavia プロバイダードライバーのセットアップ
 - [トラブルシューティング](docs/troubleshooting.ja.md) - よくある問題と解決方法
 - [バックエンドサーバー設定ガイド](docs/backend-setup.ja.md) - バックエンドサーバーの設定方法
 

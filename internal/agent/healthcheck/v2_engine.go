@@ -177,7 +177,9 @@ func (e *Engine) Stop() {
 			vs.cancel()
 		}
 		if vs.prober != nil {
-			vs.prober.Close()
+			if err := vs.prober.Close(); err != nil {
+				e.logger.Warn("failed to close prober", "vip", vs.vipName, "error", err)
+			}
 		}
 	}
 	e.vips = make(map[string]*vipHealthState)
@@ -204,7 +206,9 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 			vs.cancel()
 		}
 		if vs.prober != nil {
-			vs.prober.Close()
+			if err := vs.prober.Close(); err != nil {
+				e.logger.Warn("failed to close prober", "vip", vip.Name, "error", err)
+			}
 		}
 	}
 
@@ -271,7 +275,9 @@ func (e *Engine) StopVIP(vipName string) {
 		vs.cancel()
 	}
 	if vs.prober != nil {
-		vs.prober.Close()
+		if err := vs.prober.Close(); err != nil {
+			e.logger.Warn("failed to close prober", "vip", vipName, "error", err)
+		}
 	}
 	delete(e.vips, vipName)
 

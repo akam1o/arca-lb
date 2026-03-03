@@ -82,7 +82,7 @@ func NewEtcdDataStore(ctx context.Context, cfg *datastore.Config) (datastore.Dat
 
 	// Initialize revision if not exists
 	if err := ds.initRevision(ctx); err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, fmt.Errorf("failed to initialize revision: %w", err)
 	}
 

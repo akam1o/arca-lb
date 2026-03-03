@@ -90,7 +90,9 @@ func startMockServer(t *testing.T, mock *mockConfigSyncServer) (func(context.Con
 
 	cleanup := func() {
 		s.GracefulStop()
-		lis.Close()
+		if err := lis.Close(); err != nil {
+			t.Logf("listener close error: %v", err)
+		}
 	}
 
 	dialer := func(ctx context.Context, _ string) (net.Conn, error) {

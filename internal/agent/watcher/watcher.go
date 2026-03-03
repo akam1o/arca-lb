@@ -98,8 +98,8 @@ func (w *Watcher) Start(ctx context.Context) error {
 	}
 
 	opts := cache.Options{
-		Scheme: w.scheme,
-		Mapper: mapper,
+		Scheme:     w.scheme,
+		Mapper:     mapper,
 		SyncPeriod: &w.config.ResyncInterval,
 	}
 	if w.config.Namespace != "" {
@@ -127,7 +127,11 @@ func (w *Watcher) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to add event handler: %w", err)
 	}
-	defer informer.RemoveEventHandler(reg)
+	defer func() {
+		if err := informer.RemoveEventHandler(reg); err != nil {
+			w.logger.Warn("failed to remove event handler", "error", err)
+		}
+	}()
 
 	w.logger.Info("starting VirtualIP watcher", "namespace", w.config.Namespace)
 

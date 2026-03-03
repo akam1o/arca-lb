@@ -70,7 +70,11 @@ func main() {
 		logger.Error("failed to setup OpenTelemetry", "error", err)
 		os.Exit(1)
 	}
-	defer otelShutdown.Shutdown(ctx)
+	defer func() {
+		if err := otelShutdown.Shutdown(ctx); err != nil {
+			logger.Error("failed to shutdown OpenTelemetry", "error", err)
+		}
+	}()
 
 	// Open local store
 	st, err := store.Open(cfg.Agent.StorePath)
@@ -78,7 +82,11 @@ func main() {
 		logger.Error("failed to open local store", "error", err)
 		os.Exit(1)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			logger.Error("failed to close local store", "error", err)
+		}
+	}()
 
 	// Create data plane
 	dp, err := dataplane.New(cfg.DataPlane.Type, cfg.DataPlane.VPP)
@@ -86,7 +94,11 @@ func main() {
 		logger.Error("failed to create data plane", "error", err)
 		os.Exit(1)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			logger.Error("failed to close data plane", "error", err)
+		}
+	}()
 
 	// Create router
 	var router routing.Router
@@ -103,7 +115,11 @@ func main() {
 	} else {
 		router = routing.NewNoop()
 	}
-	defer router.Close()
+	defer func() {
+		if err := router.Close(); err != nil {
+			logger.Error("failed to close router", "error", err)
+		}
+	}()
 
 	// Create health check engine
 	hcEngine := healthcheck.NewEngine(healthcheck.EngineConfig{
@@ -163,7 +179,9 @@ func main() {
 		mux.Handle(cfg.Metrics.Path, promhttp.Handler())
 		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
+			if _, err := w.Write([]byte("ok")); err != nil {
+				logger.Error("failed to write health response", "error", err)
+			}
 		})
 		metricsServer = &http.Server{
 			Addr:         cfg.Metrics.Address,
@@ -204,7 +222,9 @@ func main() {
 	defer shutdownCancel()
 
 	if metricsServer != nil {
-		metricsServer.Shutdown(shutdownCtx)
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("failed to shutdown metrics server", "error", err)
+		}
 	}
 	reconMgr.Stop()
 	hcEngine.Stop()

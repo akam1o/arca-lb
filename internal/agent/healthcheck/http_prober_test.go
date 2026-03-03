@@ -30,7 +30,7 @@ func startBufferedHTTPServer(t *testing.T, handler http.Handler) *bufconn.Listen
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = server.Shutdown(ctx)
-		lis.Close()
+		require.NoError(t, lis.Close())
 	})
 
 	return lis
@@ -103,7 +103,7 @@ func TestNewHTTPProber(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, prober)
 				if prober != nil {
-					defer prober.Close()
+					defer func() { require.NoError(t, prober.Close()) }()
 				}
 			}
 		})
@@ -211,7 +211,7 @@ func TestHTTPProber_Probe(t *testing.T) {
 					},
 				}
 			}
-			defer prober.Close()
+			defer func() { require.NoError(t, prober.Close()) }()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -266,7 +266,7 @@ func TestHTTPProber_Probe_WithCustomHeaders(t *testing.T) {
 			return listener.DialContext(ctx)
 		},
 	}
-	defer prober.Close()
+	defer func() { require.NoError(t, prober.Close()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -193,7 +193,11 @@ func (p *HTTPProber) Probe(ctx context.Context, target string) ProbeResult {
 			Timestamp:  startTime,
 		}
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			p.logger.WithError(err).Debug("failed to close response body")
+		}
+	}()
 
 	// Check if status code is expected
 	success := p.expectedCodes[resp.StatusCode]

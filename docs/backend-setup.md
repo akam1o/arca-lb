@@ -4,7 +4,7 @@ This document explains how to configure backend servers for arca-lb.
 
 ## Overview
 
-arca-lb supports multiple encapsulation methods. Backend configuration depends on the Agent `vpp.lb.encap_type` setting:
+arca-lb supports multiple encapsulation methods. Backend configuration depends on the VirtualIP CRD `spec.encapType` setting:
 
 - **GRE4/GRE6**: Uses GRE encapsulation (requires MTU adjustment)
 - **DSCP (L3DSR)**: Direct Server Return using DSCP marking (requires disabling ARP responses; network-side steering such as PBR is required)

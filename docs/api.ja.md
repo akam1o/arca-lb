@@ -1,400 +1,305 @@
-# arca-lb REST API リファレンス
+# arca-lb API リファレンス
 
-このドキュメントでは、arca-lb Controller の REST API について説明します。
+このドキュメントは arca-lb の API リファレンスです。
 
-## ベース URL
+## VirtualIP CRD API (v2)
 
-```
-http://localhost:8080
-```
+### リソース概要
 
-## 認証
+| フィールド | 値 |
+|----------|-----|
+| API Group | `arca.io` |
+| API Version | `v1alpha1` |
+| Kind | `VirtualIP` |
+| Short Name | `vip` |
+| Scope | Namespaced |
 
-現在のバージョンでは認証は実装されていません。本番環境では適切な認証・認可を実装してください。
-
-## エンドポイント
-
-### ヘルスチェック
-
-#### GET /healthz
-
-ヘルスチェックエンドポイント。サーバーが正常に動作しているかを確認します。
-
-**レスポンス**
-
-```json
-{
-  "status": "healthy",
-  "time": "2025-12-20T10:00:00Z"
-}
-```
-
-#### GET /readyz
-
-レディネスチェックエンドポイント。サーバーがリクエストを受け付ける準備ができているかを確認します。
-
-**レスポンス**
-
-- **200 OK**: サーバーが準備完了
-  ```json
-  {
-    "status": "ready",
-    "time": "2025-12-20T10:00:00Z"
-  }
-  ```
-
-- **503 Service Unavailable**: サーバーが準備未完了（データストア接続エラーなど）
-  ```json
-  {
-    "status": "not ready",
-    "error": "datastore unavailable"
-  }
-  ```
-
-### VIP 管理
-
-#### POST /api/v1/vips
-
-新しい VIP を作成します。
-
-**リクエストボディ**
-
-```json
-{
-  "vip": "192.168.1.100",
-  "port": 80,
-  "protocol": "TCP",
-  "lb_method": "maglev",
-  "encap_type": "L3DSR",
-  "dscp": 10,
-  "health_check": {
-    "type": "http",
-    "interval": "10s",
-    "timeout": "5s",
-    "rise_count": 3,
-    "fall_count": 3,
-    "config": {
-      "port": 8080,
-      "path": "/health",
-      "expected_codes": [200]
-    }
-  }
-}
-```
-
-**注意**: 
-- `health_check.type` は小文字（`http`, `https`, `tcp`, `ping`）
-- `health_check.interval` と `health_check.timeout` は Go の duration 文字列（例: `10s`, `1m`）
-- `rise_count` / `fall_count` は任意です（デフォルト: 3/3）
-- `health_check.config` は `http`/`https`/`tcp` の場合に必須です
-- `http`/`https` の場合、`health_check.config.port` は必須で、`path` は省略時 `/`、`expected_codes` は省略時 `[200]` になります
-- VIP 作成時は `health_check.vip_id` は不要（VIP 作成後に自動的に設定されます）
-- `encap_type` は任意（`GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`）。省略した場合は Agent のデフォルト（`vpp.lb.encap_type`）が使用されます
-- `dscp` は任意（1-63）で、`encap_type` が `L3DSR`（DSCP 方式）に解決される場合のみ使用されます（GRE/NAT では使用されません）。省略した場合は Agent のデフォルト（`vpp.lb.dscp`）が使用されます（`L3DSR` の場合 `dscp=0` はエラーになります）
-
-**レスポンス**
-
-- **201 Created**: VIP が正常に作成された
-- **400 Bad Request**: リクエストが不正
-- **409 Conflict**: VIP が既に存在する
-
-#### GET /api/v1/vips
-
-すべての VIP の一覧を取得します。
-
-**レスポンス**
-
-```json
-{
-  "vips": [
-    {
-      "id": "vip-1",
-      "vip": "192.168.1.100",
-      "port": 80,
-      "protocol": "TCP",
-      "lb_method": "maglev",
-      "encap_type": "L3DSR",
-      "dscp": 10,
-      "created_at": "2025-12-20T10:00:00Z",
-      "updated_at": "2025-12-20T10:00:00Z"
-    }
-  ],
-  "count": 1
-}
-```
-
-#### GET /api/v1/vips/:id
-
-指定された ID の VIP を取得します。
-
-**パラメータ**
-
-- `id` (path): VIP ID
-
-**レスポンス**
-
-- **200 OK**: VIP が見つかった
-- **404 Not Found**: VIP が見つからない
-
-#### PUT /api/v1/vips/:id
-
-指定された ID の VIP を更新します。
-
-**パラメータ**
-
-- `id` (path): VIP ID
-
-**リクエストボディ**
-
-```json
-{
-  "vip": "192.168.1.101",
-  "port": 443,
-  "protocol": "TCP",
-  "lb_method": "maglev",
-  "encap_type": "GRE4",
-  "dscp": 0
-}
-```
-
-**レスポンス**
-
-- **200 OK**: VIP が正常に更新された
-- **400 Bad Request**: リクエストが不正
-- **404 Not Found**: VIP が見つからない
-
-#### DELETE /api/v1/vips/:id
-
-指定された ID の VIP を削除します。
-
-**パラメータ**
-
-- `id` (path): VIP ID
-
-**レスポンス**
-
-- **200 OK**: VIP が正常に削除された
-- **404 Not Found**: VIP が見つからない
-
-### Backend 管理
-
-#### POST /api/v1/backends
-
-新しいバックエンドを追加します。
-
-**リクエストボディ**
-
-```json
-{
-  "vip_id": "vip-1",
-  "ip": "10.0.0.1",
-  "weight": 10
-}
-```
-
-**レスポンス**
-
-- **201 Created**: バックエンドが正常に作成された
-- **400 Bad Request**: リクエストが不正
-- **404 Not Found**: VIP が見つからない
-
-#### GET /api/v1/backends?vip_id=:vip_id
-
-指定された VIP に属するバックエンドの一覧を取得します。
-
-**クエリパラメータ**
-
-- `vip_id` (required): VIP ID
-
-**レスポンス**
-
-```json
-{
-  "backends": [
-    {
-      "id": "backend-1",
-      "vip_id": "vip-1",
-      "ip": "10.0.0.1",
-      "weight": 10
-    }
-  ],
-  "count": 1
-}
-```
-
-#### GET /api/v1/backends/:id
-
-指定された ID のバックエンドを取得します。
-
-**パラメータ**
-
-- `id` (path): Backend ID
-
-**レスポンス**
-
-- **200 OK**: バックエンドが見つかった
-- **404 Not Found**: バックエンドが見つからない
-
-#### PUT /api/v1/backends/:id
-
-指定された ID のバックエンドを更新します。
-
-**パラメータ**
-
-- `id` (path): Backend ID
-
-**リクエストボディ**
-
-```json
-{
-  "ip": "10.0.0.2",
-  "weight": 20
-}
-```
-
-**レスポンス**
-
-- **200 OK**: バックエンドが正常に更新された
-- **400 Bad Request**: リクエストが不正
-- **404 Not Found**: バックエンドが見つからない
-
-#### DELETE /api/v1/backends/:id
-
-指定された ID のバックエンドを削除します。
-
-**パラメータ**
-
-- `id` (path): Backend ID
-
-**レスポンス**
-
-- **200 OK**: バックエンドが正常に削除された
-- **404 Not Found**: バックエンドが見つからない
-
-### リビジョン管理
-
-#### GET /api/v1/revision
-
-現在の設定リビジョンを取得します。
-
-**レスポンス**
-
-```json
-{
-  "revision": 123
-}
-```
-
-## エラーレスポンス
-
-エラーが発生した場合、以下の形式でレスポンスが返されます：
-
-```json
-{
-  "error": "error message"
-}
-```
-
-### HTTP ステータスコード
-
-- **200 OK**: リクエストが正常に処理された
-- **201 Created**: リソースが正常に作成された
-- **400 Bad Request**: リクエストが不正
-- **404 Not Found**: リソースが見つからない
-- **409 Conflict**: リソースが既に存在する
-- **500 Internal Server Error**: サーバー内部エラー
-
-## データモデル
-
-### VIP
-
-```json
-{
-  "id": "string",
-  "vip": "string (IP address)",
-  "port": "integer (1-65535)",
-  "protocol": "TCP | UDP",
-  "lb_method": "maglev",
-  "health_check": "HealthCheck (optional)",
-  "created_at": "string (RFC3339)",
-  "updated_at": "string (RFC3339)"
-}
-```
-
-### Backend
-
-```json
-{
-  "id": "string",
-  "vip_id": "string",
-  "ip": "string (IP address)",
-  "weight": "integer (1-100)"
-}
-```
-
-### HealthCheck
-
-```json
-{
-  "id": "string",
-  "vip_id": "string (VIP 作成時は不要、取得時は存在)",
-  "type": "http | https | tcp | ping (required)",
-  "interval_sec": "integer (required, min=1)",
-  "timeout_sec": "integer (required, min=1)",
-  "rise_count": "integer (required, min=1)",
-  "fall_count": "integer (required, min=1)",
-  "config": {
-    "port": "integer (HTTP/HTTPS/TCP only)",
-    "path": "string (HTTP/HTTPS only)",
-    "method": "string (HTTP/HTTPS only)",
-    "expected_codes": "array of integers (HTTP/HTTPS only)"
-  },
-  "created_at": "string (RFC3339)",
-  "updated_at": "string (RFC3339)"
-}
-```
-
-**注意**: 
-- `type` は小文字（`http`, `https`, `tcp`, `ping`）
-- `vip_id` は読み取り専用フィールドです。VIP 作成時には不要（VIP 作成後に自動的に設定されます）。VIP 取得時には存在します
-- REST API で VIP を作成する場合は `health_check.interval` / `health_check.timeout`（duration 文字列）を使用してください。保存モデルでは `interval_sec` / `timeout_sec` が使われます
-
-## 使用例
-
-### cURL での使用例
-
-#### VIP の作成
+### kubectl 使用例
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/vips \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vip": "192.168.1.100",
-    "port": 80,
-    "protocol": "TCP",
-    "lb_method": "maglev"
-  }'
+# VIP の一覧表示
+kubectl get vip
+kubectl get vip -o wide
+
+# VIP の作成
+kubectl apply -f virtualip.yaml
+
+# VIP ステータスの表示
+kubectl get vip web-vip -o yaml
+
+# VIP の削除
+kubectl delete vip web-vip
+
+# 変更の監視
+kubectl get vip -w
 ```
 
-#### バックエンドの追加
+### VirtualIP リソース
 
-```bash
-curl -X POST http://localhost:8080/api/v1/backends \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vip_id": "vip-1",
-    "ip": "10.0.0.1",
-    "weight": 10
-  }'
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: web-vip
+  namespace: default
+spec:
+  address: "203.0.113.10"
+  port: 80
+  protocol: TCP
+  encapType: L3DSR
+  dscp: 10
+  backends:
+    - address: "10.0.1.1"
+      weight: 100
+    - address: "10.0.1.2"
+      weight: 100
+  healthCheck:
+    type: http
+    intervalSeconds: 5
+    timeoutSeconds: 3
+    riseCount: 3
+    fallCount: 2
+    http:
+      port: 8080
+      path: /healthz
+      method: GET
+      expectedCodes: [200]
+status:
+  observedGeneration: 5
+  healthyBackends: 2
+  totalBackends: 2
+  backends:
+    - address: "10.0.1.1"
+      healthy: true
+      lastProbeTime: "2025-01-15T10:00:00Z"
+    - address: "10.0.1.2"
+      healthy: true
+      lastProbeTime: "2025-01-15T10:00:00Z"
+  conditions:
+    - type: Ready
+      status: "True"
+      lastTransitionTime: "2025-01-15T09:00:00Z"
 ```
 
-#### VIP の一覧取得
+### Spec フィールド
 
-```bash
-curl http://localhost:8080/api/v1/vips
+#### VirtualIPSpec
+
+| フィールド | 型 | 必須 | 説明 |
+|----------|-----|------|------|
+| `address` | string (IP) | はい | 仮想 IP アドレス |
+| `port` | int (1-65535) | はい | 仮想ポート番号 |
+| `protocol` | string | はい | トランスポートプロトコル: `TCP` または `UDP` |
+| `encapType` | string | いいえ | カプセル化タイプ: `GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`。デフォルト: `L3DSR` |
+| `dscp` | int (0-63) | いいえ | L3DSR モードの DSCP 値 |
+| `backends` | []BackendSpec | いいえ | バックエンドサーバーのリスト |
+| `healthCheck` | HealthCheckSpec | いいえ | ヘルスチェック設定 |
+
+#### BackendSpec
+
+| フィールド | 型 | 必須 | 説明 |
+|----------|-----|------|------|
+| `address` | string (IP) | はい | バックエンドサーバーの IP アドレス |
+| `weight` | int (1-100) | いいえ | トラフィック重み。デフォルト: 100 |
+
+#### HealthCheckSpec
+
+| フィールド | 型 | 必須 | 説明 |
+|----------|-----|------|------|
+| `type` | string | はい | プローブタイプ: `http`, `https`, `tcp`, `ping` |
+| `intervalSeconds` | int (≥1) | いいえ | プローブ間隔。デフォルト: 5 |
+| `timeoutSeconds` | int (≥1) | いいえ | 応答待ちの最大時間。デフォルト: 3 |
+| `riseCount` | int (≥1) | いいえ | 健全と判定する連続成功回数。デフォルト: 3 |
+| `fallCount` | int (≥1) | いいえ | 不健全と判定する連続失敗回数。デフォルト: 2 |
+| `http` | HTTPHealthCheck | いいえ | HTTP/HTTPS 固有の設定 |
+| `tcp` | TCPHealthCheck | いいえ | TCP 固有の設定 |
+
+#### HTTPHealthCheck
+
+| フィールド | 型 | 必須 | 説明 |
+|----------|-----|------|------|
+| `port` | int (1-65535) | はい | ターゲットポート |
+| `path` | string | いいえ | HTTP パス。デフォルト: `/` |
+| `method` | string | いいえ | HTTP メソッド: `GET`, `HEAD`, `POST`。デフォルト: `GET` |
+| `host` | string | いいえ | Host ヘッダーのオーバーライド |
+| `headers` | map[string]string | いいえ | 追加の HTTP ヘッダー |
+| `expectedCodes` | []int | いいえ | 成功を示す HTTP ステータスコード |
+| `skipTLSVerify` | bool | いいえ | TLS 証明書検証のスキップ（HTTPS のみ） |
+
+#### TCPHealthCheck
+
+| フィールド | 型 | 必須 | 説明 |
+|----------|-----|------|------|
+| `port` | int (1-65535) | はい | TCP 接続のターゲットポート |
+| `send` | string | いいえ | 接続後に送信するデータ |
+| `expectedResponse` | string | いいえ | 応答に期待する部分文字列 |
+
+### Status フィールド
+
+#### VirtualIPStatus
+
+| フィールド | 型 | 説明 |
+|----------|-----|------|
+| `observedGeneration` | int64 | Operator が観測した最新の generation |
+| `healthyBackends` | int | 健全なバックエンドの数 |
+| `totalBackends` | int | 設定されたバックエンドの総数 |
+| `backends` | []BackendStatus | バックエンドごとのヘルスステータス |
+| `conditions` | []Condition | 標準的な Kubernetes conditions |
+
+#### BackendStatus
+
+| フィールド | 型 | 説明 |
+|----------|-----|------|
+| `address` | string | バックエンド IP アドレス |
+| `healthy` | bool | バックエンドが健全かどうか |
+| `lastProbeTime` | Time | 最新のプローブのタイムスタンプ |
+| `message` | string | 人間が読めるメッセージ |
+
+### 表示カラム
+
+`kubectl get vip` 使用時：
+
+| カラム | ソース |
+|--------|--------|
+| NAME | `metadata.name` |
+| Address | `spec.address` |
+| Port | `spec.port` |
+| Protocol | `spec.protocol` |
+| Healthy | `status.healthyBackends` |
+| Total | `status.totalBackends` |
+| Age | `metadata.creationTimestamp` |
+
+### バリデーションルール
+
+Admission Webhook が以下を検証します：
+
+- `address` は有効な IP アドレスであること
+- `port` は 1〜65535 の範囲であること
+- `protocol` は `TCP` または `UDP` であること
+- `encapType` は `GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6` のいずれかであること
+- `dscp` は 0〜63 の範囲であること
+- バックエンドの `weight` は 1〜100 の範囲であること
+- バックエンドの `address` は有効な IP アドレスであること
+- ヘルスチェックの `type` は `http`, `https`, `tcp`, `ping` のいずれかであること
+
+### 使用例
+
+#### L3DSR + HTTP ヘルスチェック
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: web-vip
+spec:
+  address: 203.0.113.10
+  port: 80
+  protocol: TCP
+  encapType: L3DSR
+  dscp: 10
+  backends:
+    - address: 10.0.1.1
+      weight: 100
+    - address: 10.0.1.2
+      weight: 100
+    - address: 10.0.1.3
+      weight: 50
+  healthCheck:
+    type: http
+    intervalSeconds: 5
+    timeoutSeconds: 3
+    riseCount: 3
+    fallCount: 2
+    http:
+      port: 8080
+      path: /healthz
+      method: GET
+      expectedCodes: [200]
 ```
 
-## 次のステップ
+#### NAT4 + TCP ヘルスチェック
 
-- [設定ガイド](./configuration.ja.md) を参照して、詳細な設定を行います
-- [トラブルシューティング](./troubleshooting.ja.md) を参照して、問題の解決方法を確認します
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: db-vip
+spec:
+  address: 203.0.113.20
+  port: 3306
+  protocol: TCP
+  encapType: NAT4
+  backends:
+    - address: 10.0.2.1
+      weight: 100
+    - address: 10.0.2.2
+      weight: 100
+  healthCheck:
+    type: tcp
+    intervalSeconds: 10
+    timeoutSeconds: 5
+    riseCount: 2
+    fallCount: 3
+    tcp:
+      port: 3306
+```
+
+#### GRE4 + Ping ヘルスチェック
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: dns-vip
+spec:
+  address: 203.0.113.30
+  port: 53
+  protocol: UDP
+  encapType: GRE4
+  backends:
+    - address: 10.0.3.1
+    - address: 10.0.3.2
+  healthCheck:
+    type: ping
+    intervalSeconds: 3
+    timeoutSeconds: 2
+    riseCount: 2
+    fallCount: 2
+```
+
+#### 最小構成（ヘルスチェックなし）
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: simple-vip
+spec:
+  address: 203.0.113.40
+  port: 443
+  protocol: TCP
+  backends:
+    - address: 10.0.4.1
+    - address: 10.0.4.2
+```
+
+---
+
+## 付録: REST API (v1、レガシー)
+
+v1 Controller は VIP/バックエンドの管理用に REST API を提供します。この API は v1 デプロイとの後方互換性のために維持されています。
+
+### エンドポイント
+
+| メソッド | エンドポイント | 説明 |
+|---------|------------|------|
+| `GET` | `/healthz` | ヘルスチェック |
+| `GET` | `/v1/vips` | VIP 一覧取得 |
+| `POST` | `/v1/vips` | VIP 作成 |
+| `GET` | `/v1/vips/{id}` | VIP 取得 |
+| `DELETE` | `/v1/vips/{id}` | VIP 削除 |
+| `POST` | `/v1/vips/{id}/backends` | バックエンド追加 |
+| `GET` | `/v1/vips/{id}/backends` | バックエンド一覧取得 |
+| `DELETE` | `/v1/vips/{id}/backends/{ip}` | バックエンド削除 |
+
+完全な OpenAPI 仕様は `api/openapi/openapi.yaml` を参照してください。

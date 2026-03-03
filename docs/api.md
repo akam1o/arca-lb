@@ -1,398 +1,305 @@
-# arca-lb REST API Reference
+# arca-lb API Reference
 
-This document describes the arca-lb Controller REST API.
+This document is the API reference for arca-lb.
 
-## Base URL
+## VirtualIP CRD API (v2)
 
-```
-http://localhost:8080
-```
+### Resource Overview
 
-## Authentication
+| Field | Value |
+|-------|-------|
+| API Group | `arca.io` |
+| API Version | `v1alpha1` |
+| Kind | `VirtualIP` |
+| Short Name | `vip` |
+| Scope | Namespaced |
 
-Authentication is not implemented in the current version. For production, add proper authentication and authorization.
-
-## Endpoints
-
-### Health checks
-
-#### GET /healthz
-
-Health check endpoint to verify the server is running.
-
-**Response**
-
-```json
-{
-  "status": "healthy",
-  "time": "2025-12-20T10:00:00Z"
-}
-```
-
-#### GET /readyz
-
-Readiness endpoint to confirm the server is ready to serve requests.
-
-**Responses**
-
-- **200 OK**: Server is ready
-  ```json
-  {
-    "status": "ready",
-    "time": "2025-12-20T10:00:00Z"
-  }
-  ```
-
-- **503 Service Unavailable**: Server not ready (e.g., datastore connection error)
-  ```json
-  {
-    "status": "not ready",
-    "error": "datastore unavailable"
-  }
-  ```
-
-### VIP management
-
-#### POST /api/v1/vips
-
-Create a new VIP.
-
-**Request body**
-
-```json
-{
-  "vip": "192.168.1.100",
-  "port": 80,
-  "protocol": "TCP",
-  "lb_method": "maglev",
-  "encap_type": "L3DSR",
-  "dscp": 10,
-  "health_check": {
-    "type": "http",
-    "interval": "10s",
-    "timeout": "5s",
-    "rise_count": 3,
-    "fall_count": 3,
-    "config": {
-      "port": 8080,
-      "path": "/health",
-      "expected_codes": [200]
-    }
-  }
-}
-```
-
-**Notes**
-- `health_check.type` must be lowercase (`http`, `https`, `tcp`, `ping`)
-- `health_check.interval` and `health_check.timeout` are Go duration strings (e.g. `10s`, `1m`)
-- `rise_count` / `fall_count` are optional (defaults: 3/3)
-- `health_check.config` is required for `http`/`https`/`tcp` probes
-- For `http`/`https`, `health_check.config.port` is required; `path` defaults to `/`; `expected_codes` defaults to `[200]`
-- Do not set `health_check.vip_id` when creating a VIP (it is set automatically after creation)
-- `encap_type` is optional (`GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`); if omitted, the Agent default (`vpp.lb.encap_type`) is used
-- `dscp` is optional (1-63) and is used only when `encap_type` resolves to `L3DSR` (DSCP mode); it is not used for GRE/NAT; if omitted, the Agent default (`vpp.lb.dscp`) is used; `dscp=0` is rejected in `L3DSR` mode
-
-**Responses**
-
-- **201 Created**: VIP created
-- **400 Bad Request**: Invalid request
-- **409 Conflict**: VIP already exists
-
-#### GET /api/v1/vips
-
-List all VIPs.
-
-**Response**
-
-```json
-{
-  "vips": [
-    {
-      "id": "vip-1",
-      "vip": "192.168.1.100",
-      "port": 80,
-      "protocol": "TCP",
-      "lb_method": "maglev",
-      "encap_type": "L3DSR",
-      "dscp": 10,
-      "created_at": "2025-12-20T10:00:00Z",
-      "updated_at": "2025-12-20T10:00:00Z"
-    }
-  ],
-  "count": 1
-}
-```
-
-#### GET /api/v1/vips/:id
-
-Get a VIP by ID.
-
-**Path parameter**
-
-- `id`: VIP ID
-
-**Responses**
-
-- **200 OK**: VIP found
-- **404 Not Found**: VIP not found
-
-#### PUT /api/v1/vips/:id
-
-Update a VIP by ID.
-
-**Path parameter**
-
-- `id`: VIP ID
-
-**Request body**
-
-```json
-{
-  "vip": "192.168.1.101",
-  "port": 443,
-  "protocol": "TCP",
-  "lb_method": "maglev",
-  "encap_type": "GRE4",
-  "dscp": 0
-}
-```
-
-**Responses**
-
-- **200 OK**: VIP updated
-- **400 Bad Request**: Invalid request
-- **404 Not Found**: VIP not found
-
-#### DELETE /api/v1/vips/:id
-
-Delete a VIP by ID.
-
-**Path parameter**
-
-- `id`: VIP ID
-
-**Responses**
-
-- **200 OK**: VIP deleted
-- **404 Not Found**: VIP not found
-
-### Backend management
-
-#### POST /api/v1/backends
-
-Add a backend.
-
-**Request body**
-
-```json
-{
-  "vip_id": "vip-1",
-  "ip": "10.0.0.1",
-  "weight": 10
-}
-```
-
-**Responses**
-
-- **201 Created**: Backend created
-- **400 Bad Request**: Invalid request
-- **404 Not Found**: VIP not found
-
-#### GET /api/v1/backends?vip_id=:vip_id
-
-List backends for a VIP.
-
-**Query parameter**
-
-- `vip_id` (required): VIP ID
-
-**Response**
-
-```json
-{
-  "backends": [
-    {
-      "id": "backend-1",
-      "vip_id": "vip-1",
-      "ip": "10.0.0.1",
-      "weight": 10
-    }
-  ],
-  "count": 1
-}
-```
-
-#### GET /api/v1/backends/:id
-
-Get a backend by ID.
-
-**Path parameter**
-
-- `id`: Backend ID
-
-**Responses**
-
-- **200 OK**: Backend found
-- **404 Not Found**: Backend not found
-
-#### PUT /api/v1/backends/:id
-
-Update a backend by ID.
-
-**Path parameter**
-
-- `id`: Backend ID
-
-**Request body**
-
-```json
-{
-  "ip": "10.0.0.2",
-  "weight": 20
-}
-```
-
-**Responses**
-
-- **200 OK**: Backend updated
-- **400 Bad Request**: Invalid request
-- **404 Not Found**: Backend not found
-
-#### DELETE /api/v1/backends/:id
-
-Delete a backend by ID.
-
-**Path parameter**
-
-- `id`: Backend ID
-
-**Responses**
-
-- **200 OK**: Backend deleted
-- **404 Not Found**: Backend not found
-
-### Revision management
-
-#### GET /api/v1/revision
-
-Get the current config revision.
-
-**Response**
-
-```json
-{
-  "revision": 123
-}
-```
-
-## Error Responses
-
-On errors, responses follow this format:
-
-```json
-{
-  "error": "error message"
-}
-```
-
-### HTTP status codes
-
-- **200 OK**: Request succeeded
-- **201 Created**: Resource created
-- **400 Bad Request**: Invalid request
-- **404 Not Found**: Resource not found
-- **409 Conflict**: Resource already exists
-- **500 Internal Server Error**: Server error
-
-## Data Models
-
-### VIP
-
-```json
-{
-  "id": "string",
-  "vip": "string (IP address)",
-  "port": "integer (1-65535)",
-  "protocol": "TCP | UDP",
-  "lb_method": "maglev",
-  "health_check": "HealthCheck (optional)",
-  "created_at": "string (RFC3339)",
-  "updated_at": "string (RFC3339)"
-}
-```
-
-### Backend
-
-```json
-{
-  "id": "string",
-  "vip_id": "string",
-  "ip": "string (IP address)",
-  "weight": "integer (1-100)"
-}
-```
-
-### HealthCheck
-
-```json
-{
-  "id": "string",
-  "vip_id": "string (omit when creating a VIP; present when retrieving)",
-  "type": "http | https | tcp | ping (required)",
-  "interval_sec": "integer (required, min=1)",
-  "timeout_sec": "integer (required, min=1)",
-  "rise_count": "integer (required, min=1)",
-  "fall_count": "integer (required, min=1)",
-  "config": {
-    "port": "integer (HTTP/HTTPS/TCP only)",
-    "path": "string (HTTP/HTTPS only)",
-    "method": "string (HTTP/HTTPS only)",
-    "expected_codes": "array of integers (HTTP/HTTPS only)"
-  },
-  "created_at": "string (RFC3339)",
-  "updated_at": "string (RFC3339)"
-}
-```
-
-**Notes**
-- `type` must be lowercase (`http`, `https`, `tcp`, `ping`)
-- `vip_id` is read-only. Do not set it when creating a VIP; it is populated after creation and present when retrieving
-- When creating a VIP via REST, use `health_check.interval` / `health_check.timeout` (duration strings). The stored model uses `interval_sec` / `timeout_sec`.
-
-## Examples
-
-### Create a VIP with cURL
+### kubectl Examples
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/vips \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vip": "192.168.1.100",
-    "port": 80,
-    "protocol": "TCP",
-    "lb_method": "maglev"
-  }'
+# List VIPs
+kubectl get vip
+kubectl get vip -o wide
+
+# Create a VIP
+kubectl apply -f virtualip.yaml
+
+# View VIP status
+kubectl get vip web-vip -o yaml
+
+# Delete a VIP
+kubectl delete vip web-vip
+
+# Watch for changes
+kubectl get vip -w
 ```
 
-### Add a backend
+### VirtualIP Resource
 
-```bash
-curl -X POST http://localhost:8080/api/v1/backends \
-  -H "Content-Type: application/json" \
-  -d '{
-    "vip_id": "vip-1",
-    "ip": "10.0.0.1",
-    "weight": 10
-  }'
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: web-vip
+  namespace: default
+spec:
+  address: "203.0.113.10"
+  port: 80
+  protocol: TCP
+  encapType: L3DSR
+  dscp: 10
+  backends:
+    - address: "10.0.1.1"
+      weight: 100
+    - address: "10.0.1.2"
+      weight: 100
+  healthCheck:
+    type: http
+    intervalSeconds: 5
+    timeoutSeconds: 3
+    riseCount: 3
+    fallCount: 2
+    http:
+      port: 8080
+      path: /healthz
+      method: GET
+      expectedCodes: [200]
+status:
+  observedGeneration: 5
+  healthyBackends: 2
+  totalBackends: 2
+  backends:
+    - address: "10.0.1.1"
+      healthy: true
+      lastProbeTime: "2025-01-15T10:00:00Z"
+    - address: "10.0.1.2"
+      healthy: true
+      lastProbeTime: "2025-01-15T10:00:00Z"
+  conditions:
+    - type: Ready
+      status: "True"
+      lastTransitionTime: "2025-01-15T09:00:00Z"
 ```
 
-### List VIPs
+### Spec Fields
 
-```bash
-curl http://localhost:8080/api/v1/vips
+#### VirtualIPSpec
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `address` | string (IP) | Yes | Virtual IP address |
+| `port` | int (1-65535) | Yes | Virtual port number |
+| `protocol` | string | Yes | Transport protocol: `TCP` or `UDP` |
+| `encapType` | string | No | Encapsulation type: `GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`. Default: `L3DSR` |
+| `dscp` | int (0-63) | No | DSCP value for L3DSR mode |
+| `backends` | []BackendSpec | No | List of backend servers |
+| `healthCheck` | HealthCheckSpec | No | Health check configuration |
+
+#### BackendSpec
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `address` | string (IP) | Yes | Backend server IP address |
+| `weight` | int (1-100) | No | Traffic weight. Default: 100 |
+
+#### HealthCheckSpec
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Probe type: `http`, `https`, `tcp`, `ping` |
+| `intervalSeconds` | int (≥1) | No | Time between probes. Default: 5 |
+| `timeoutSeconds` | int (≥1) | No | Max time to wait for response. Default: 3 |
+| `riseCount` | int (≥1) | No | Consecutive successes to mark healthy. Default: 3 |
+| `fallCount` | int (≥1) | No | Consecutive failures to mark unhealthy. Default: 2 |
+| `http` | HTTPHealthCheck | No | HTTP/HTTPS-specific settings |
+| `tcp` | TCPHealthCheck | No | TCP-specific settings |
+
+#### HTTPHealthCheck
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `port` | int (1-65535) | Yes | Target port |
+| `path` | string | No | HTTP path. Default: `/` |
+| `method` | string | No | HTTP method: `GET`, `HEAD`, `POST`. Default: `GET` |
+| `host` | string | No | Host header override |
+| `headers` | map[string]string | No | Additional HTTP headers |
+| `expectedCodes` | []int | No | HTTP status codes indicating success |
+| `skipTLSVerify` | bool | No | Skip TLS certificate verification (HTTPS only) |
+
+#### TCPHealthCheck
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `port` | int (1-65535) | Yes | Target port for TCP connection |
+| `send` | string | No | Data to send after connection |
+| `expectedResponse` | string | No | Expected substring in response |
+
+### Status Fields
+
+#### VirtualIPStatus
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `observedGeneration` | int64 | Most recent generation observed by the operator |
+| `healthyBackends` | int | Number of healthy backends |
+| `totalBackends` | int | Total number of configured backends |
+| `backends` | []BackendStatus | Per-backend health status |
+| `conditions` | []Condition | Standard Kubernetes conditions |
+
+#### BackendStatus
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `address` | string | Backend IP address |
+| `healthy` | bool | Whether the backend is healthy |
+| `lastProbeTime` | Time | Timestamp of the most recent probe |
+| `message` | string | Human-readable details |
+
+### Print Columns
+
+When using `kubectl get vip`:
+
+| Column | Source |
+|--------|--------|
+| NAME | `metadata.name` |
+| Address | `spec.address` |
+| Port | `spec.port` |
+| Protocol | `spec.protocol` |
+| Healthy | `status.healthyBackends` |
+| Total | `status.totalBackends` |
+| Age | `metadata.creationTimestamp` |
+
+### Validation Rules
+
+The Admission Webhook enforces:
+
+- `address` must be a valid IP address
+- `port` must be between 1 and 65535
+- `protocol` must be `TCP` or `UDP`
+- `encapType` must be one of: `GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`
+- `dscp` must be between 0 and 63
+- Backend `weight` must be between 1 and 100
+- Backend `address` must be a valid IP address
+- HealthCheck `type` must be one of: `http`, `https`, `tcp`, `ping`
+
+### Examples
+
+#### L3DSR with HTTP health check
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: web-vip
+spec:
+  address: 203.0.113.10
+  port: 80
+  protocol: TCP
+  encapType: L3DSR
+  dscp: 10
+  backends:
+    - address: 10.0.1.1
+      weight: 100
+    - address: 10.0.1.2
+      weight: 100
+    - address: 10.0.1.3
+      weight: 50
+  healthCheck:
+    type: http
+    intervalSeconds: 5
+    timeoutSeconds: 3
+    riseCount: 3
+    fallCount: 2
+    http:
+      port: 8080
+      path: /healthz
+      method: GET
+      expectedCodes: [200]
 ```
 
-## Next Steps
+#### NAT4 with TCP health check
 
-- See the [Configuration Guide](./configuration.md) for detailed settings
-- See [Troubleshooting](./troubleshooting.md) to resolve issues
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: db-vip
+spec:
+  address: 203.0.113.20
+  port: 3306
+  protocol: TCP
+  encapType: NAT4
+  backends:
+    - address: 10.0.2.1
+      weight: 100
+    - address: 10.0.2.2
+      weight: 100
+  healthCheck:
+    type: tcp
+    intervalSeconds: 10
+    timeoutSeconds: 5
+    riseCount: 2
+    fallCount: 3
+    tcp:
+      port: 3306
+```
+
+#### GRE4 with Ping health check
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: dns-vip
+spec:
+  address: 203.0.113.30
+  port: 53
+  protocol: UDP
+  encapType: GRE4
+  backends:
+    - address: 10.0.3.1
+    - address: 10.0.3.2
+  healthCheck:
+    type: ping
+    intervalSeconds: 3
+    timeoutSeconds: 2
+    riseCount: 2
+    fallCount: 2
+```
+
+#### Minimal (no health check)
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: simple-vip
+spec:
+  address: 203.0.113.40
+  port: 443
+  protocol: TCP
+  backends:
+    - address: 10.0.4.1
+    - address: 10.0.4.2
+```
+
+---
+
+## Appendix: REST API (v1, Legacy)
+
+The v1 Controller exposes a REST API for VIP/Backend management. This API is maintained for backward compatibility with v1 deployments.
+
+### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/healthz` | Health check |
+| `GET` | `/v1/vips` | List all VIPs |
+| `POST` | `/v1/vips` | Create a VIP |
+| `GET` | `/v1/vips/{id}` | Get a VIP |
+| `DELETE` | `/v1/vips/{id}` | Delete a VIP |
+| `POST` | `/v1/vips/{id}/backends` | Add a backend |
+| `GET` | `/v1/vips/{id}/backends` | List backends |
+| `DELETE` | `/v1/vips/{id}/backends/{ip}` | Delete a backend |
+
+See `api/openapi/openapi.yaml` for the full OpenAPI specification.

@@ -4,7 +4,7 @@
 
 ## 概要
 
-arca-lb は複数のカプセル化方式をサポートしています。バックエンドサーバーの設定は、Agent の `vpp.lb.encap_type` 設定によって異なります：
+arca-lb は複数のカプセル化方式をサポートしています。バックエンドサーバーの設定は、VirtualIP CRD の `spec.encapType` 設定によって異なります：
 
 - **GRE4/GRE6**: GRE カプセル化を使用（MTU 調整が必要）
 - **DSCP（L3DSR）**: DSCP マーキングによる Direct Server Return 方式（ARP 無効化が必要、PBR 等のネットワーク側誘導が必要）

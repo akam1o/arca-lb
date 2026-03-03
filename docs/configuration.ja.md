@@ -2,9 +2,212 @@
 
 このドキュメントでは、arca-lb の設定方法を説明します。
 
-## Controller 設定
+## Agent 設定 (v2)
 
-Controller の設定ファイルは YAML 形式で、以下の構造を持ちます：
+v2 Agent は YAML 設定ファイルから設定を読み込みます。パスは `--config` フラグまたは `ARCA_AGENT_CONFIG` 環境変数で指定します（デフォルト: `/etc/arca-lb/agent.yaml`）。
+
+```yaml
+agent:
+  id: "agent-01"
+  storePath: "/var/lib/arca-lb/agent.db"
+  reconcileInterval: "30s"
+
+kubernetes:
+  kubeconfig: ""           # 空 = クラスター内設定を使用
+  namespace: "default"
+  resyncInterval: "30s"
+
+dataplane:
+  type: "vpp"              # "vpp" または "noop"
+  vpp:
+    socketPath: "/run/vpp/api.sock"
+
+routing:
+  enabled: true
+  type: "frr"              # "frr" または "noop"
+  vtyshPath: "/usr/bin/vtysh"
+  routeTag: 100
+  cmdTimeout: "5s"
+
+healthCheck:
+  workerCount: 4
+  maxConcurrentChecks: 100
+  defaultTimeout: "3s"
+
+metrics:
+  enabled: true
+  address: "0.0.0.0:9090"
+  path: "/metrics"
+
+telemetry:
+  otlpEndpoint: ""         # 空 = 無効
+
+log:
+  level: "info"            # "debug", "info", "warn", "error"
+  format: "json"           # "json" または "text"
+```
+
+### Agent 設定
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `agent.id` | Agent の一意な識別子 | ホスト名 |
+| `agent.storePath` | bbolt データベースファイルのパス | `/var/lib/arca-lb/agent.db` |
+| `agent.reconcileInterval` | 定期的な Reconcile の間隔 | `30s` |
+
+### Kubernetes 設定
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `kubernetes.kubeconfig` | kubeconfig ファイルのパス（空 = クラスター内設定） | `""` |
+| `kubernetes.namespace` | VirtualIP リソースを監視するネームスペース | `default` |
+| `kubernetes.resyncInterval` | Informer の再同期間隔 | `30s` |
+
+### DataPlane 設定
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `dataplane.type` | データプレーンバックエンド (`vpp` または `noop`) | `vpp` |
+| `dataplane.vpp.socketPath` | VPP API ソケットパス | `/run/vpp/api.sock` |
+
+### Routing 設定
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `routing.enabled` | BGP 経路管理を有効化 | `false` |
+| `routing.type` | Router バックエンド (`frr` または `noop`) | `frr` |
+| `routing.vtyshPath` | vtysh コマンドのパス | `/usr/bin/vtysh` |
+| `routing.routeTag` | Static Route のタグ値 | `100` |
+| `routing.cmdTimeout` | vtysh コマンドのタイムアウト | `5s` |
+
+### HealthCheck 設定
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `healthCheck.workerCount` | ヘルスチェックワーカー goroutine 数 | `4` |
+| `healthCheck.maxConcurrentChecks` | ワーカーあたりの最大並行チェック数 | `100` |
+| `healthCheck.defaultTimeout` | デフォルトのプローブタイムアウト | `3s` |
+
+### Metrics 設定
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `metrics.enabled` | Prometheus メトリクスエンドポイントを有効化 | `false` |
+| `metrics.address` | メトリクスサーバーのリスンアドレス | `0.0.0.0:9090` |
+| `metrics.path` | メトリクスエンドポイントの HTTP パス | `/metrics` |
+
+### Telemetry 設定
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `telemetry.otlpEndpoint` | OTLP コレクターエンドポイント（空 = 無効） | `""` |
+
+### Log 設定
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `log.level` | ログレベル | `info` |
+| `log.format` | ログフォーマット (`json` または `text`) | `json` |
+
+## Operator 設定
+
+Operator はコマンドラインフラグで設定します：
+
+| フラグ | 説明 | デフォルト |
+|------|------|-----------|
+| `--metrics-bind-address` | メトリクスエンドポイントのアドレス | `:8080` |
+| `--health-probe-bind-address` | ヘルスプローブエンドポイントのアドレス | `:8081` |
+| `--enable-webhooks` | Admission Webhook を有効化 | `false` |
+| `--leader-elect` | Leader Election を有効化 | `false` |
+
+## VirtualIP CRD 設定
+
+VIP は Kubernetes Custom Resource として設定します：
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: web-vip
+  namespace: default
+spec:
+  address: 203.0.113.10
+  port: 80
+  protocol: TCP             # TCP または UDP
+  encapType: L3DSR           # GRE4, GRE6, L3DSR, NAT4, NAT6
+  dscp: 10                   # 0-63 (L3DSR 用)
+  backends:
+    - address: 10.0.1.1
+      weight: 100            # 1-100
+    - address: 10.0.1.2
+      weight: 100
+  healthCheck:
+    type: http               # http, https, tcp, ping
+    intervalSeconds: 5
+    timeoutSeconds: 3
+    riseCount: 3
+    fallCount: 2
+    http:
+      port: 8080
+      path: /healthz
+      method: GET
+      expectedCodes: [200]
+```
+
+### VirtualIP Spec フィールド
+
+| フィールド | 説明 | 必須 |
+|----------|------|------|
+| `address` | 仮想 IP アドレス | はい |
+| `port` | 仮想ポート (1-65535) | はい |
+| `protocol` | トランスポートプロトコル (TCP, UDP) | はい |
+| `encapType` | カプセル化タイプ (GRE4, GRE6, L3DSR, NAT4, NAT6) | いいえ (デフォルト: L3DSR) |
+| `dscp` | L3DSR モードの DSCP 値 (0-63) | いいえ |
+| `backends` | バックエンドサーバーのリスト | いいえ |
+| `healthCheck` | ヘルスチェック設定 | いいえ |
+
+### Backend Spec フィールド
+
+| フィールド | 説明 | 必須 |
+|----------|------|------|
+| `address` | バックエンド IP アドレス | はい |
+| `weight` | トラフィック重み (1-100) | いいえ (デフォルト: 100) |
+
+### HealthCheck Spec フィールド
+
+| フィールド | 説明 | 必須 |
+|----------|------|------|
+| `type` | プローブタイプ (http, https, tcp, ping) | はい |
+| `intervalSeconds` | プローブ間隔（秒） | いいえ (デフォルト: 5) |
+| `timeoutSeconds` | プローブタイムアウト（秒） | いいえ (デフォルト: 3) |
+| `riseCount` | 健全と判定する連続成功回数 | いいえ (デフォルト: 3) |
+| `fallCount` | 不健全と判定する連続失敗回数 | いいえ (デフォルト: 2) |
+| `http` | HTTP/HTTPS プローブ設定 | いいえ |
+| `tcp` | TCP プローブ設定 | いいえ |
+
+## 環境変数による設定
+
+### Agent (v2)
+
+```bash
+# 設定ファイルのパスを指定
+./bin/arcalb-agent-v2 --config /path/to/agent.yaml
+
+# または環境変数で指定
+export ARCA_AGENT_CONFIG=/path/to/agent.yaml
+./bin/arcalb-agent-v2
+```
+
+## 次のステップ
+
+- [API リファレンス](./api.ja.md) を参照して、VirtualIP CRD スキーマを確認します
+- [トラブルシューティング](./troubleshooting.ja.md) を参照して、問題の解決方法を確認します
+
+---
+
+## 付録: Controller 設定 (v1、レガシー)
+
+v1 Controller は YAML で設定します：
 
 ```yaml
 server:
@@ -29,237 +232,8 @@ datastore:
     database: "arcalb"
 
 log:
-  level: "info"  # "debug", "info", "warn", "error"
-  format: "json"  # "json" または "text"
-```
-
-### Server 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `host` | REST API サーバーのホスト | `0.0.0.0` |
-| `port` | REST API サーバーのポート | `8080` |
-| `read_timeout` | リクエスト読み込みタイムアウト | `10s` |
-| `write_timeout` | レスポンス書き込みタイムアウト | `10s` |
-| `read_header_timeout` | ヘッダー読み込みタイムアウト | `5s` |
-| `idle_timeout` | アイドルタイムアウト | `60s` |
-| `max_header_bytes` | 最大ヘッダーサイズ（バイト） | `1048576` (1MB) |
-| `allowed_origins` | CORS 許可オリジン | `["http://localhost:3000"]` |
-
-### gRPC 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `host` | gRPC サーバーのホスト | `0.0.0.0` |
-| `port` | gRPC サーバーのポート | `50051` |
-| `tls` | TLS 有効化 | `false` |
-
-### DataStore 設定
-
-#### etcd 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `endpoints` | etcd エンドポイントのリスト | `["http://localhost:2379"]` |
-| `key_prefix` | キープレフィックス | `"/arca-lb"` |
-| `tls` | TLS 有効化 | `false` |
-| `cert_file` | TLS 証明書ファイル | - |
-| `key_file` | TLS 秘密鍵ファイル | - |
-| `ca_file` | CA 証明書ファイル | - |
-| `dial_timeout` | 接続タイムアウト | `5s` |
-| `request_timeout` | リクエストタイムアウト | `5s` |
-
-#### MySQL 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `host` | MySQL ホスト | `localhost` |
-| `port` | MySQL ポート | `3306` |
-| `user` | MySQL ユーザー名 | - |
-| `password` | MySQL パスワード | - |
-| `database` | MySQL データベース名 | - |
-
-### Log 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `level` | ログレベル | `info` |
-| `format` | ログフォーマット | `json` |
-
-## Agent 設定
-
-Agent の設定ファイルは YAML 形式で、以下の構造を持ちます：
-
-```yaml
-agent:
-  id: "agent-01"
-  metadata:
-    region: "us-west-1"
-  reconcile_interval: "30s"
-  heartbeat_interval: "10s"
-
-controller:
-  address: "localhost:50051"
-  timeout: "10s"
-  max_retries: 5
-  retry_backoff: "1s"
-  max_retry_backoff: "30s"
-  tls:
-    enabled: false
-    cert_file: "/etc/arca-lb/certs/agent.crt"
-    key_file: "/etc/arca-lb/certs/agent.key"
-    ca_file: "/etc/arca-lb/certs/ca.crt"
-    insecure_skip_verify: false
-
-vpp:
-  socket_path: "/run/vpp/api.sock"
-  connect_timeout: "5s"
-  reconnect_interval: "5s"
-  max_reconnect_attempts: 0
-  lb:
-    encap_type: "GRE4"
-    dscp: 1 # DSCP（L3DSR）方式のみ使用。L3DSR を使う場合は 1-63 を設定
-    type: "CLUSTERIP"
-    new_flows_table_length: 1024
-    fail_on_all_backends_down: false
-
-frr:
-  enabled: true
-  vtysh: "/usr/bin/vtysh"
-  config_file: "/etc/frr/frr.conf"
-
-health_check:
-  worker_count: 4
-  default_timeout: "3s"
-  max_concurrent_checks: 100
-
-metrics:
-  enabled: true
-  listen_address: "0.0.0.0:9090"
-  path: "/metrics"
-  timeout: "10s"
-
-log:
   level: "info"
   format: "json"
-  output: "stdout"
 ```
 
-### Agent 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `agent.id` | Agent の一意な識別子 | ホスト名 |
-| `agent.metadata` | Agent のメタデータ（キー・値のマップ） | - |
-| `agent.reconcile_interval` | 設定ドリフトチェック間隔 | `30s` |
-| `agent.heartbeat_interval` | ハートビート送信間隔 | `10s` |
-
-### Controller 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `controller.address` | Controller の gRPC エンドポイント | `localhost:50051` |
-| `controller.timeout` | gRPC 呼び出しのタイムアウト | `10s` |
-| `controller.max_retries` | 接続試行の最大回数 | `5` |
-| `controller.retry_backoff` | リトライの初期バックオフ | `1s` |
-| `controller.max_retry_backoff` | リトライの最大バックオフ | `30s` |
-| `controller.tls.enabled` | TLS を有効化 | `false` |
-| `controller.tls.cert_file` | クライアント証明書ファイル | - |
-| `controller.tls.key_file` | クライアント秘密鍵ファイル | - |
-| `controller.tls.ca_file` | CA 証明書ファイル | - |
-| `controller.tls.insecure_skip_verify` | サーバー証明書検証をスキップ | `false` |
-
-### VPP 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `socket_path` | VPP API ソケットパス | `/run/vpp/api.sock` |
-| `connect_timeout` | 接続タイムアウト | `5s` |
-| `reconnect_interval` | 再接続間隔 | `5s` |
-| `max_reconnect_attempts` | 最大再接続試行回数（0=無制限） | `0` |
-| `lb.encap_type` | カプセル化タイプ（GRE4, GRE6, L3DSR, NAT4, NAT6） | `GRE4` |
-| `lb.dscp` | DSCP（L3DSR）方式の DSCP 値（0-63。L3DSR を使う場合は 1-63 必須。GRE/NAT では未使用） | `0` |
-| `lb.type` | ロードバランサーサービスタイプ（CLUSTERIP, NODEPORT） | `CLUSTERIP` |
-| `lb.new_flows_table_length` | 新規接続のフローテーブルサイズ | `1024` |
-| `lb.fail_on_all_backends_down` | すべてのバックエンドがダウン時に VIP 作成を失敗させる | `false` |
-
-### FRR 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `enabled` | FRR 連携を有効化 | `false` |
-| `vtysh` | vtysh コマンドのパス | `/usr/bin/vtysh` |
-| `config_file` | FRR 設定ファイルのパス | `/etc/frr/frr.conf` |
-
-### Health Check 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `worker_count` | 並行ヘルスチェックワーカー数 | `4` |
-| `default_timeout` | ヘルスチェックのデフォルトタイムアウト | `3s` |
-| `max_concurrent_checks` | ワーカーあたりの最大並行チェック数 | `100` |
-
-### Metrics 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `enabled` | Prometheus メトリクスを有効化 | `false` |
-| `listen_address` | メトリクスサーバーのリスンアドレス | `0.0.0.0:9090` |
-| `path` | メトリクスエンドポイントの HTTP パス | `/metrics` |
-| `timeout` | メトリクス HTTP サーバー操作のタイムアウト | `10s` |
-
-### Log 設定
-
-| パラメータ | 説明 | デフォルト |
-|-----------|------|-----------|
-| `level` | ログレベル | `info` |
-| `format` | ログフォーマット | `json` |
-| `output` | ログ出力先（`stdout`, `stderr`, またはファイルパス） | `stdout` |
-
-## 環境変数による設定
-
-### Controller
-
-Controller は `--config` フラグで設定ファイルのパスを指定します：
-
-```bash
-./bin/arcalb-controller --config deploy/config/controller.yaml
-```
-
-### Agent
-
-Agent は環境変数 `ARCA_AGENT_CONFIG` で設定ファイルのパスを指定します（デフォルト: `/etc/arca-lb/agent.yaml`）：
-
-```bash
-export ARCA_AGENT_CONFIG=/path/to/agent.yaml
-./bin/arcalb-agent
-```
-
-以下の環境変数で設定を上書きできます：
-
-- `ARCA_AGENT_ID` - Agent ID
-- `ARCA_CONTROLLER_ADDRESS` - Controller の gRPC エンドポイント
-- `ARCA_VPP_SOCKET` - VPP ソケットパス
-- `ARCA_LOG_LEVEL` - ログレベル
-- `ARCA_LOG_FORMAT` - ログフォーマット
-- `ARCA_TLS_ENABLED` - TLS 有効化（true/false）
-- `ARCA_TLS_CERT` - TLS 証明書ファイル
-- `ARCA_TLS_KEY` - TLS 秘密鍵ファイル
-- `ARCA_TLS_CA` - TLS CA 証明書ファイル
-
-## 設定の検証
-
-設定ファイルの構文エラーは起動時に検出されます。設定ファイルの構文を確認するには、実際に起動してみてください：
-
-```bash
-# Controller
-./bin/arcalb-controller --config deploy/config/controller.yaml
-
-# Agent
-ARCA_AGENT_CONFIG=/path/to/agent.yaml ./bin/arcalb-agent
-```
-
-## 次のステップ
-
-- [REST API リファレンス](./api.ja.md) を参照して、API の使用方法を確認します
-- [トラブルシューティング](./troubleshooting.ja.md) を参照して、問題の解決方法を確認します
+v1 Agent の設定については `deploy/config/agent.example.yaml` を参照してください。

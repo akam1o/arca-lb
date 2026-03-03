@@ -1,0 +1,57 @@
+---
+# Example VirtualIP resource for arca-lb v2
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: web-vip
+  namespace: default
+spec:
+  address: 203.0.113.10
+  port: 80
+  protocol: TCP
+  encapType: L3DSR
+  dscp: 10
+  backends:
+    - address: 10.0.1.1
+      weight: 100
+    - address: 10.0.1.2
+      weight: 100
+    - address: 10.0.1.3
+      weight: 50
+  healthCheck:
+    type: http
+    intervalSeconds: 5
+    timeoutSeconds: 3
+    riseCount: 3
+    fallCount: 2
+    http:
+      port: 8080
+      path: /healthz
+      method: GET
+      expectedCodes:
+        - 200
+---
+# TCP health check example
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: db-vip
+  namespace: default
+spec:
+  address: 203.0.113.20
+  port: 3306
+  protocol: TCP
+  encapType: NAT4
+  backends:
+    - address: 10.0.2.1
+      weight: 100
+    - address: 10.0.2.2
+      weight: 100
+  healthCheck:
+    type: tcp
+    intervalSeconds: 10
+    timeoutSeconds: 5
+    riseCount: 2
+    fallCount: 3
+    tcp:
+      port: 3306

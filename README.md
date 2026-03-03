@@ -1,136 +1,174 @@
 # arca-lb
 
-**arca-lb** is a centralized control plane for VPP-based Layer 4 load balancing, designed for environments that demand line-rate performance, operational simplicity, and horizontal scalability.
+**arca-lb** is a Kubernetes-native control plane for VPP-based Layer 4 load balancing, designed for environments that demand line-rate performance, operational simplicity, and horizontal scalability.
 
 ## Docker Images
 
-- Controller: https://hub.docker.com/r/akam1o/arca-lb-controller
-- Agent: https://hub.docker.com/r/akam1o/arca-lb-agent
-- Controller (GHCR): `ghcr.io/akam1o/arca-lb-controller`
-- Agent (GHCR): `ghcr.io/akam1o/arca-lb-agent`
+- Operator: `ghcr.io/akam1o/arca-lb-operator`
+- Agent: `ghcr.io/akam1o/arca-lb-agent`
+- Controller (v1, legacy): `ghcr.io/akam1o/arca-lb-controller`
 
 ## Features
 
-- **Centralized management**: Unified VIP and backend management via REST API
-- **High-performance data plane**: Fast packet processing powered by the VPP L4 LB plugin
-- **Flexible health checks**: Supports HTTP/HTTPS, TCP, and Ping probes
+- **Kubernetes-native**: Declarative VIP management via `VirtualIP` Custom Resource (CRD)
+- **Operator pattern**: Kubernetes Operator handles validation, status, and lifecycle
+- **High-performance data plane**: Wire-rate packet processing powered by the VPP L4 LB plugin
+- **Pluggable interfaces**: DataPlane and Router interfaces for testability and extension
+- **Flexible health checks**: Supports HTTP/HTTPS, TCP, and Ping probes with per-VIP configuration
 - **Automatic route announcements**: BGP advertisements through FRR integration
-- **Scalable**: Can be distributed across multiple Agents
+- **Scalable**: One Agent per LB node, deployed as a DaemonSet
+- **Observable**: OpenTelemetry traces/metrics, Prometheus endpoint, structured logging
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────┐
-│             REST API Client             │
+│           kubectl / GitOps              │
+│   (apply VirtualIP CRD manifests)       │
 └────────────┬────────────────────────────┘
              │
              ▼
 ┌─────────────────────────────────────────┐
-│      Controller (REST + gRPC)           │
-│  - VIP/Backend management               │
-│  - Datastore (etcd/MySQL)               │
-│  - Config delivery to Agents            │
-└────────────┬────────────────────────────┘
-             │ gRPC
-             ▼
-┌─────────────────────────────────────────┐
-│      Agent (per load balancer node)     │
-│  - VPP L4 LB control                    │
-│  - Health checks                        │
-│  - FRR BGP route announcements          │
-└─────────────────────────────────────────┘
+│      Kubernetes API Server              │
+│  - VirtualIP CRD (arca.io/v1alpha1)     │
+│  - Admission Webhook validation         │
+└──────┬──────────────────────┬───────────┘
+       │                      │
+       ▼                      ▼
+┌──────────────┐   ┌──────────────────────┐
+│   Operator   │   │  Agent (per LB node) │
+│  - Reconcile │   │  - K8s Informer      │
+│  - Status    │   │  - Per-VIP Reconciler │
+│  - Webhook   │   │  - Health Checks     │
+└──────────────┘   │  - VPP DataPlane     │
+                   │  - FRR Router        │
+                   │  - bbolt Local Store  │
+                   │  - OTel Telemetry    │
+                   └──────────────────────┘
+```
+
+### VirtualIP Custom Resource Example
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: web-vip
+spec:
+  address: 203.0.113.10
+  port: 80
+  protocol: TCP
+  encapType: L3DSR
+  dscp: 10
+  backends:
+    - address: 10.0.1.1
+      weight: 100
+    - address: 10.0.1.2
+      weight: 100
+  healthCheck:
+    type: http
+    intervalSeconds: 5
+    timeoutSeconds: 3
+    riseCount: 3
+    fallCount: 2
+    http:
+      port: 8080
+      path: /healthz
 ```
 
 ## Project Structure
 
 ```
 arca-lb/
-├── cmd/                    # Entry points
-│   ├── arcalb-controller/  # Controller binary
-│   └── arcalb-agent/       # Agent binary
-├── internal/               # Internal packages
-│   ├── controller/         # Controller implementation
+├── api/
+│   └── v1alpha1/           # VirtualIP CRD types (kubebuilder)
+├── cmd/
+│   ├── operator/           # Operator (K8s controller) binary
+│   ├── agent/              # v2 Agent binary
+│   ├── arcalb-controller/  # v1 Controller binary (legacy)
+│   └── arcalb-agent/       # v1 Agent binary (legacy)
+├── config/                 # K8s manifests (generated + hand-written)
+│   ├── crd/                # CRD YAML (controller-gen output)
+│   ├── rbac/               # RBAC roles
+│   ├── manager/            # Operator Deployment
+│   ├── agent/              # Agent DaemonSet
+│   └── samples/            # Example VirtualIP resources
+├── internal/
+│   ├── operator/           # Operator reconciler + webhook
 │   ├── agent/              # Agent implementation
-│   └── common/             # Shared packages
-├── pkg/                    # Public APIs
-├── api/                    # API definitions
-│   ├── proto/              # gRPC Protocol Buffers
-│   └── openapi/            # REST API OpenAPI
-├── deploy/                 # Deployment artifacts
-│   ├── docker/             # Dockerfiles
-│   ├── docker-compose/     # Docker Compose
-│   └── kubernetes/         # Kubernetes manifests
-├── test/                   # Tests
+│   │   ├── config/         # Agent configuration (v1 + v2)
+│   │   ├── dataplane/      # DataPlane interface (VPP, Noop)
+│   │   ├── routing/        # Router interface (FRR, Noop)
+│   │   ├── store/          # bbolt local persistence
+│   │   ├── watcher/        # K8s informer-based CRD watcher
+│   │   ├── reconciler/     # Per-VIP reconciler
+│   │   └── healthcheck/    # Health check engine
+│   ├── pkg/otel/           # OpenTelemetry setup
+│   └── common/             # Shared models (v1)
+├── deploy/                 # Legacy deployment artifacts
 ├── docs/                   # Documentation
-└── migrations/             # Database migrations
+└── test/                   # Tests
 ```
 
 ## Requirements
 
 - **Go**: 1.24+ (development)
+- **Kubernetes**: 1.28+ (runtime)
 - **VPP**: 24.10 (recommended, Agent runtime)
-- **FRRouting**: 8.0+ (Agent runtime)
-- **etcd**: 3.5+ (Controller, optional)
-- **MySQL**: 8.0+ (Controller, optional)
+- **FRRouting**: 8.0+ (Agent runtime, optional)
+- **controller-gen**: For CRD/deepcopy code generation
 - **Docker**: 20.10+ (optional)
 
 ## Quickstart
 
-### Set Up the Development Environment
+### 1. Clone and build
 
-1. Clone the repository
 ```bash
 git clone https://github.com/akam1o/arca-lb.git
 cd arca-lb
-```
-
-2. Install dependencies
-```bash
 make deps
+make build-v2
 ```
 
-3. Prepare configuration files
-```bash
-cp deploy/config/controller.example.yaml deploy/config/controller.yaml
-cp deploy/config/agent.example.yaml deploy/config/agent.yaml
-```
-
-4. Start a datastore (Docker Compose)
-```bash
-docker compose -f deploy/docker-compose/docker-compose.dev.yml up -d etcd
-# or
-docker compose -f deploy/docker-compose/docker-compose.dev.yml up -d mysql
-```
-
-5. Build
-```bash
-make build
-```
-
-### Start the Controller
+### 2. Install the CRD
 
 ```bash
-./bin/arcalb-controller --config deploy/config/controller.yaml
+make manifests
+kubectl apply -f config/crd/bases/
 ```
 
-### Start the Agent
+### 3. Deploy the Operator
 
 ```bash
-export ARCA_AGENT_CONFIG=deploy/config/agent.yaml
-sudo ./bin/arcalb-agent
+kubectl apply -f config/rbac/
+kubectl apply -f config/manager/
 ```
 
-**Note**: The Agent reads the config path from the `ARCA_AGENT_CONFIG` environment variable (default: `/etc/arca-lb/agent.yaml`), not from a `--config` flag.
+### 4. Deploy the Agent (DaemonSet)
+
+```bash
+kubectl apply -f config/agent/
+```
+
+### 5. Create a VirtualIP
+
+```bash
+kubectl apply -f config/samples/virtualip_sample.yaml
+kubectl get vip
+```
 
 ## Makefile Targets
 
 ```bash
 make help          # Show available targets
 make deps          # Download dependencies
-make build         # Build binaries
+make build         # Build all binaries (v1 + v2)
+make build-v2      # Build v2 operator and agent only
 make test          # Run tests
 make lint          # Run linters
-make proto         # Generate Protocol Buffers code
+make manifests     # Generate CRD manifests (controller-gen)
+make generate      # Generate deepcopy methods (controller-gen)
+make proto         # Generate Protocol Buffers code (v1)
 make docker        # Build Docker images
 make clean         # Remove build artifacts
 ```
@@ -141,9 +179,8 @@ For detailed documentation, see the `docs/` directory:
 
 ### Operations
 - [Installation Guide](docs/installation.md) - Installation steps and setup
-- [Configuration Guide](docs/configuration.md) - How to configure the Controller and Agent
-- [API Reference](docs/api.md) - REST API reference
-- [OpenAPI Spec](api/openapi/openapi.yaml) - Machine-readable REST API spec
+- [Configuration Guide](docs/configuration.md) - How to configure Operator and Agent
+- [API Reference](docs/api.md) - CRD API reference and REST API (v1)
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and fixes
 - [Backend Server Setup Guide](docs/backend-setup.md) - How to configure backend servers
 

@@ -54,7 +54,7 @@
    - Webhook 設定が存在するか確認。
    - cert-manager または Webhook 証明書が有効か確認。
 
-## Agent の問題 (v2)
+## Agent の問題
 
 ### Agent が起動しない
 
@@ -63,8 +63,7 @@
 **原因と解決方法**:
 
 1. **設定ファイルが見つからない**
-   - ConfigMap のマウント先を確認: `/etc/arca-lb/agent.v2.yaml`
-   - コンテナの args に `--v2` フラグがあるか確認。
+   - ConfigMap のマウント先を確認: `/etc/arca-lb/agent.yaml`
 
 2. **Kubernetes API 接続エラー**
    - Agent の ServiceAccount の RBAC を確認。
@@ -171,7 +170,7 @@ kubectl logs -f -l app=arcalb-operator -- --zap-log-level=debug
 kubectl logs -f -l app=arcalb-agent
 
 # スタンドアロン Agent
-sudo ./bin/arcalb-agent --v2 --config deploy/config/agent.v2.example.yaml
+sudo ./bin/arcalb-agent --config deploy/config/agent.example.yaml
 ```
 
 ### VPP ログ
@@ -241,15 +240,15 @@ kubectl get pods -l app=arcalb-operator
 4. バックエンドが健全で稼働中か。
 5. バックエンドサーバーが正しく設定されているか（[バックエンド設定](./backend-setup.ja.md) 参照）。
 
-### Q: v1 から v2 へ移行するには？
+### Q: レガシー Controller から移行するには？
 
 **A**:
 
 1. CRD をインストール: `kubectl apply -f config/crd/bases/`
 2. Operator をデプロイ: `kubectl apply -f config/manager/manager.yaml`
-3. v1 の VIP 定義を VirtualIP CRD に変換して apply。
-4. `--v2` フラグ付きで Agent DaemonSet をデプロイ。
-5. v1 Controller を廃止。
+3. レガシー VIP 定義を VirtualIP CRD に変換して apply。
+4. Agent DaemonSet をデプロイ。
+5. レガシー Controller を廃止。
 
 ---
 

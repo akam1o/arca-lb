@@ -130,9 +130,9 @@ make proto
 
 ```bash
 # Build v2 only
-make build-v2
+make build
 
-# Build everything (v1 + v2)
+# Build operator and agent
 make build
 
 # Test
@@ -150,7 +150,7 @@ go tool cover -html=coverage.out
 ./bin/arcalb-operator --metrics-bind-address=:8080
 
 # Run the Agent (with noop data plane for testing)
-./bin/arcalb-agent-v2 --config deploy/config/agent.yaml
+./bin/arcalb-agent --config deploy/config/agent.yaml
 ```
 
 ## Debugging
@@ -167,7 +167,7 @@ go tool cover -html=coverage.out
 
 ```bash
 # Set log.level: "debug" in the agent config file
-./bin/arcalb-agent-v2 --config deploy/config/agent.yaml
+./bin/arcalb-agent --config deploy/config/agent.yaml
 ```
 
 Use the `noop` data plane and router for development without VPP/FRR:
@@ -274,7 +274,7 @@ go tool cover -html=coverage.out
 
 ```bash
 make help          # Show all targets
-make build-v2      # Build v2 Operator + Agent
+make build         # Build Operator + Agent
 make test          # Run tests with race detector
 make lint          # Run golangci-lint
 make manifests     # Generate CRD manifests

@@ -6,7 +6,6 @@
 
 - Operator: `ghcr.io/akam1o/arca-lb-operator`
 - Agent: `ghcr.io/akam1o/arca-lb-agent`
-- Controller (v1, legacy): `ghcr.io/akam1o/arca-lb-controller`
 
 ## Features
 
@@ -85,7 +84,7 @@ arca-lb/
 │   └── v1alpha1/           # VirtualIP CRD types (kubebuilder)
 ├── cmd/
 │   ├── operator/           # Operator (K8s controller) binary
-│   ├── agent/              # v2 Agent binary
+│   ├── agent/              # Agent binary
 │   ├── arcalb-controller/  # v1 Controller binary (legacy)
 │   └── arcalb-agent/       # v1 Agent binary (legacy)
 ├── config/                 # K8s manifests (generated + hand-written)
@@ -97,7 +96,7 @@ arca-lb/
 ├── internal/
 │   ├── operator/           # Operator reconciler + webhook
 │   ├── agent/              # Agent implementation
-│   │   ├── config/         # Agent configuration (v1 + v2)
+│   │   ├── config/         # Agent configuration
 │   │   ├── dataplane/      # DataPlane interface (VPP, Noop)
 │   │   ├── routing/        # Router interface (FRR, Noop)
 │   │   ├── store/          # bbolt local persistence
@@ -129,7 +128,7 @@ arca-lb/
 git clone https://github.com/akam1o/arca-lb.git
 cd arca-lb
 make deps
-make build-v2
+make build
 ```
 
 ### 2. Install the CRD
@@ -164,14 +163,13 @@ kubectl get vip
 ```bash
 make help          # Show available targets
 make deps          # Download dependencies
-make build         # Build all binaries (v1 + v2)
-make build-v2      # Build v2 operator and agent only
+make build         # Build operator and agent binaries
 make test          # Run tests
 make lint          # Run linters
 make manifests     # Generate CRD manifests (controller-gen)
 make generate      # Generate deepcopy methods (controller-gen)
 make proto         # Generate Protocol Buffers code (v1)
-make docker        # Build Docker images
+make docker        # Build Operator and Agent images
 make clean         # Remove build artifacts
 ```
 

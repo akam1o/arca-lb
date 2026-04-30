@@ -179,7 +179,7 @@ make test
 # 特定のパッケージ
 go test ./internal/operator/...
 
-# v2 Agent テスト
+# Agent テスト
 go test ./internal/agent/dataplane/ ./internal/agent/routing/ ./internal/agent/store/
 
 # カバレッジ

@@ -4,7 +4,7 @@
 
 ## Agent 設定 (v2)
 
-v2 Agent は YAML 設定ファイルから設定を読み込みます。パスは `--config` フラグまたは `ARCA_AGENT_CONFIG` 環境変数で指定します（デフォルト: `/etc/arca-lb/agent.yaml`）。
+Agent は YAML 設定ファイルから設定を読み込みます。パスは `--config` フラグまたは `ARCA_AGENT_CONFIG` 環境変数で指定します（デフォルト: `/etc/arca-lb/agent.yaml`）。
 
 ```yaml
 agent:
@@ -191,11 +191,11 @@ spec:
 
 ```bash
 # 設定ファイルのパスを指定
-./bin/arcalb-agent-v2 --config /path/to/agent.yaml
+./bin/arcalb-agent --config /path/to/agent.yaml
 
 # または環境変数で指定
 export ARCA_AGENT_CONFIG=/path/to/agent.yaml
-./bin/arcalb-agent-v2
+./bin/arcalb-agent
 ```
 
 ## 次のステップ

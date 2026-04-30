@@ -30,7 +30,7 @@
 ```bash
 git clone https://github.com/akam1o/arca-lb.git
 cd arca-lb
-make build-v2
+make build
 ```
 
 #### 2. CRD の生成とインストール
@@ -107,7 +107,7 @@ docker build -f deploy/docker/Dockerfile.agent -t arcalb-agent:latest .
 Agent は kubeconfig ファイルを使用して、クラスター外から K8s API Server に接続できます：
 
 ```bash
-./bin/arcalb-agent-v2 --config /path/to/agent.yaml
+./bin/arcalb-agent --config /path/to/agent.yaml
 ```
 
 kubeconfig を指定する Agent 設定：

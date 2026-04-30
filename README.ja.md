@@ -84,9 +84,7 @@ arca-lb/
 │   └── v1alpha1/           # VirtualIP CRD 型定義 (kubebuilder)
 ├── cmd/
 │   ├── operator/           # Operator (K8s コントローラー) バイナリ
-│   ├── agent/              # Agent バイナリ
-│   ├── arcalb-controller/  # v1 Controller バイナリ (レガシー)
-│   └── arcalb-agent/       # v1 Agent バイナリ (レガシー)
+│   └── agent/              # Agent バイナリ
 ├── config/                 # K8s マニフェスト (生成 + 手書き)
 │   ├── crd/                # CRD YAML (controller-gen 出力)
 │   ├── rbac/               # RBAC ロール
@@ -103,8 +101,7 @@ arca-lb/
 │   │   ├── watcher/        # K8s Informer ベースの CRD ウォッチャー
 │   │   ├── reconciler/     # VIP 別リコンサイラー
 │   │   └── healthcheck/    # ヘルスチェックエンジン
-│   ├── pkg/otel/           # OpenTelemetry セットアップ
-│   └── common/             # 共通モデル (v1)
+│   └── pkg/otel/           # OpenTelemetry セットアップ
 ├── octavia-driver/         # OpenStack Octavia プロバイダードライバー (Python)
 ├── deploy/                 # デプロイメント設定
 ├── docs/                   # ドキュメント

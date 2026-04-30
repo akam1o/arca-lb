@@ -1,60 +1,22 @@
-version: "3.9"
-
-# Docker Compose file for integration testing
-# This file includes all services needed for end-to-end testing
+# arca-lb v2 is Kubernetes-native. This compose file is an image and
+# entrypoint smoke test; it intentionally does not start the removed v1
+# controller/gRPC stack.
 
 services:
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.10
-    ports:
-      - "2379:2379"
-      - "2380:2380"
-    environment:
-      ETCD_NAME: etcd0
-      ETCD_ADVERTISE_CLIENT_URLS: http://0.0.0.0:2379
-      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://0.0.0.0:2380
-      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
-      ETCD_INITIAL_CLUSTER: etcd0=http://0.0.0.0:2380
-      ETCD_INITIAL_CLUSTER_STATE: new
-      ETCD_INITIAL_CLUSTER_TOKEN: arcalb-etcd-cluster
-    volumes:
-      - etcd_test_data:/etcd-data
-    networks:
-      - arcalb-test-net
-    healthcheck:
-      test: ["CMD-SHELL", "etcdctl endpoint health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  controller:
+  operator:
+    image: arcalb-operator:latest
     build:
       context: ../../
-      dockerfile: deploy/docker/Dockerfile.controller
-    ports:
-      - "8080:8080"
-      - "50051:50051"
-    environment:
-      CONFIG_PATH: /app/config/controller.yaml
-    volumes:
-      - ../../deploy/config/controller.example.yaml:/app/config/controller.yaml:ro
-    depends_on:
-      etcd:
-        condition: service_healthy
-    networks:
-      - arcalb-test-net
+      dockerfile: deploy/docker/Dockerfile.operator
+    command: ["--help"]
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/healthz || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 30s
+      disable: true
 
-networks:
-  arcalb-test-net:
-    driver: bridge
-
-volumes:
-  etcd_test_data:
-
+  agent:
+    image: arcalb-agent:latest
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.agent
+    command: ["--help"]
+    healthcheck:
+      disable: true

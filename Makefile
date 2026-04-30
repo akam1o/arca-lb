@@ -15,7 +15,7 @@ PROTO_SRC := api/proto
 PROTO_OUT := pkg/grpc
 PROTO_PATH := $(PATH):$(shell go env GOPATH)/bin
 
-DOCKER_OPERATOR_FILE ?= deploy/docker/Dockerfile.controller
+DOCKER_OPERATOR_FILE ?= deploy/docker/Dockerfile.operator
 DOCKER_AGENT_FILE ?= deploy/docker/Dockerfile.agent
 DOCKER_AGENT_IMAGE ?= arcalb-agent:latest
 DOCKER_OPERATOR_IMAGE ?= arcalb-operator:latest

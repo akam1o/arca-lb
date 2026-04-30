@@ -133,3 +133,59 @@ func TestUpdateVIPStatusSkipsStaleGeneration(t *testing.T) {
 		t.Fatalf("HealthyBackends = %d, want stale update to be skipped", got.Status.HealthyBackends)
 	}
 }
+
+func TestUpdateHealthCheckCondition(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 3,
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	updater := &Updater{
+		client: k8sClient,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	if err := updater.UpdateHealthCheckCondition(context.Background(), vip, metav1.Condition{
+		Status:  metav1.ConditionFalse,
+		Reason:  "InvalidHealthCheck",
+		Message: "HTTP health check config is required",
+	}); err != nil {
+		t.Fatalf("UpdateHealthCheckCondition: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if len(got.Status.Conditions) != 1 {
+		t.Fatalf("conditions = %d, want 1", len(got.Status.Conditions))
+	}
+	condition := got.Status.Conditions[0]
+	if condition.Type != ConditionHealthCheckReady {
+		t.Fatalf("condition type = %q, want %q", condition.Type, ConditionHealthCheckReady)
+	}
+	if condition.Status != metav1.ConditionFalse {
+		t.Fatalf("condition status = %s, want False", condition.Status)
+	}
+	if condition.Reason != "InvalidHealthCheck" {
+		t.Fatalf("condition reason = %q, want InvalidHealthCheck", condition.Reason)
+	}
+	if condition.ObservedGeneration != 3 {
+		t.Fatalf("condition observedGeneration = %d, want 3", condition.ObservedGeneration)
+	}
+}

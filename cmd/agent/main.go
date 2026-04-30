@@ -27,6 +27,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/store"
 	"github.com/akam1o/arca-lb/internal/agent/watcher"
 	otelsetup "github.com/akam1o/arca-lb/internal/pkg/otel"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func main() {
@@ -161,9 +162,11 @@ func main() {
 
 	// Create VIP event handler that bridges watcher events to reconciler + health checks
 	handler := &vipEventHandler{
-		reconciler: reconMgr,
-		hcEngine:   hcEngine,
-		logger:     logger,
+		ctx:           ctx,
+		reconciler:    reconMgr,
+		hcEngine:      hcEngine,
+		statusUpdater: statusUpdater,
+		logger:        logger,
 	}
 
 	// Create and start K8s watcher
@@ -239,9 +242,15 @@ func main() {
 
 // vipEventHandler bridges watcher events to the reconciler and health check engine.
 type vipEventHandler struct {
-	reconciler *reconciler.Manager
-	hcEngine   *healthcheck.Engine
-	logger     *slog.Logger
+	ctx           context.Context
+	reconciler    *reconciler.Manager
+	hcEngine      *healthcheck.Engine
+	statusUpdater healthCheckConditionUpdater
+	logger        *slog.Logger
+}
+
+type healthCheckConditionUpdater interface {
+	UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.VirtualIP, condition metav1.Condition) error
 }
 
 func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
@@ -252,10 +261,13 @@ func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	if vip.Spec.HealthCheck != nil {
 		if err := h.hcEngine.UpdateVIP(vip); err != nil {
 			h.logger.Error("failed to update health check", "vip", vipKey, "error", err)
+			h.updateHealthCheckCondition(vip, metav1.ConditionFalse, "InvalidHealthCheck", err.Error())
 			return
 		}
+		h.updateHealthCheckCondition(vip, metav1.ConditionTrue, "Configured", "Health check configured")
 	} else {
 		h.hcEngine.StopVIP(vipKey)
+		h.updateHealthCheckCondition(vip, metav1.ConditionTrue, "Disabled", "Health check disabled")
 	}
 
 	// Trigger reconciliation
@@ -268,6 +280,28 @@ func (h *vipEventHandler) OnVIPDelete(vip *v1alpha1.VirtualIP) {
 
 	h.hcEngine.StopVIP(vipKey)
 	h.reconciler.OnVIPDelete(vip)
+}
+
+func (h *vipEventHandler) updateHealthCheckCondition(vip *v1alpha1.VirtualIP, status metav1.ConditionStatus, reason, message string) {
+	if h.statusUpdater == nil {
+		return
+	}
+
+	ctx := h.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	condition := metav1.Condition{
+		Type:               agentstatus.ConditionHealthCheckReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: vip.Generation,
+	}
+	if err := h.statusUpdater.UpdateHealthCheckCondition(ctx, vip, condition); err != nil {
+		h.logger.Warn("failed to update health check condition", "vip", healthcheck.KeyForVIP(vip), "error", err)
+	}
 }
 
 func setupLogger(cfg agentconfig.LogSettings) *slog.Logger {

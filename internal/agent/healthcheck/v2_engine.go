@@ -127,6 +127,13 @@ func NewEngine(cfg EngineConfig, st *store.Store, callback V2StateChangeCallback
 	}
 }
 
+// SetCallback updates the state transition callback.
+func (e *Engine) SetCallback(callback V2StateChangeCallback) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.callback = callback
+}
+
 // Start starts the health check engine.
 func (e *Engine) Start(ctx context.Context) error {
 	e.mu.Lock()
@@ -468,6 +475,7 @@ func (e *Engine) handleResult(result *probeResult) {
 
 	newState := bhs.state
 	stateChanged := prevState != newState
+	callback := e.callback
 
 	e.mu.Unlock()
 
@@ -487,13 +495,13 @@ func (e *Engine) handleResult(result *probeResult) {
 	}
 
 	// Fire callback on state change
-	if stateChanged && e.callback != nil {
+	if stateChanged && callback != nil {
 		e.logger.Info("backend state changed",
 			"vip", result.vipName,
 			"backend", result.backendAddr,
 			"old", prevState,
 			"new", newState)
-		e.callback(result.vipName, result.backendAddr, prevState, newState)
+		callback(result.vipName, result.backendAddr, prevState, newState)
 	}
 }
 

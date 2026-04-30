@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -36,6 +37,32 @@ func TestV2ManagerRecreatesVIPAfterDelete(t *testing.T) {
 	recreated := newV2TestVIP("default", "web", "uid-2")
 	mgr.OnVIPUpdate(recreated)
 	waitFor(t, func() bool { return dp.applyCount() == 2 }, "recreated VIP apply")
+}
+
+func TestV2ReconcilerSkipsStatusAndRouteWhenDataPlaneFails(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.applyErr = errors.New("apply failed")
+	router := routing.NewNoop()
+	statusUpdater := &recordingStatusUpdater{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return dp.applyCount() == 1 }, "failed VIP apply")
+
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route was announced despite dataplane apply failure")
+	}
+	if got := statusUpdater.updateCount(); got != 0 {
+		t.Fatalf("status updates = %d, want 0 after dataplane apply failure", got)
+	}
 }
 
 func newV2TestVIP(namespace, name string, uid types.UID) *v1alpha1.VirtualIP {
@@ -73,6 +100,7 @@ type recordingDataPlane struct {
 	mu       sync.Mutex
 	applies  int
 	removals int
+	applyErr error
 }
 
 func newRecordingDataPlane() *recordingDataPlane {
@@ -83,7 +111,7 @@ func (r *recordingDataPlane) ApplyVIP(_ context.Context, _ *v1alpha1.VirtualIP, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.applies++
-	return nil
+	return r.applyErr
 }
 
 func (r *recordingDataPlane) RemoveVIP(_ context.Context, _ *v1alpha1.VirtualIP) error {
@@ -123,4 +151,22 @@ func (r *recordingDataPlane) removeCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.removals
+}
+
+type recordingStatusUpdater struct {
+	mu      sync.Mutex
+	updates int
+}
+
+func (r *recordingStatusUpdater) UpdateVIPStatus(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.updates++
+	return nil
+}
+
+func (r *recordingStatusUpdater) updateCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.updates
 }

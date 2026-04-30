@@ -171,7 +171,7 @@ spec:
 | フィールド | 説明 | 必須 |
 |----------|------|------|
 | `address` | バックエンド IP アドレス | はい |
-| `weight` | トラフィック重み (1-100) | いいえ (デフォルト: 100) |
+| `weight` | 希望するトラフィック重み (1-100)。現在の VPP LB plugin 経路では metadata として保持されます。VPP LB API が backend weight を公開した時点で重み付き AS programming に反映されます。 | いいえ (デフォルト: 100) |
 
 ### HealthCheck Spec フィールド
 

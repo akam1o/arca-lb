@@ -40,6 +40,8 @@ OpenStack Tenant (API / Horizon / CLI)
 | HealthMonitor | healthCheck | Probe type and parameters |
 | L7Policy/Rule | *(not supported)* | arca-lb is an L4 load balancer |
 
+Member weight is preserved in the VirtualIP backend spec. With the current VPP LB plugin path it is metadata only; weighted AS programming will take effect once the VPP LB API exposes backend weights.
+
 ## Prerequisites
 
 - OpenStack with Octavia deployed (Zed or later recommended)

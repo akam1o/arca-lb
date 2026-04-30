@@ -171,7 +171,7 @@ spec:
 | Field | Description | Required |
 |-------|-------------|----------|
 | `address` | Backend IP address | Yes |
-| `weight` | Traffic weight (1-100) | No (default: 100) |
+| `weight` | Desired traffic weight (1-100). The VPP LB plugin path currently stores this as metadata; weighted AS programming will take effect once the VPP LB API exposes backend weights. | No (default: 100) |
 
 ### HealthCheck Spec fields
 

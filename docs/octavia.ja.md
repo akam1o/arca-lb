@@ -40,6 +40,8 @@ OpenStack テナント (API / Horizon / CLI)
 | HealthMonitor | healthCheck | プローブタイプとパラメータ |
 | L7Policy/Rule | *（非対応）* | arca-lb は L4 ロードバランサー |
 
+Member weight は VirtualIP backend spec に保持されます。現在の VPP LB plugin 経路では metadata のみとして扱われます。VPP LB API が backend weight を公開した時点で重み付き AS programming に反映されます。
+
 ## 前提条件
 
 - Octavia がデプロイされた OpenStack（Zed 以降推奨）

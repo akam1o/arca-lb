@@ -229,24 +229,17 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 		return fmt.Errorf("health check engine is not started")
 	}
 
-	// Stop existing if present
-	if vs, ok := e.vips[vipKey]; ok {
-		if vs.cancel != nil {
-			vs.cancel()
-		}
-		if vs.prober != nil {
-			if err := vs.prober.Close(); err != nil {
-				e.logger.Warn("failed to close prober", "vip", vipKey, "error", err)
-			}
-		}
-	}
+	return e.startVIPLocked(vipKey, vip)
+}
 
+func (e *Engine) startVIPLocked(vipKey string, vip *v1alpha1.VirtualIP) error {
 	prober, err := newProberFromSpec(vip.Spec.HealthCheck)
 	if err != nil {
 		return fmt.Errorf("failed to create prober for VIP %s: %w", vipKey, err)
 	}
 
 	ctx, cancel := context.WithCancel(e.ctx)
+	existing := e.vips[vipKey]
 	e.nextEpoch++
 	vs := &vipHealthState{
 		vipKey:   vipKey,
@@ -263,6 +256,14 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 			address:         be.Address,
 			state:           V2StateUnknown,
 			lastStateChange: time.Now(),
+		}
+
+		if existing != nil {
+			if current, ok := existing.backends[be.Address]; ok {
+				copied := *current
+				vs.backends[be.Address] = &copied
+				continue
+			}
 		}
 
 		// Try to restore from persistent store
@@ -282,6 +283,9 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 	}
 
 	e.vips[vipKey] = vs
+	if existing != nil {
+		e.stopVIPState(vipKey, existing)
+	}
 
 	// Start scheduler goroutine for this VIP
 	e.schedulerWG.Add(1)
@@ -306,6 +310,29 @@ func (e *Engine) StopVIP(vipKey string) {
 		return
 	}
 
+	e.stopVIPState(vipKey, vs)
+	delete(e.vips, vipKey)
+
+	e.logger.Info("stopped health check for VIP", "vip", vipKey)
+}
+
+// UpdateVIP updates health checking for a VIP (backends may have changed).
+func (e *Engine) UpdateVIP(vip *v1alpha1.VirtualIP) error {
+	if vip.Spec.HealthCheck == nil {
+		return nil
+	}
+	vipKey := KeyForVIP(vip)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.started {
+		return fmt.Errorf("health check engine is not started")
+	}
+
+	return e.startVIPLocked(vipKey, vip)
+}
+
+func (e *Engine) stopVIPState(vipKey string, vs *vipHealthState) {
 	if vs.cancel != nil {
 		vs.cancel()
 	}
@@ -314,16 +341,6 @@ func (e *Engine) StopVIP(vipKey string) {
 			e.logger.Warn("failed to close prober", "vip", vipKey, "error", err)
 		}
 	}
-	delete(e.vips, vipKey)
-
-	e.logger.Info("stopped health check for VIP", "vip", vipKey)
-}
-
-// UpdateVIP updates health checking for a VIP (backends may have changed).
-func (e *Engine) UpdateVIP(vip *v1alpha1.VirtualIP) error {
-	// Simple approach: stop and restart
-	e.StopVIP(KeyForVIP(vip))
-	return e.StartVIP(vip)
 }
 
 // IsHealthy returns whether a specific backend is healthy.

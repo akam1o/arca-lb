@@ -120,6 +120,68 @@ func TestEngineIgnoresStaleProbeResult(t *testing.T) {
 	}
 }
 
+func TestEngineUpdateVIPFailurePreservesExistingState(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{}, nil, nil, logger)
+	engine.started = true
+	engine.ctx = context.Background()
+
+	var canceled bool
+	prober := &recordingV2Prober{}
+	engine.vips["default/vip-1"] = &vipHealthState{
+		vipKey: "default/vip-1",
+		epoch:  7,
+		spec: &v1alpha1.HealthCheckSpec{
+			Type:            v1alpha1.HCTypePing,
+			IntervalSeconds: 5,
+			TimeoutSeconds:  3,
+			RiseCount:       1,
+			FallCount:       1,
+		},
+		backends: map[string]*backendHealthState{
+			"10.0.0.1": {
+				address: "10.0.0.1",
+				state:   V2StateUp,
+			},
+		},
+		prober: prober,
+		cancel: func() { canceled = true },
+	}
+
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "vip-1",
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Backends: []v1alpha1.BackendSpec{{Address: "10.0.0.1", Weight: 100}},
+			HealthCheck: &v1alpha1.HealthCheckSpec{
+				Type: v1alpha1.HCTypeHTTP,
+			},
+		},
+	}
+
+	if err := engine.UpdateVIP(vip); err == nil {
+		t.Fatal("expected invalid health check update to fail")
+	}
+	if canceled {
+		t.Fatal("existing health check was canceled after failed update")
+	}
+	if prober.closed {
+		t.Fatal("existing prober was closed after failed update")
+	}
+	vs := engine.vips["default/vip-1"]
+	if vs == nil {
+		t.Fatal("existing VIP health state was removed after failed update")
+	}
+	if vs.epoch != 7 {
+		t.Fatalf("VIP epoch = %d, want 7", vs.epoch)
+	}
+	if got := vs.backends["10.0.0.1"].state; got != V2StateUp {
+		t.Fatalf("backend state = %s, want %s", got, V2StateUp)
+	}
+}
+
 func TestEngineUsesNamespacedVIPKeys(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(EngineConfig{}, nil, nil, logger)
@@ -171,4 +233,17 @@ func TestKeyForVIP(t *testing.T) {
 	if got := KeyForVIP(vip); got != "team-a/web" {
 		t.Fatalf("KeyForVIP = %q, want team-a/web", got)
 	}
+}
+
+type recordingV2Prober struct {
+	closed bool
+}
+
+func (p *recordingV2Prober) Probe(context.Context, string) V2ProbeResult {
+	return V2ProbeResult{Success: true, Timestamp: time.Now()}
+}
+
+func (p *recordingV2Prober) Close() error {
+	p.closed = true
+	return nil
 }

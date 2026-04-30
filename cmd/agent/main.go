@@ -252,6 +252,7 @@ func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	if vip.Spec.HealthCheck != nil {
 		if err := h.hcEngine.UpdateVIP(vip); err != nil {
 			h.logger.Error("failed to update health check", "vip", vipKey, "error", err)
+			return
 		}
 	} else {
 		h.hcEngine.StopVIP(vipKey)

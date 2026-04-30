@@ -79,6 +79,47 @@ func TestEngineSetCallback(t *testing.T) {
 	}
 }
 
+func TestEngineIgnoresStaleProbeResult(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{}, nil, nil, logger)
+
+	engine.vips["default/vip-1"] = &vipHealthState{
+		vipKey: "default/vip-1",
+		epoch:  2,
+		spec: &v1alpha1.HealthCheckSpec{
+			RiseCount: 1,
+			FallCount: 1,
+		},
+		backends: map[string]*backendHealthState{
+			"10.0.0.1": {
+				address: "10.0.0.1",
+				state:   V2StateUnknown,
+			},
+		},
+	}
+
+	var called bool
+	engine.SetCallback(func(string, string, V2BackendState, V2BackendState) {
+		called = true
+	})
+
+	engine.handleResult(&probeResult{
+		vipKey:      "default/vip-1",
+		epoch:       1,
+		backendAddr: "10.0.0.1",
+		success:     true,
+		timestamp:   time.Now(),
+	})
+
+	if called {
+		t.Fatal("callback was called for stale probe result")
+	}
+	states := engine.GetBackendStates("default/vip-1")
+	if states["10.0.0.1"] != V2StateUnknown {
+		t.Fatalf("backend state = %s, want %s", states["10.0.0.1"], V2StateUnknown)
+	}
+}
+
 func TestEngineUsesNamespacedVIPKeys(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(EngineConfig{}, nil, nil, logger)

@@ -55,7 +55,8 @@ type Engine struct {
 	cancel  context.CancelFunc
 
 	// Per-VIP tracking
-	vips map[string]*vipHealthState // key: namespace/name
+	vips      map[string]*vipHealthState // key: namespace/name
+	nextEpoch uint64
 
 	// Worker pool
 	jobCh       chan *probeJob
@@ -71,6 +72,7 @@ type Engine struct {
 
 type vipHealthState struct {
 	vipKey   string
+	epoch    uint64
 	spec     *v1alpha1.HealthCheckSpec
 	backends map[string]*backendHealthState // key: backend address
 	prober   V2Prober
@@ -88,6 +90,7 @@ type backendHealthState struct {
 
 type probeJob struct {
 	vipKey      string
+	epoch       uint64
 	backendAddr string
 	prober      V2Prober
 	timeout     time.Duration
@@ -95,6 +98,7 @@ type probeJob struct {
 
 type probeResult struct {
 	vipKey      string
+	epoch       uint64
 	backendAddr string
 	success     bool
 	latency     time.Duration
@@ -243,8 +247,10 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 	}
 
 	ctx, cancel := context.WithCancel(e.ctx)
+	e.nextEpoch++
 	vs := &vipHealthState{
 		vipKey:   vipKey,
+		epoch:    e.nextEpoch,
 		spec:     vip.Spec.HealthCheck.DeepCopy(),
 		backends: make(map[string]*backendHealthState),
 		prober:   prober,
@@ -400,6 +406,7 @@ func (e *Engine) emitProbeJobs(vs *vipHealthState) {
 	for addr := range vs.backends {
 		job := &probeJob{
 			vipKey:      vs.vipKey,
+			epoch:       vs.epoch,
 			backendAddr: addr,
 			prober:      vs.prober,
 			timeout:     timeout,
@@ -425,6 +432,7 @@ func (e *Engine) worker(id int) {
 
 		pr := &probeResult{
 			vipKey:      job.vipKey,
+			epoch:       job.epoch,
 			backendAddr: job.backendAddr,
 			success:     result.Success,
 			latency:     latency,
@@ -464,6 +472,10 @@ func (e *Engine) handleResult(result *probeResult) {
 
 	vs, ok := e.vips[result.vipKey]
 	if !ok {
+		e.mu.Unlock()
+		return
+	}
+	if vs.epoch != result.epoch {
 		e.mu.Unlock()
 		return
 	}

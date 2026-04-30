@@ -94,7 +94,7 @@ make docker
 Or build individually:
 
 ```bash
-docker build -f deploy/docker/Dockerfile.controller -t arcalb-operator:latest .
+docker build -f deploy/docker/Dockerfile.operator -t arcalb-operator:latest .
 docker build -f deploy/docker/Dockerfile.agent -t arcalb-agent:latest .
 ```
 

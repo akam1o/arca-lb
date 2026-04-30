@@ -23,6 +23,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/healthcheck"
 	"github.com/akam1o/arca-lb/internal/agent/reconciler"
 	"github.com/akam1o/arca-lb/internal/agent/routing"
+	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
 	"github.com/akam1o/arca-lb/internal/agent/store"
 	"github.com/akam1o/arca-lb/internal/agent/watcher"
 	otelsetup "github.com/akam1o/arca-lb/internal/pkg/otel"
@@ -121,6 +122,14 @@ func main() {
 		}
 	}()
 
+	statusUpdater, err := agentstatus.NewUpdater(agentstatus.Config{
+		Kubeconfig: cfg.Kubernetes.Kubeconfig,
+	}, logger)
+	if err != nil {
+		logger.Error("failed to create status updater", "error", err)
+		os.Exit(1)
+	}
+
 	// Create health check engine
 	hcEngine := healthcheck.NewEngine(healthcheck.EngineConfig{
 		WorkerCount:         cfg.HealthCheck.WorkerCount,
@@ -130,6 +139,7 @@ func main() {
 
 	// Create reconciler manager
 	reconMgr := reconciler.NewManager(dp, router, st, hcEngine, cfg.Agent.ReconcileInterval, logger)
+	reconMgr.SetStatusUpdater(statusUpdater)
 
 	// Wire health change callback: when health changes, trigger reconcile
 	hcCallback := func(vipKey, backendAddr string, oldState, newState healthcheck.V2BackendState) {

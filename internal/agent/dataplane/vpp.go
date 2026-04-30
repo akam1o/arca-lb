@@ -133,7 +133,9 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 		v.vips[key] = existing
 	}
 
-	v.reconcileBackendsLocked(ctx, key, existing, vip, healthyBackends)
+	if err := v.reconcileBackendsLocked(ctx, key, existing, vip, healthyBackends); err != nil {
+		return err
+	}
 	existing.vip = vip.DeepCopy()
 
 	return nil
@@ -166,8 +168,7 @@ func (v *VPP) SetBackends(ctx context.Context, vip *v1alpha1.VirtualIP, backends
 		return fmt.Errorf("VIP %s not found in data plane", key)
 	}
 
-	v.reconcileBackendsLocked(ctx, key, entry, vip, backends)
-	return nil
+	return v.reconcileBackendsLocked(ctx, key, entry, vip, backends)
 }
 
 func (v *VPP) reconcileBackendsLocked(
@@ -176,17 +177,22 @@ func (v *VPP) reconcileBackendsLocked(
 	entry *vipEntry,
 	vip *v1alpha1.VirtualIP,
 	backends []v1alpha1.BackendSpec,
-) {
+) error {
 	desired := make(map[string]v1alpha1.BackendSpec)
 	for _, be := range backends {
 		desired[be.Address] = be
 	}
+
+	var firstErr error
 
 	// Remove backends not in desired set
 	for addr, be := range entry.backends {
 		if _, ok := desired[addr]; !ok {
 			if err := v.removeBackendLocked(ctx, vip, be); err != nil {
 				v.logger.Warn("failed to remove backend", "vip", key, "backend", addr, "error", err)
+				if firstErr == nil {
+					firstErr = err
+				}
 				continue
 			}
 			delete(entry.backends, addr)
@@ -202,10 +208,30 @@ func (v *VPP) reconcileBackendsLocked(
 
 		if err := v.addBackendLocked(ctx, vip, be); err != nil {
 			v.logger.Warn("failed to add backend", "vip", key, "backend", addr, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		entry.backends[addr] = be
 	}
+
+	if len(desired) > 0 {
+		applied := 0
+		for addr := range desired {
+			if _, ok := entry.backends[addr]; ok {
+				applied++
+			}
+		}
+		if applied == 0 {
+			if firstErr != nil {
+				return fmt.Errorf("failed to apply any healthy backend for VIP %s: %w", key, firstErr)
+			}
+			return fmt.Errorf("failed to apply any healthy backend for VIP %s", key)
+		}
+	}
+
+	return nil
 }
 
 func (v *VPP) AddBackend(ctx context.Context, vip *v1alpha1.VirtualIP, backend v1alpha1.BackendSpec) error {

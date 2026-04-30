@@ -346,18 +346,18 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 		healthyBackends = vip.Spec.Backends
 	}
 
-	if vr.statusUpdater != nil {
-		if err := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends); err != nil {
-			vr.logger.Warn("failed to update VirtualIP status", "error", err)
-			span.RecordError(err)
-		}
-	}
-
 	// Apply to data plane
 	if err := vr.dp.ApplyVIP(ctx, vip, healthyBackends); err != nil {
 		vr.logger.Error("failed to apply VIP to data plane", "error", err)
 		span.RecordError(err)
 		return
+	}
+
+	if vr.statusUpdater != nil {
+		if err := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends); err != nil {
+			vr.logger.Warn("failed to update VirtualIP status", "error", err)
+			span.RecordError(err)
+		}
 	}
 
 	// Manage BGP route

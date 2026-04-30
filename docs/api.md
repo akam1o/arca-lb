@@ -91,7 +91,7 @@ status:
 | `port` | int (1-65535) | Yes | Virtual port number |
 | `protocol` | string | Yes | Transport protocol: `TCP` or `UDP` |
 | `encapType` | string | No | Encapsulation type: `GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`. Default: `L3DSR` |
-| `dscp` | int (0-63) | No | DSCP value for L3DSR mode |
+| `dscp` | int (1-63) | No | Optional DSCP override for DSCP-based L3DSR; omitted uses the agent default |
 | `backends` | []BackendSpec | No | List of backend servers |
 | `healthCheck` | HealthCheckSpec | No | Health check configuration |
 
@@ -177,7 +177,7 @@ The Admission Webhook enforces:
 - `port` must be between 1 and 65535
 - `protocol` must be `TCP` or `UDP`
 - `encapType` must be one of: `GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`
-- `dscp` must be between 0 and 63
+- `dscp`, when set, must be between 1 and 63
 - Backend `weight` must be between 1 and 100
 - Backend `address` must be a valid IP address
 - HealthCheck `type` must be one of: `http`, `https`, `tcp`, `ping`

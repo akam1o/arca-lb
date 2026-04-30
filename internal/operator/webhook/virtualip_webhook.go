@@ -70,11 +70,8 @@ func validateVirtualIP(vip *v1alpha1.VirtualIP) error {
 		return fmt.Errorf("spec.encapType %q is not valid", vip.Spec.EncapType)
 	}
 
-	// Validate DSCP for L3DSR
-	if vip.Spec.EncapType == v1alpha1.EncapTypeL3DSR {
-		if vip.Spec.DSCP == nil {
-			return fmt.Errorf("spec.dscp is required when encapType is L3DSR")
-		}
+	// Validate DSCP override for L3DSR when DSCP-based steering is requested.
+	if vip.Spec.EncapType == v1alpha1.EncapTypeL3DSR && vip.Spec.DSCP != nil {
 		if *vip.Spec.DSCP == 0 || *vip.Spec.DSCP > 63 {
 			return fmt.Errorf("spec.dscp must be 1-63 for L3DSR, got %d", *vip.Spec.DSCP)
 		}

@@ -110,7 +110,7 @@ func (r *VirtualIPReconciler) updateStatus(ctx context.Context, vip *v1alpha1.Vi
 		ObservedGeneration: vip.Generation,
 		TotalBackends:      len(vip.Spec.Backends),
 		HealthyBackends:    vip.Status.HealthyBackends, // Preserved from agent updates
-		Backends:           vip.Status.Backends,         // Preserved from agent updates
+		Backends:           vip.Status.Backends,        // Preserved from agent updates
 	}
 
 	// Set Ready condition based on configuration validity
@@ -184,9 +184,9 @@ func applyDefaults(vip *v1alpha1.VirtualIP) bool {
 }
 
 func validateSpec(spec *v1alpha1.VirtualIPSpec) error {
-	if spec.EncapType == v1alpha1.EncapTypeL3DSR {
-		if spec.DSCP == nil || *spec.DSCP == 0 {
-			return fmt.Errorf("DSCP must be 1-63 for L3DSR encapsulation")
+	if spec.EncapType == v1alpha1.EncapTypeL3DSR && spec.DSCP != nil {
+		if *spec.DSCP == 0 || *spec.DSCP > 63 {
+			return fmt.Errorf("DSCP must be 1-63 when specified for L3DSR encapsulation")
 		}
 	}
 

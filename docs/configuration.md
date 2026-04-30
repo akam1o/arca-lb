@@ -135,7 +135,7 @@ spec:
   port: 80
   protocol: TCP             # TCP or UDP
   encapType: L3DSR           # GRE4, GRE6, L3DSR, NAT4, NAT6
-  dscp: 10                   # 0-63 (for L3DSR)
+  dscp: 10                   # optional DSCP override, 1-63 (for DSCP-based L3DSR)
   backends:
     - address: 10.0.1.1
       weight: 100            # 1-100
@@ -162,7 +162,7 @@ spec:
 | `port` | Virtual port (1-65535) | Yes |
 | `protocol` | Transport protocol (TCP, UDP) | Yes |
 | `encapType` | Encapsulation type (GRE4, GRE6, L3DSR, NAT4, NAT6) | No (default: L3DSR) |
-| `dscp` | DSCP value for L3DSR mode (0-63) | No |
+| `dscp` | Optional DSCP override for DSCP-based L3DSR (1-63 when set; omitted uses the agent default) | No |
 | `backends` | List of backend servers | No |
 | `healthCheck` | Health check configuration | No |
 

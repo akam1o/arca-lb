@@ -81,7 +81,7 @@ namespace = arca-system
 # デフォルトのカプセル化タイプ (GRE4, GRE6, L3DSR, NAT4, NAT6)。
 default_encap_type = L3DSR
 
-# L3DSR モードのデフォルト DSCP 値 (0-63)。
+# DSCP ベース L3DSR モードのデフォルト DSCP 値 (1-63)。
 default_dscp = 10
 
 # VirtualIP ステータスを Octavia に同期する間隔（秒）。
@@ -249,7 +249,7 @@ openstack loadbalancer create \
 | キー | 値 | デフォルト | 説明 |
 |------|------|-----------|------|
 | `encap_type` | GRE4, GRE6, L3DSR, NAT4, NAT6 | L3DSR | 戻りトラフィックのカプセル化タイプ |
-| `dscp` | 0-63 | 10 | DSCP マーキング値（L3DSR のみ） |
+| `dscp` | 1-63 | 10 | DSCP ベース L3DSR 用の DSCP マーキング値 |
 
 ## 制限事項
 

@@ -154,9 +154,9 @@ type VirtualIPSpec struct {
 	// +kubebuilder:default="L3DSR"
 	EncapType EncapType `json:"encapType,omitempty"`
 
-	// DSCP is the DSCP value for L3DSR mode (1-63).
-	// Required when encapType is L3DSR.
-	// +kubebuilder:validation:Minimum=0
+	// DSCP is an optional DSCP override for DSCP-based L3DSR steering.
+	// When omitted, the agent's dataplane.vpp.dscp default is used.
+	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=63
 	// +optional
 	DSCP *uint8 `json:"dscp,omitempty"`

@@ -85,8 +85,8 @@ spec:
                     - NAT6
                 dscp:
                   type: integer
-                  description: DSCP value for L3DSR (1-63).
-                  minimum: 0
+                  description: Optional DSCP override for DSCP-based L3DSR steering. When omitted, the agent dataplane default is used.
+                  minimum: 1
                   maximum: 63
                 backends:
                   type: array

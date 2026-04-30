@@ -135,7 +135,7 @@ spec:
   port: 80
   protocol: TCP             # TCP または UDP
   encapType: L3DSR           # GRE4, GRE6, L3DSR, NAT4, NAT6
-  dscp: 10                   # 0-63 (L3DSR 用)
+  dscp: 10                   # 任意の DSCP override、1-63 (DSCP ベース L3DSR 用)
   backends:
     - address: 10.0.1.1
       weight: 100            # 1-100
@@ -162,7 +162,7 @@ spec:
 | `port` | 仮想ポート (1-65535) | はい |
 | `protocol` | トランスポートプロトコル (TCP, UDP) | はい |
 | `encapType` | カプセル化タイプ (GRE4, GRE6, L3DSR, NAT4, NAT6) | いいえ (デフォルト: L3DSR) |
-| `dscp` | L3DSR モードの DSCP 値 (0-63) | いいえ |
+| `dscp` | DSCP ベース L3DSR 用の任意 DSCP override (指定時 1-63。省略時は Agent の既定値) | いいえ |
 | `backends` | バックエンドサーバーのリスト | いいえ |
 | `healthCheck` | ヘルスチェック設定 | いいえ |
 

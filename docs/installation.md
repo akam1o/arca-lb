@@ -56,7 +56,7 @@ kubectl apply -f config/manager/
 Verify the Operator is running:
 
 ```bash
-kubectl get pods -l app=arca-lb-operator
+kubectl get pods -l app.kubernetes.io/name=arca-lb-operator
 ```
 
 #### 4. Deploy the Agent (DaemonSet)
@@ -68,7 +68,7 @@ kubectl apply -f config/agent/
 Verify the Agent is running on each LB node:
 
 ```bash
-kubectl get pods -l app=arca-lb-agent
+kubectl get pods -l app.kubernetes.io/name=arca-lb-agent
 ```
 
 #### 5. Create a VirtualIP
@@ -139,13 +139,13 @@ Update `deploy/config/agent.yaml` with your data plane (VPP socket path), routin
 ### Check the Operator
 
 ```bash
-kubectl logs -l app=arca-lb-operator --tail=20
+kubectl logs -l app.kubernetes.io/name=arca-lb-operator --tail=20
 ```
 
 ### Check the Agent
 
 ```bash
-kubectl logs -l app=arca-lb-agent --tail=20
+kubectl logs -l app.kubernetes.io/name=arca-lb-agent --tail=20
 ```
 
 If metrics are enabled:

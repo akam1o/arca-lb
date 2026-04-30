@@ -29,8 +29,8 @@ This document covers common arca-lb issues and how to resolve them.
 **Causes and fixes**:
 
 1. **Operator not running**
-   - Check Pod status: `kubectl get pods -l app=arcalb-operator`
-   - Review logs: `kubectl logs -l app=arcalb-operator`
+   - Check Pod status: `kubectl get pods -l app.kubernetes.io/name=arca-lb-operator`
+   - Review logs: `kubectl logs -l app.kubernetes.io/name=arca-lb-operator`
 
 2. **RBAC issue**
    - Operator needs `update` on `virtualips/status`.
@@ -157,17 +157,17 @@ This document covers common arca-lb issues and how to resolve them.
 
 ```bash
 # Stream operator logs
-kubectl logs -f -l app=arcalb-operator
+kubectl logs -f -l app.kubernetes.io/name=arca-lb-operator
 
 # With increased verbosity
-kubectl logs -f -l app=arcalb-operator -- --zap-log-level=debug
+kubectl logs -f -l app.kubernetes.io/name=arca-lb-operator -- --zap-log-level=debug
 ```
 
 ### Agent logs (v2)
 
 ```bash
 # Stream agent logs (Kubernetes)
-kubectl logs -f -l app=arcalb-agent
+kubectl logs -f -l app.kubernetes.io/name=arca-lb-agent
 
 # Standalone agent
 sudo ./bin/arcalb-agent --config deploy/config/agent.example.yaml
@@ -213,10 +213,10 @@ kubectl get vip -w
 kubectl describe vip web-vip
 
 # Check Agent pods
-kubectl get pods -l app=arcalb-agent -o wide
+kubectl get pods -l app.kubernetes.io/name=arca-lb-agent -o wide
 
 # Check Operator pods
-kubectl get pods -l app=arcalb-operator
+kubectl get pods -l app.kubernetes.io/name=arca-lb-operator
 ```
 
 ## FAQ

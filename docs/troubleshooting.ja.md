@@ -29,8 +29,8 @@
 **原因と解決方法**:
 
 1. **Operator が動作していない**
-   - Pod の状態を確認: `kubectl get pods -l app=arcalb-operator`
-   - ログを確認: `kubectl logs -l app=arcalb-operator`
+   - Pod の状態を確認: `kubectl get pods -l app.kubernetes.io/name=arca-lb-operator`
+   - ログを確認: `kubectl logs -l app.kubernetes.io/name=arca-lb-operator`
 
 2. **RBAC の問題**
    - Operator は `virtualips/status` の `update` 権限が必要。
@@ -157,17 +157,17 @@
 
 ```bash
 # Operator ログのストリーミング
-kubectl logs -f -l app=arcalb-operator
+kubectl logs -f -l app.kubernetes.io/name=arca-lb-operator
 
 # 詳細レベルを上げる
-kubectl logs -f -l app=arcalb-operator -- --zap-log-level=debug
+kubectl logs -f -l app.kubernetes.io/name=arca-lb-operator -- --zap-log-level=debug
 ```
 
 ### Agent ログ (v2)
 
 ```bash
 # Agent ログ（Kubernetes）
-kubectl logs -f -l app=arcalb-agent
+kubectl logs -f -l app.kubernetes.io/name=arca-lb-agent
 
 # スタンドアロン Agent
 sudo ./bin/arcalb-agent --config deploy/config/agent.example.yaml
@@ -213,10 +213,10 @@ kubectl get vip -w
 kubectl describe vip web-vip
 
 # Agent Pod の確認
-kubectl get pods -l app=arcalb-agent -o wide
+kubectl get pods -l app.kubernetes.io/name=arca-lb-agent -o wide
 
 # Operator Pod の確認
-kubectl get pods -l app=arcalb-operator
+kubectl get pods -l app.kubernetes.io/name=arca-lb-operator
 ```
 
 ## FAQ

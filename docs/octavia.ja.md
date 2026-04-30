@@ -276,7 +276,7 @@ openstack loadbalancer create \
 
 ### VirtualIP が作成されたがプログラムされない
 
-1. arca-lb Agent ログを確認: `kubectl logs -n arca-system -l app=arcalb-agent`
+1. arca-lb Agent ログを確認: `kubectl logs -n arca-system -l app.kubernetes.io/name=arca-lb-agent`
 2. CRD ステータスを確認: `kubectl describe virtualip -n arca-system <name>`
 3. VPP ステータスを確認: `vppctl show lb vip verbose`
 

@@ -276,7 +276,7 @@ Available flavor metadata:
 
 ### VirtualIP created but not programmed
 
-1. Check the arca-lb agent logs: `kubectl logs -n arca-system -l app=arcalb-agent`
+1. Check the arca-lb agent logs: `kubectl logs -n arca-system -l app.kubernetes.io/name=arca-lb-agent`
 2. Verify CRD status: `kubectl describe virtualip -n arca-system <name>`
 3. Check VPP status: `vppctl show lb vip verbose`
 

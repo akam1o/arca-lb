@@ -56,7 +56,7 @@ kubectl apply -f config/manager/
 Operator が稼働していることを確認：
 
 ```bash
-kubectl get pods -l app=arca-lb-operator
+kubectl get pods -l app.kubernetes.io/name=arca-lb-operator
 ```
 
 #### 4. Agent のデプロイ (DaemonSet)
@@ -68,7 +68,7 @@ kubectl apply -f config/agent/
 各 LB ノードで Agent が稼働していることを確認：
 
 ```bash
-kubectl get pods -l app=arca-lb-agent
+kubectl get pods -l app.kubernetes.io/name=arca-lb-agent
 ```
 
 #### 5. VirtualIP の作成
@@ -139,13 +139,13 @@ cp deploy/config/agent.example.yaml deploy/config/agent.yaml
 ### Operator の確認
 
 ```bash
-kubectl logs -l app=arca-lb-operator --tail=20
+kubectl logs -l app.kubernetes.io/name=arca-lb-operator --tail=20
 ```
 
 ### Agent の確認
 
 ```bash
-kubectl logs -l app=arca-lb-agent --tail=20
+kubectl logs -l app.kubernetes.io/name=arca-lb-agent --tail=20
 ```
 
 メトリクスが有効な場合：

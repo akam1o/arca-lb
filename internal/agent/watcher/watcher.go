@@ -12,6 +12,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	k8scache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -182,7 +183,17 @@ func (h *eventHandler) OnUpdate(_, newObj interface{}) {
 func (h *eventHandler) OnDelete(obj interface{}) {
 	vip, ok := obj.(*v1alpha1.VirtualIP)
 	if !ok {
-		return
+		tombstone, ok := obj.(k8scache.DeletedFinalStateUnknown)
+		if !ok {
+			h.logger.Warn("received unexpected delete event object", "type", fmt.Sprintf("%T", obj))
+			return
+		}
+
+		vip, ok = tombstone.Obj.(*v1alpha1.VirtualIP)
+		if !ok {
+			h.logger.Warn("received unexpected delete tombstone object", "type", fmt.Sprintf("%T", tombstone.Obj))
+			return
+		}
 	}
 	h.logger.Debug("VirtualIP deleted", "name", vip.Name, "namespace", vip.Namespace)
 	h.handler.OnVIPDelete(vip)

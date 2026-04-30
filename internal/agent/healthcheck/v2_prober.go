@@ -176,8 +176,17 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	}
 	defer func() { _ = conn.Close() }()
 
+	stopCancelWatcher, err := bindConnToContext(ctx, conn)
+	if err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
+	defer stopCancelWatcher()
+
 	if p.send != "" {
 		if _, err := conn.Write([]byte(p.send)); err != nil {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
 			return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 		}
 	}
@@ -186,6 +195,9 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 		buf := make([]byte, 4096)
 		n, err := conn.Read(buf)
 		if err != nil {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
 			return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 		}
 		if !strings.Contains(string(buf[:n]), p.expectedResponse) {
@@ -201,6 +213,25 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 }
 
 func (p *tcpProber) Close() error { return nil }
+
+func bindConnToContext(ctx context.Context, conn net.Conn) (func(), error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("failed to set TCP probe deadline: %w", err)
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-done:
+		}
+	}()
+
+	return func() { close(done) }, nil
+}
 
 // --- Ping prober ---
 

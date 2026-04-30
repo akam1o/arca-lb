@@ -199,5 +199,48 @@ func validateSpec(spec *v1alpha1.VirtualIPSpec) error {
 		seen[be.Address] = true
 	}
 
+	if err := validateHealthCheckSpec(spec.HealthCheck); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
+	if hc == nil {
+		return nil
+	}
+
+	switch hc.Type {
+	case v1alpha1.HCTypeHTTP, v1alpha1.HCTypeHTTPS:
+		if hc.HTTP == nil {
+			return fmt.Errorf("spec.healthCheck.http is required for type %q", hc.Type)
+		}
+		if hc.HTTP.Port < 1 || hc.HTTP.Port > 65535 {
+			return fmt.Errorf("spec.healthCheck.http.port must be 1-65535")
+		}
+	case v1alpha1.HCTypeTCP:
+		if hc.TCP == nil {
+			return fmt.Errorf("spec.healthCheck.tcp is required for type tcp")
+		}
+		if hc.TCP.Port < 1 || hc.TCP.Port > 65535 {
+			return fmt.Errorf("spec.healthCheck.tcp.port must be 1-65535")
+		}
+	case v1alpha1.HCTypePing:
+		// No additional config required.
+	default:
+		return fmt.Errorf("spec.healthCheck.type %q is not valid", hc.Type)
+	}
+
+	if hc.IntervalSeconds < 1 {
+		return fmt.Errorf("spec.healthCheck.intervalSeconds must be >= 1")
+	}
+	if hc.TimeoutSeconds < 1 {
+		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be >= 1")
+	}
+	if hc.TimeoutSeconds >= hc.IntervalSeconds {
+		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be less than intervalSeconds")
+	}
+
 	return nil
 }

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,9 +112,12 @@ func (p *httpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	if p.useTLS {
 		scheme = "https"
 	}
-	url := fmt.Sprintf("%s://%s:%d%s", scheme, target, p.port, p.path)
+	probeURL, err := buildHTTPProbeURL(scheme, target, p.port, p.path)
+	if err != nil {
+		return V2ProbeResult{Error: err, Timestamp: start}
+	}
 
-	req, err := http.NewRequestWithContext(ctx, p.method, url, nil)
+	req, err := http.NewRequestWithContext(ctx, p.method, probeURL, nil)
 	if err != nil {
 		return V2ProbeResult{Error: err, Timestamp: start}
 	}
@@ -146,6 +151,31 @@ func (p *httpProber) Close() error {
 	return nil
 }
 
+func buildHTTPProbeURL(scheme, target string, port int, probePath string) (string, error) {
+	if probePath == "" {
+		probePath = "/"
+	}
+	if !strings.HasPrefix(probePath, "/") {
+		probePath = "/" + probePath
+	}
+
+	parsedPath, err := url.Parse(probePath)
+	if err != nil {
+		return "", fmt.Errorf("invalid HTTP probe path %q: %w", probePath, err)
+	}
+	if parsedPath.IsAbs() || parsedPath.Host != "" {
+		return "", fmt.Errorf("HTTP probe path must be relative: %q", probePath)
+	}
+
+	u := url.URL{
+		Scheme:   scheme,
+		Host:     net.JoinHostPort(target, strconv.Itoa(port)),
+		Path:     parsedPath.Path,
+		RawQuery: parsedPath.RawQuery,
+	}
+	return u.String(), nil
+}
+
 // --- TCP prober ---
 
 type tcpProber struct {
@@ -167,7 +197,7 @@ func newTCPProberFromSpec(cfg *v1alpha1.TCPHealthCheck) (*tcpProber, error) {
 
 func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
-	addr := fmt.Sprintf("%s:%d", target, p.port)
+	addr := tcpProbeAddress(target, p.port)
 
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
@@ -213,6 +243,10 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 }
 
 func (p *tcpProber) Close() error { return nil }
+
+func tcpProbeAddress(target string, port int) string {
+	return net.JoinHostPort(target, strconv.Itoa(port))
+}
 
 func bindConnToContext(ctx context.Context, conn net.Conn) (func(), error) {
 	if deadline, ok := ctx.Deadline(); ok {

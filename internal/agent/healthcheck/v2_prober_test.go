@@ -3,10 +3,38 @@ package healthcheck
 import (
 	"context"
 	"net"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestBuildHTTPProbeURLIPv6(t *testing.T) {
+	got, err := buildHTTPProbeURL("http", "2001:db8::1", 8080, "/healthz?ready=1")
+	if err != nil {
+		t.Fatalf("buildHTTPProbeURL: %v", err)
+	}
+
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", got, err)
+	}
+	if parsed.Host != "[2001:db8::1]:8080" {
+		t.Fatalf("URL host = %q, want [2001:db8::1]:8080", parsed.Host)
+	}
+	if parsed.Path != "/healthz" {
+		t.Fatalf("URL path = %q, want /healthz", parsed.Path)
+	}
+	if parsed.RawQuery != "ready=1" {
+		t.Fatalf("URL query = %q, want ready=1", parsed.RawQuery)
+	}
+}
+
+func TestTCPProbeAddressIPv6(t *testing.T) {
+	if got := tcpProbeAddress("2001:db8::1", 8080); got != "[2001:db8::1]:8080" {
+		t.Fatalf("tcpProbeAddress = %q, want [2001:db8::1]:8080", got)
+	}
+}
 
 func TestTCPProberReadHonorsContextDeadline(t *testing.T) {
 	target, port := startSilentTCPServer(t)

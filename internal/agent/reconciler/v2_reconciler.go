@@ -42,9 +42,9 @@ type Manager struct {
 
 	safetyInterval time.Duration
 
-	mu    sync.RWMutex
-	vips  map[string]*vipReconciler // key: namespace/name
-	ctx   context.Context
+	mu     sync.RWMutex
+	vips   map[string]*vipReconciler // key: namespace/name
+	ctx    context.Context
 	cancel context.CancelFunc
 }
 
@@ -79,44 +79,79 @@ func (m *Manager) Start(ctx context.Context) {
 
 // Stop stops all per-VIP reconcilers and the manager.
 func (m *Manager) Stop() {
-	m.cancel()
-
 	m.mu.Lock()
+	if m.cancel != nil {
+		m.cancel()
+	}
+
+	reconcilers := make([]*vipReconciler, 0, len(m.vips))
 	for _, vr := range m.vips {
-		vr.stop()
+		reconcilers = append(reconcilers, vr)
 	}
 	m.vips = make(map[string]*vipReconciler)
 	m.mu.Unlock()
+
+	for _, vr := range reconcilers {
+		vr.stop()
+	}
 
 	m.logger.Info("reconciler manager stopped")
 }
 
 // OnVIPUpdate is called when a VirtualIP is created or updated.
 func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := vip.Namespace + "/" + vip.Name
+
+	m.mu.Lock()
 
 	vr, exists := m.vips[key]
 	if !exists {
-		vr = newVIPReconciler(key, m.dp, m.router, m.store, m.healthTracker, m.safetyInterval, m.logger)
+		vr = newVIPReconciler(key, m.dp, m.router, m.store, m.healthTracker, m.safetyInterval, m.logger, m.onVIPReconcilerStopped)
 		m.vips[key] = vr
 		go vr.run(m.ctx)
 	}
+	m.mu.Unlock()
 
 	vr.update(vip.DeepCopy())
 }
 
 // OnVIPDelete is called when a VirtualIP is deleted.
 func (m *Manager) OnVIPDelete(vip *v1alpha1.VirtualIP) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := vip.Namespace + "/" + vip.Name
-	if vr, ok := m.vips[key]; ok {
+
+	m.mu.Lock()
+	vr, ok := m.vips[key]
+	if ok {
+		delete(m.vips, key)
+	}
+	m.mu.Unlock()
+
+	if ok {
+		// The goroutine will handle cleanup and exit. The manager removes the
+		// entry immediately so a later add for the same namespace/name creates a
+		// fresh reconciler instead of sending updates to the deleting goroutine.
 		vr.markDeleted(vip.DeepCopy())
-		// The goroutine will handle cleanup and exit
+	}
+}
+
+func (m *Manager) onVIPReconcilerStopped(key string, stopped *vipReconciler) {
+	var current *vipReconciler
+
+	m.mu.Lock()
+	if vr, ok := m.vips[key]; ok {
+		if vr == stopped {
+			delete(m.vips, key)
+		} else {
+			current = vr
+		}
+	}
+	m.mu.Unlock()
+
+	// If a VIP with the same namespace/name was recreated while the old
+	// reconciler was still deleting dataplane state, reconcile the new object
+	// after old cleanup completes.
+	if current != nil {
+		current.triggerReconcile()
 	}
 }
 
@@ -151,10 +186,11 @@ type vipReconciler struct {
 	safetyInterval time.Duration
 	logger         *slog.Logger
 
-	eventCh    chan vipEvent
+	eventCh     chan vipEvent
 	reconcileCh chan struct{}
-	stopCh     chan struct{}
-	stopped    chan struct{}
+	stopCh      chan struct{}
+	stopped     chan struct{}
+	onStopped   func(key string, stopped *vipReconciler)
 
 	mu      sync.RWMutex
 	current *v1alpha1.VirtualIP
@@ -168,6 +204,7 @@ func newVIPReconciler(
 	ht HealthTracker,
 	safetyInterval time.Duration,
 	logger *slog.Logger,
+	onStopped func(key string, stopped *vipReconciler),
 ) *vipReconciler {
 	return &vipReconciler{
 		key:            key,
@@ -181,6 +218,7 @@ func newVIPReconciler(
 		reconcileCh:    make(chan struct{}, 1),
 		stopCh:         make(chan struct{}),
 		stopped:        make(chan struct{}),
+		onStopped:      onStopped,
 	}
 }
 
@@ -232,7 +270,12 @@ func (vr *vipReconciler) stop() {
 }
 
 func (vr *vipReconciler) run(ctx context.Context) {
-	defer close(vr.stopped)
+	defer func() {
+		close(vr.stopped)
+		if vr.onStopped != nil {
+			vr.onStopped(vr.key, vr)
+		}
+	}()
 
 	ticker := time.NewTicker(vr.safetyInterval)
 	defer ticker.Stop()

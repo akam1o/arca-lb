@@ -132,11 +132,11 @@ func main() {
 	reconMgr := reconciler.NewManager(dp, router, st, hcEngine, cfg.Agent.ReconcileInterval, logger)
 
 	// Wire health change callback: when health changes, trigger reconcile
-	hcCallback := func(vipName, backendAddr string, oldState, newState healthcheck.V2BackendState) {
+	hcCallback := func(vipKey, backendAddr string, oldState, newState healthcheck.V2BackendState) {
 		logger.Info("backend health changed",
-			"vip", vipName, "backend", backendAddr,
+			"vip", vipKey, "backend", backendAddr,
 			"old", oldState, "new", newState)
-		reconMgr.OnHealthChange(vipName)
+		reconMgr.OnHealthChange(vipKey)
 	}
 	hcEngine.SetCallback(hcCallback)
 
@@ -235,15 +235,16 @@ type vipEventHandler struct {
 }
 
 func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
-	h.logger.Info("VIP update received", "name", vip.Name, "generation", vip.Generation)
+	vipKey := healthcheck.KeyForVIP(vip)
+	h.logger.Info("VIP update received", "vip", vipKey, "generation", vip.Generation)
 
 	// Start/update health checks
 	if vip.Spec.HealthCheck != nil {
 		if err := h.hcEngine.UpdateVIP(vip); err != nil {
-			h.logger.Error("failed to update health check", "vip", vip.Name, "error", err)
+			h.logger.Error("failed to update health check", "vip", vipKey, "error", err)
 		}
 	} else {
-		h.hcEngine.StopVIP(vip.Name)
+		h.hcEngine.StopVIP(vipKey)
 	}
 
 	// Trigger reconciliation
@@ -251,9 +252,10 @@ func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 }
 
 func (h *vipEventHandler) OnVIPDelete(vip *v1alpha1.VirtualIP) {
-	h.logger.Info("VIP delete received", "name", vip.Name)
+	vipKey := healthcheck.KeyForVIP(vip)
+	h.logger.Info("VIP delete received", "vip", vipKey)
 
-	h.hcEngine.StopVIP(vip.Name)
+	h.hcEngine.StopVIP(vipKey)
 	h.reconciler.OnVIPDelete(vip)
 }
 

@@ -60,27 +60,27 @@ func (s *Store) Close() error {
 
 // --- Health Check State ---
 
-// hcKey produces a deterministic key from VIP name and backend address.
-func hcKey(vipName, backendAddr string) []byte {
-	return []byte(vipName + "/" + backendAddr)
+// hcKey produces a deterministic key from namespaced VIP key and backend address.
+func hcKey(vipKey, backendAddr string) []byte {
+	return []byte(vipKey + "/" + backendAddr)
 }
 
 // SaveHealthState persists a backend's health record.
-func (s *Store) SaveHealthState(vipName, backendAddr string, rec *BackendHealthRecord) error {
+func (s *Store) SaveHealthState(vipKey, backendAddr string, rec *BackendHealthRecord) error {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketHCState).Put(hcKey(vipName, backendAddr), data)
+		return tx.Bucket(bucketHCState).Put(hcKey(vipKey, backendAddr), data)
 	})
 }
 
 // LoadHealthState loads a backend's health record, returning nil if not found.
-func (s *Store) LoadHealthState(vipName, backendAddr string) (*BackendHealthRecord, error) {
+func (s *Store) LoadHealthState(vipKey, backendAddr string) (*BackendHealthRecord, error) {
 	var rec BackendHealthRecord
 	err := s.db.View(func(tx *bolt.Tx) error {
-		v := tx.Bucket(bucketHCState).Get(hcKey(vipName, backendAddr))
+		v := tx.Bucket(bucketHCState).Get(hcKey(vipKey, backendAddr))
 		if v == nil {
 			return nil
 		}
@@ -95,7 +95,7 @@ func (s *Store) LoadHealthState(vipName, backendAddr string) (*BackendHealthReco
 	return &rec, nil
 }
 
-// LoadAllHealthStates returns all persisted health records keyed by "vip/backend".
+// LoadAllHealthStates returns all persisted health records keyed by "namespace/vip/backend".
 func (s *Store) LoadAllHealthStates() (map[string]*BackendHealthRecord, error) {
 	result := make(map[string]*BackendHealthRecord)
 	err := s.db.View(func(tx *bolt.Tx) error {
@@ -113,15 +113,15 @@ func (s *Store) LoadAllHealthStates() (map[string]*BackendHealthRecord, error) {
 }
 
 // DeleteHealthState removes a backend's health record.
-func (s *Store) DeleteHealthState(vipName, backendAddr string) error {
+func (s *Store) DeleteHealthState(vipKey, backendAddr string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketHCState).Delete(hcKey(vipName, backendAddr))
+		return tx.Bucket(bucketHCState).Delete(hcKey(vipKey, backendAddr))
 	})
 }
 
 // DeleteHealthStatesForVIP removes all health records for a VIP.
-func (s *Store) DeleteHealthStatesForVIP(vipName string) error {
-	prefix := []byte(vipName + "/")
+func (s *Store) DeleteHealthStatesForVIP(vipKey string) error {
+	prefix := []byte(vipKey + "/")
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketHCState)
 		c := b.Cursor()
@@ -137,17 +137,17 @@ func (s *Store) DeleteHealthStatesForVIP(vipName string) error {
 // --- Last Applied Config ---
 
 // SaveLastConfig persists the raw JSON of the last-applied VIP config.
-func (s *Store) SaveLastConfig(vipName string, data []byte) error {
+func (s *Store) SaveLastConfig(vipKey string, data []byte) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketLastConfig).Put([]byte(vipName), data)
+		return tx.Bucket(bucketLastConfig).Put([]byte(vipKey), data)
 	})
 }
 
 // LoadLastConfig loads the last-applied config for a VIP.
-func (s *Store) LoadLastConfig(vipName string) ([]byte, error) {
+func (s *Store) LoadLastConfig(vipKey string) ([]byte, error) {
 	var result []byte
 	err := s.db.View(func(tx *bolt.Tx) error {
-		v := tx.Bucket(bucketLastConfig).Get([]byte(vipName))
+		v := tx.Bucket(bucketLastConfig).Get([]byte(vipKey))
 		if v != nil {
 			result = make([]byte, len(v))
 			copy(result, v)
@@ -158,8 +158,8 @@ func (s *Store) LoadLastConfig(vipName string) ([]byte, error) {
 }
 
 // DeleteLastConfig removes the last-applied config for a VIP.
-func (s *Store) DeleteLastConfig(vipName string) error {
+func (s *Store) DeleteLastConfig(vipKey string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketLastConfig).Delete([]byte(vipName))
+		return tx.Bucket(bucketLastConfig).Delete([]byte(vipKey))
 	})
 }

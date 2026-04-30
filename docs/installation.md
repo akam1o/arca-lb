@@ -30,7 +30,7 @@ This document explains how to install arca-lb.
 ```bash
 git clone https://github.com/akam1o/arca-lb.git
 cd arca-lb
-make build-v2
+make build
 ```
 
 #### 2. Generate and install the CRD
@@ -107,7 +107,7 @@ Edit `config/manager/` and `config/agent/` manifests to reference your image reg
 The Agent can connect to a K8s API server from outside the cluster using a kubeconfig file:
 
 ```bash
-./bin/arcalb-agent-v2 --config /path/to/agent.yaml
+./bin/arcalb-agent --config /path/to/agent.yaml
 ```
 
 With the agent config pointing to a kubeconfig:

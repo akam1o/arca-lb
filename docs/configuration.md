@@ -4,7 +4,7 @@ This document explains how to configure arca-lb.
 
 ## Agent Configuration (v2)
 
-The v2 Agent reads its configuration from a YAML file. The path is specified via the `--config` flag or the `ARCA_AGENT_CONFIG` environment variable (default: `/etc/arca-lb/agent.yaml`).
+The Agent reads its configuration from a YAML file. The path is specified via the `--config` flag or the `ARCA_AGENT_CONFIG` environment variable (default: `/etc/arca-lb/agent.yaml`).
 
 ```yaml
 agent:
@@ -191,11 +191,11 @@ spec:
 
 ```bash
 # Specify config file path
-./bin/arcalb-agent-v2 --config /path/to/agent.yaml
+./bin/arcalb-agent --config /path/to/agent.yaml
 
 # Or via environment variable
 export ARCA_AGENT_CONFIG=/path/to/agent.yaml
-./bin/arcalb-agent-v2
+./bin/arcalb-agent
 ```
 
 ## Next Steps

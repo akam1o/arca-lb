@@ -6,7 +6,6 @@
 
 - Operator: `ghcr.io/akam1o/arca-lb-operator`
 - Agent: `ghcr.io/akam1o/arca-lb-agent`
-- Controller (v1、レガシー): `ghcr.io/akam1o/arca-lb-controller`
 
 ## 特徴
 
@@ -85,7 +84,7 @@ arca-lb/
 │   └── v1alpha1/           # VirtualIP CRD 型定義 (kubebuilder)
 ├── cmd/
 │   ├── operator/           # Operator (K8s コントローラー) バイナリ
-│   ├── agent/              # v2 Agent バイナリ
+│   ├── agent/              # Agent バイナリ
 │   ├── arcalb-controller/  # v1 Controller バイナリ (レガシー)
 │   └── arcalb-agent/       # v1 Agent バイナリ (レガシー)
 ├── config/                 # K8s マニフェスト (生成 + 手書き)
@@ -97,7 +96,7 @@ arca-lb/
 ├── internal/
 │   ├── operator/           # Operator リコンサイラー + Webhook
 │   ├── agent/              # Agent 実装
-│   │   ├── config/         # Agent 設定 (v1 + v2)
+│   │   ├── config/         # Agent 設定
 │   │   ├── dataplane/      # DataPlane インターフェース (VPP, Noop)
 │   │   ├── routing/        # Router インターフェース (FRR, Noop)
 │   │   ├── store/          # bbolt ローカル永続化
@@ -129,7 +128,7 @@ arca-lb/
 git clone https://github.com/akam1o/arca-lb.git
 cd arca-lb
 make deps
-make build-v2
+make build
 ```
 
 ### 2. CRD のインストール
@@ -164,14 +163,13 @@ kubectl get vip
 ```bash
 make help          # 使用可能なターゲットを表示
 make deps          # 依存関係をダウンロード
-make build         # 全バイナリをビルド (v1 + v2)
-make build-v2      # v2 Operator と Agent のみビルド
+make build         # Operator と Agent のバイナリをビルド
 make test          # テストを実行
 make lint          # コード品質チェック
 make manifests     # CRD マニフェスト生成 (controller-gen)
 make generate      # DeepCopy メソッド生成 (controller-gen)
 make proto         # Protocol Buffers コード生成 (v1)
-make docker        # Docker イメージをビルド
+make docker        # Operator と Agent イメージをビルド
 make clean         # ビルド成果物を削除
 ```
 

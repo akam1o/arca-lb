@@ -179,7 +179,7 @@ make test
 # Specific package
 go test ./internal/operator/...
 
-# v2 agent tests
+# Agent tests
 go test ./internal/agent/dataplane/ ./internal/agent/routing/ ./internal/agent/store/
 
 # Coverage

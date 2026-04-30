@@ -130,9 +130,9 @@ make proto
 
 ```bash
 # v2 のみビルド
-make build-v2
+make build
 
-# すべてビルド (v1 + v2)
+# Operator と Agent をビルド
 make build
 
 # テスト
@@ -150,7 +150,7 @@ go tool cover -html=coverage.out
 ./bin/arcalb-operator --metrics-bind-address=:8080
 
 # Agent の実行（テスト用 noop データプレーン）
-./bin/arcalb-agent-v2 --config deploy/config/agent.yaml
+./bin/arcalb-agent --config deploy/config/agent.yaml
 ```
 
 ## デバッグ
@@ -167,7 +167,7 @@ go tool cover -html=coverage.out
 
 ```bash
 # Agent 設定ファイルで log.level: "debug" を設定
-./bin/arcalb-agent-v2 --config deploy/config/agent.yaml
+./bin/arcalb-agent --config deploy/config/agent.yaml
 ```
 
 VPP/FRR なしで開発する場合は `noop` データプレーンとルーターを使用：
@@ -274,7 +274,7 @@ go tool cover -html=coverage.out
 
 ```bash
 make help          # すべてのターゲットを表示
-make build-v2      # v2 Operator + Agent をビルド
+make build         # Operator + Agent をビルド
 make test          # レースディテクター付きテスト実行
 make lint          # golangci-lint を実行
 make manifests     # CRD マニフェスト生成

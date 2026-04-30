@@ -3,10 +3,8 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 BIN_DIR := bin
-CONTROLLER_BIN := $(BIN_DIR)/arcalb-controller
 AGENT_BIN := $(BIN_DIR)/arcalb-agent
 OPERATOR_BIN := $(BIN_DIR)/arcalb-operator
-AGENT_V2_BIN := $(BIN_DIR)/arcalb-agent-v2
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 GOMODCACHE_DIR := $(CURDIR)/.gomodcache
@@ -17,12 +15,10 @@ PROTO_SRC := api/proto
 PROTO_OUT := pkg/grpc
 PROTO_PATH := $(PATH):$(shell go env GOPATH)/bin
 
-DOCKER_CONTROLLER_FILE ?= deploy/docker/Dockerfile.controller
+DOCKER_OPERATOR_FILE ?= deploy/docker/Dockerfile.controller
 DOCKER_AGENT_FILE ?= deploy/docker/Dockerfile.agent
-DOCKER_CONTROLLER_IMAGE ?= arcalb-controller:latest
 DOCKER_AGENT_IMAGE ?= arcalb-agent:latest
 DOCKER_OPERATOR_IMAGE ?= arcalb-operator:latest
-DOCKER_AGENT_V2_IMAGE ?= arcalb-agent-v2:latest
 
 CONTROLLER_GEN ?= $(shell command -v controller-gen 2>/dev/null)
 CRD_OPTIONS ?= crd:generateEmbeddedObjectMeta=true
@@ -40,18 +36,10 @@ goenv: ## Prepare local Go cache directories
 	@mkdir -p $(GOCACHE_DIR) $(GOMODCACHE_DIR) $(GOTMP_DIR)
 
 .PHONY: build
-build: goenv ## Build all binaries (v1 + v2)
-	@mkdir -p $(BIN_DIR)
-	$(GO_ENV) go build -o $(CONTROLLER_BIN) ./cmd/arcalb-controller
-	$(GO_ENV) go build -o $(AGENT_BIN) ./cmd/arcalb-agent
-	$(GO_ENV) go build -o $(OPERATOR_BIN) ./cmd/operator
-	$(GO_ENV) go build -o $(AGENT_V2_BIN) ./cmd/agent
-
-.PHONY: build-v2
-build-v2: goenv ## Build v2 operator and agent binaries only
+build: goenv ## Build operator and agent binaries
 	@mkdir -p $(BIN_DIR)
 	$(GO_ENV) go build -o $(OPERATOR_BIN) ./cmd/operator
-	$(GO_ENV) go build -o $(AGENT_V2_BIN) ./cmd/agent
+	$(GO_ENV) go build -o $(AGENT_BIN) ./cmd/agent
 
 .PHONY: test
 test: goenv ## Run unit tests with race detector and coverage
@@ -80,11 +68,11 @@ proto: ## Generate gRPC code from protobuf
 	@perl -pi -e 's|^//[[:space:]]+protoc[[:space:]]+v.*$$|//\tprotoc        (version omitted)|' $(PROTO_OUT)/*.pb.go
 
 .PHONY: docker
-docker: ## Build controller and agent Docker images
+docker: ## Build operator and agent Docker images
 	$(call ensure_tool,docker)
-	@test -f $(DOCKER_CONTROLLER_FILE) || { echo "error: missing $(DOCKER_CONTROLLER_FILE)"; exit 1; }
+	@test -f $(DOCKER_OPERATOR_FILE) || { echo "error: missing $(DOCKER_OPERATOR_FILE)"; exit 1; }
 	@test -f $(DOCKER_AGENT_FILE) || { echo "error: missing $(DOCKER_AGENT_FILE)"; exit 1; }
-	docker build -f $(DOCKER_CONTROLLER_FILE) -t $(DOCKER_CONTROLLER_IMAGE) .
+	docker build -f $(DOCKER_OPERATOR_FILE) -t $(DOCKER_OPERATOR_IMAGE) .
 	docker build -f $(DOCKER_AGENT_FILE) -t $(DOCKER_AGENT_IMAGE) .
 
 .PHONY: clean
@@ -103,7 +91,7 @@ vet: goenv ## Run go vet
 deps: goenv ## Download dependencies
 	$(GO_ENV) go mod download
 
-##@ v2 CRD / Code Generation
+##@ CRD / Code Generation
 
 .PHONY: manifests
 manifests: ## Generate CRD manifests via controller-gen
@@ -118,9 +106,3 @@ generate: ## Generate deepcopy methods via controller-gen
 .PHONY: install-controller-gen
 install-controller-gen: goenv ## Install controller-gen tool
 	$(GO_ENV) go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
-
-.PHONY: docker-v2
-docker-v2: ## Build v2 operator and agent Docker images
-	$(call ensure_tool,docker)
-	docker build -f deploy/docker/Dockerfile.operator -t $(DOCKER_OPERATOR_IMAGE) .
-	docker build -f deploy/docker/Dockerfile.agent-v2 -t $(DOCKER_AGENT_V2_IMAGE) .

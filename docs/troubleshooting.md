@@ -54,7 +54,7 @@ This document covers common arca-lb issues and how to resolve them.
    - Verify the webhook config exists.
    - Ensure cert-manager or webhook certificates are valid.
 
-## Agent Issues (v2)
+## Agent Issues
 
 ### Agent does not start
 
@@ -63,8 +63,7 @@ This document covers common arca-lb issues and how to resolve them.
 **Causes and fixes**:
 
 1. **Config file not found**
-   - Verify ConfigMap mount at `/etc/arca-lb/agent.v2.yaml`.
-   - Check `--v2` flag is set in the container args.
+   - Verify ConfigMap mount at `/etc/arca-lb/agent.yaml`.
 
 2. **Kubernetes API connection failure**
    - Verify RBAC for the Agent ServiceAccount.
@@ -171,7 +170,7 @@ kubectl logs -f -l app=arcalb-operator -- --zap-log-level=debug
 kubectl logs -f -l app=arcalb-agent
 
 # Standalone agent
-sudo ./bin/arcalb-agent --v2 --config deploy/config/agent.v2.example.yaml
+sudo ./bin/arcalb-agent --config deploy/config/agent.example.yaml
 ```
 
 ### VPP logs
@@ -241,15 +240,15 @@ kubectl get pods -l app=arcalb-operator
 4. Backends are healthy and running.
 5. Backend server is configured correctly (see [Backend Setup](./backend-setup.md)).
 
-### Q: How do I migrate from v1 to v2?
+### Q: How do I migrate from the legacy controller?
 
 **A**:
 
 1. Install CRDs: `kubectl apply -f config/crd/bases/`
 2. Deploy the Operator: `kubectl apply -f config/manager/manager.yaml`
-3. Convert v1 VIP definitions to VirtualIP CRDs and apply.
-4. Deploy Agent DaemonSet with `--v2` flag.
-5. Decommission the v1 Controller.
+3. Convert legacy VIP definitions to VirtualIP CRDs and apply.
+4. Deploy the Agent DaemonSet.
+5. Decommission the legacy Controller.
 
 ---
 

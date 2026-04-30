@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
@@ -194,5 +195,46 @@ func TestVPPSameVIPAttributes(t *testing.T) {
 	encapChanged.Spec.EncapType = v1alpha1.EncapTypeNAT4
 	if vpp.sameVIPAttributes(base, encapChanged) {
 		t.Fatal("encapType change should require VIP recreation")
+	}
+}
+
+func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
+	vpp := &VPP{
+		config: VPPConfig{
+			EncapType:           "GRE4",
+			DSCP:                0,
+			ServiceType:         "CLUSTERIP",
+			NewFlowsTableLength: 65537,
+		},
+		vips: make(map[string]*vipEntry),
+	}
+
+	existing := newTestVIP("test-vip", "203.0.113.1", 80)
+	existing.Spec.EncapType = v1alpha1.EncapTypeL3DSR
+	existingDSCP := uint8(10)
+	existing.Spec.DSCP = &existingDSCP
+	key := vpp.vipKey(existing)
+	vpp.vips[key] = &vipEntry{
+		vip:      existing.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{},
+	}
+
+	invalidDesired := existing.DeepCopy()
+	invalidDesired.Spec.DSCP = nil
+
+	err := vpp.ApplyVIP(context.Background(), invalidDesired, nil)
+	if err == nil {
+		t.Fatal("expected invalid desired VIP to be rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid desired VIP attributes") {
+		t.Fatalf("ApplyVIP error = %q, want invalid desired VIP attributes", err)
+	}
+
+	entry, ok := vpp.vips[key]
+	if !ok {
+		t.Fatal("existing VIP entry was removed after invalid desired update")
+	}
+	if entry.vip.Spec.DSCP == nil || *entry.vip.Spec.DSCP != existingDSCP {
+		t.Fatalf("existing VIP was changed: dscp=%v", entry.vip.Spec.DSCP)
 	}
 }

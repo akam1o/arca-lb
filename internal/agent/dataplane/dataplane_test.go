@@ -152,3 +152,47 @@ func TestNoopRemoveNonexistent(t *testing.T) {
 		t.Fatalf("RemoveVIP for non-existent: %v", err)
 	}
 }
+
+func TestVPPSameVIPAttributes(t *testing.T) {
+	vpp := &VPP{
+		config: VPPConfig{
+			EncapType:           "L3DSR",
+			DSCP:                10,
+			ServiceType:         "CLUSTERIP",
+			NewFlowsTableLength: 65537,
+		},
+	}
+
+	base := newTestVIP("test-vip", "203.0.113.1", 80)
+	same := base.DeepCopy()
+	same.Spec.Backends = []v1alpha1.BackendSpec{{Address: "10.0.1.3", Weight: 50}}
+	if !vpp.sameVIPAttributes(base, same) {
+		t.Fatal("backend-only change should not require VIP recreation")
+	}
+
+	explicitDefaultDSCP := base.DeepCopy()
+	defaultDSCP := uint8(10)
+	explicitDefaultDSCP.Spec.DSCP = &defaultDSCP
+	if !vpp.sameVIPAttributes(base, explicitDefaultDSCP) {
+		t.Fatal("nil DSCP and explicit default DSCP should be treated as the same VPP VIP")
+	}
+
+	portChanged := base.DeepCopy()
+	portChanged.Spec.Port = 443
+	if vpp.sameVIPAttributes(base, portChanged) {
+		t.Fatal("port change should require VIP recreation")
+	}
+
+	dscpChanged := base.DeepCopy()
+	newDSCP := uint8(11)
+	dscpChanged.Spec.DSCP = &newDSCP
+	if vpp.sameVIPAttributes(base, dscpChanged) {
+		t.Fatal("effective L3DSR DSCP change should require VIP recreation")
+	}
+
+	encapChanged := base.DeepCopy()
+	encapChanged.Spec.EncapType = v1alpha1.EncapTypeNAT4
+	if vpp.sameVIPAttributes(base, encapChanged) {
+		t.Fatal("encapType change should require VIP recreation")
+	}
+}

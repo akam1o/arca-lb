@@ -19,13 +19,13 @@ import (
 
 // VPPConfig holds VPP-specific configuration.
 type VPPConfig struct {
-	SocketPath          string
-	ConnectTimeout      time.Duration
-	ReconnectInterval   time.Duration
-	EncapType           string
-	DSCP                uint8
-	ServiceType         string
-	NewFlowsTableLength uint32
+	SocketPath            string
+	ConnectTimeout        time.Duration
+	ReconnectInterval     time.Duration
+	EncapType             string
+	DSCP                  uint8
+	ServiceType           string
+	NewFlowsTableLength   uint32
 	FailOnAllBackendsDown bool
 }
 
@@ -75,6 +75,16 @@ type vipEntry struct {
 	backends map[string]v1alpha1.BackendSpec // key: address
 }
 
+type vipAttributes struct {
+	address             string
+	port                int
+	protocol            v1alpha1.Protocol
+	encapType           string
+	dscp                uint8
+	serviceType         string
+	newFlowsTableLength uint32
+}
+
 // NewVPP creates a new VPP data plane.
 func NewVPP(cfg map[string]interface{}) (*VPP, error) {
 	config := vppConfigFromMap(cfg)
@@ -102,33 +112,30 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 
 	key := v.vipKey(vip)
 
-	if existing, ok := v.vips[key]; ok {
-		// VIP exists — delete and recreate
+	existing, exists := v.vips[key]
+	if exists && !v.sameVIPAttributes(existing.vip, vip) {
 		if err := v.deleteVIPLocked(ctx, existing.vip); err != nil {
 			return fmt.Errorf("failed to delete existing VIP for update: %w", err)
 		}
+		delete(v.vips, key)
+		exists = false
 	}
 
-	if err := v.addVIPLocked(ctx, vip); err != nil {
-		return fmt.Errorf("failed to add VIP: %w", err)
-	}
-
-	entry := &vipEntry{
-		vip:      vip.DeepCopy(),
-		backends: make(map[string]v1alpha1.BackendSpec),
-	}
-
-	// Add healthy backends
-	for _, be := range healthyBackends {
-		if err := v.addBackendLocked(ctx, vip, be); err != nil {
-			v.logger.Warn("failed to add backend during VIP apply",
-				"vip", key, "backend", be.Address, "error", err)
-			continue
+	if !exists {
+		if err := v.addVIPLocked(ctx, vip); err != nil {
+			return fmt.Errorf("failed to add VIP: %w", err)
 		}
-		entry.backends[be.Address] = be
+
+		existing = &vipEntry{
+			vip:      vip.DeepCopy(),
+			backends: make(map[string]v1alpha1.BackendSpec),
+		}
+		v.vips[key] = existing
 	}
 
-	v.vips[key] = entry
+	v.reconcileBackendsLocked(ctx, key, existing, vip, healthyBackends)
+	existing.vip = vip.DeepCopy()
+
 	return nil
 }
 
@@ -159,16 +166,28 @@ func (v *VPP) SetBackends(ctx context.Context, vip *v1alpha1.VirtualIP, backends
 		return fmt.Errorf("VIP %s not found in data plane", key)
 	}
 
+	v.reconcileBackendsLocked(ctx, key, entry, vip, backends)
+	return nil
+}
+
+func (v *VPP) reconcileBackendsLocked(
+	ctx context.Context,
+	key string,
+	entry *vipEntry,
+	vip *v1alpha1.VirtualIP,
+	backends []v1alpha1.BackendSpec,
+) {
 	desired := make(map[string]v1alpha1.BackendSpec)
 	for _, be := range backends {
 		desired[be.Address] = be
 	}
 
 	// Remove backends not in desired set
-	for addr := range entry.backends {
+	for addr, be := range entry.backends {
 		if _, ok := desired[addr]; !ok {
-			if err := v.removeBackendLocked(ctx, vip, entry.backends[addr]); err != nil {
+			if err := v.removeBackendLocked(ctx, vip, be); err != nil {
 				v.logger.Warn("failed to remove backend", "vip", key, "backend", addr, "error", err)
+				continue
 			}
 			delete(entry.backends, addr)
 		}
@@ -176,16 +195,17 @@ func (v *VPP) SetBackends(ctx context.Context, vip *v1alpha1.VirtualIP, backends
 
 	// Add backends not yet present
 	for addr, be := range desired {
-		if _, ok := entry.backends[addr]; !ok {
-			if err := v.addBackendLocked(ctx, vip, be); err != nil {
-				v.logger.Warn("failed to add backend", "vip", key, "backend", addr, "error", err)
-				continue
-			}
+		if _, ok := entry.backends[addr]; ok {
 			entry.backends[addr] = be
+			continue
 		}
-	}
 
-	return nil
+		if err := v.addBackendLocked(ctx, vip, be); err != nil {
+			v.logger.Warn("failed to add backend", "vip", key, "backend", addr, "error", err)
+			continue
+		}
+		entry.backends[addr] = be
+	}
 }
 
 func (v *VPP) AddBackend(ctx context.Context, vip *v1alpha1.VirtualIP, backend v1alpha1.BackendSpec) error {
@@ -261,6 +281,45 @@ func (v *VPP) newChannel() (api.Channel, error) {
 		return nil, fmt.Errorf("failed to create API channel: %w", err)
 	}
 	return ch, nil
+}
+
+func (v *VPP) sameVIPAttributes(existing, desired *v1alpha1.VirtualIP) bool {
+	existingAttrs, err := v.effectiveVIPAttributes(existing)
+	if err != nil {
+		return false
+	}
+	desiredAttrs, err := v.effectiveVIPAttributes(desired)
+	if err != nil {
+		return false
+	}
+	return existingAttrs == desiredAttrs
+}
+
+func (v *VPP) effectiveVIPAttributes(vip *v1alpha1.VirtualIP) (vipAttributes, error) {
+	encapType := v.config.EncapType
+	if vip.Spec.EncapType != "" {
+		encapType = string(vip.Spec.EncapType)
+	}
+
+	dscp := v.config.DSCP
+	if encapType == "L3DSR" {
+		if vip.Spec.DSCP != nil {
+			dscp = *vip.Spec.DSCP
+		}
+		if dscp == 0 {
+			return vipAttributes{}, fmt.Errorf("invalid dscp=0 for L3DSR; must be 1-63")
+		}
+	}
+
+	return vipAttributes{
+		address:             vip.Spec.Address,
+		port:                vip.Spec.Port,
+		protocol:            vip.Spec.Protocol,
+		encapType:           encapType,
+		dscp:                dscp,
+		serviceType:         v.config.ServiceType,
+		newFlowsTableLength: v.config.NewFlowsTableLength,
+	}, nil
 }
 
 func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {

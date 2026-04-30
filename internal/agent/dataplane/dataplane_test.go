@@ -2,12 +2,19 @@ package dataplane
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 func newTestVIP(name, addr string, port int) *v1alpha1.VirtualIP {
 	return &v1alpha1.VirtualIP{
@@ -236,5 +243,87 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 	}
 	if entry.vip.Spec.DSCP == nil || *entry.vip.Spec.DSCP != existingDSCP {
 		t.Fatalf("existing VIP was changed: dscp=%v", entry.vip.Spec.DSCP)
+	}
+}
+
+func TestVPPReconcileBackendsReturnsRemoveError(t *testing.T) {
+	removeErr := errors.New("remove failed")
+	vpp := &VPP{
+		logger: discardLogger(),
+		removeBackendFn: func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error {
+			return removeErr
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	entry := &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": {Address: "10.0.1.1", Weight: 100},
+			"10.0.1.2": {Address: "10.0.1.2", Weight: 100},
+		},
+	}
+
+	err := vpp.reconcileBackendsLocked(
+		context.Background(),
+		key,
+		entry,
+		vip,
+		[]v1alpha1.BackendSpec{{Address: "10.0.1.2", Weight: 100}},
+	)
+	if err == nil {
+		t.Fatal("expected remove backend failure to be returned")
+	}
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("reconcileBackendsLocked error = %v, want wrapped remove error", err)
+	}
+	if !strings.Contains(err.Error(), "failed to reconcile backend set") {
+		t.Fatalf("reconcileBackendsLocked error = %q, want backend set context", err)
+	}
+	if _, ok := entry.backends["10.0.1.1"]; !ok {
+		t.Fatal("failed remove should leave stale backend tracked")
+	}
+}
+
+func TestVPPReconcileBackendsReturnsPartialAddError(t *testing.T) {
+	addErr := errors.New("add failed")
+	vpp := &VPP{
+		logger: discardLogger(),
+		addBackendFn: func(_ context.Context, _ *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
+			if be.Address == "10.0.1.3" {
+				return addErr
+			}
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	entry := &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": {Address: "10.0.1.1", Weight: 100},
+		},
+	}
+
+	err := vpp.reconcileBackendsLocked(
+		context.Background(),
+		key,
+		entry,
+		vip,
+		[]v1alpha1.BackendSpec{
+			{Address: "10.0.1.1", Weight: 100},
+			{Address: "10.0.1.3", Weight: 100},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected partial add backend failure to be returned")
+	}
+	if !errors.Is(err, addErr) {
+		t.Fatalf("reconcileBackendsLocked error = %v, want wrapped add error", err)
+	}
+	if _, ok := entry.backends["10.0.1.3"]; ok {
+		t.Fatal("failed add should not be tracked as applied")
 	}
 }

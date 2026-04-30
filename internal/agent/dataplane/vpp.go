@@ -111,14 +111,24 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 	defer v.mu.Unlock()
 
 	key := v.vipKey(vip)
+	desiredAttrs, err := v.effectiveVIPAttributes(vip)
+	if err != nil {
+		return fmt.Errorf("invalid desired VIP attributes for %s: %w", key, err)
+	}
 
 	existing, exists := v.vips[key]
-	if exists && !v.sameVIPAttributes(existing.vip, vip) {
-		if err := v.deleteVIPLocked(ctx, existing.vip); err != nil {
-			return fmt.Errorf("failed to delete existing VIP for update: %w", err)
+	if exists {
+		existingAttrs, err := v.effectiveVIPAttributes(existing.vip)
+		if err != nil {
+			return fmt.Errorf("invalid existing VIP attributes for %s: %w", key, err)
 		}
-		delete(v.vips, key)
-		exists = false
+		if existingAttrs != desiredAttrs {
+			if err := v.deleteVIPLocked(ctx, existing.vip); err != nil {
+				return fmt.Errorf("failed to delete existing VIP for update: %w", err)
+			}
+			delete(v.vips, key)
+			exists = false
+		}
 	}
 
 	if !exists {

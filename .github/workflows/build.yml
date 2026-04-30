@@ -120,13 +120,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for Controller
-        id: meta-controller
+      - name: Extract metadata for Operator
+        id: meta-operator
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/arca-lb-controller
-            ghcr.io/${{ steps.vars.outputs.owner_lc }}/arca-lb-controller
+            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/arca-lb-operator
+            ghcr.io/${{ steps.vars.outputs.owner_lc }}/arca-lb-operator
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -154,26 +154,26 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build controller image tar (linux/amd64)
+      - name: Build operator image tar (linux/amd64)
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: deploy/docker/Dockerfile.controller
+          file: deploy/docker/Dockerfile.operator
           platforms: linux/amd64
-          tags: ${{ steps.meta-controller.outputs.tags }}
-          labels: ${{ steps.meta-controller.outputs.labels }}
-          outputs: type=docker,dest=dist/arca-lb-controller-image.tar
+          tags: ${{ steps.meta-operator.outputs.tags }}
+          labels: ${{ steps.meta-operator.outputs.labels }}
+          outputs: type=docker,dest=dist/arca-lb-operator-image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Push controller tags
+      - name: Push operator tags
         run: |
           set -euo pipefail
-          docker load -i dist/arca-lb-controller-image.tar
+          docker load -i dist/arca-lb-operator-image.tar
           while IFS= read -r tag; do
             [ -n "${tag}" ] || continue
             docker push "${tag}"
-          done <<< "${{ steps.meta-controller.outputs.tags }}"
+          done <<< "${{ steps.meta-operator.outputs.tags }}"
 
       - name: Build agent image tar (linux/amd64)
         uses: docker/build-push-action@v5
@@ -202,20 +202,20 @@ jobs:
           VERSION="${{ github.event.release.tag_name }}"
           mkdir -p dist/out
 
-          CONTROLLER_ARCHIVE="arca-lb-controller-${VERSION}-linux-amd64-image.tar.gz"
+          OPERATOR_ARCHIVE="arca-lb-operator-${VERSION}-linux-amd64-image.tar.gz"
           AGENT_ARCHIVE="arca-lb-agent-${VERSION}-linux-amd64-image.tar.gz"
 
-          gzip -c dist/arca-lb-controller-image.tar > "dist/out/${CONTROLLER_ARCHIVE}"
+          gzip -c dist/arca-lb-operator-image.tar > "dist/out/${OPERATOR_ARCHIVE}"
           gzip -c dist/arca-lb-agent-image.tar > "dist/out/${AGENT_ARCHIVE}"
 
-          (cd dist/out && sha256sum "${CONTROLLER_ARCHIVE}" > "${CONTROLLER_ARCHIVE}.sha256")
+          (cd dist/out && sha256sum "${OPERATOR_ARCHIVE}" > "${OPERATOR_ARCHIVE}.sha256")
           (cd dist/out && sha256sum "${AGENT_ARCHIVE}" > "${AGENT_ARCHIVE}.sha256")
 
       - name: Attach Dockerfiles to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            deploy/docker/Dockerfile.controller
+            deploy/docker/Dockerfile.operator
             deploy/docker/Dockerfile.agent
             dist/out/*.tar.gz
             dist/out/*.sha256

@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 )
@@ -57,8 +57,11 @@ func (f *FRR) AnnounceVIP(ctx context.Context, vipAddress string) error {
 	}
 	f.mu.Unlock()
 
-	cmd := f.addRouteCmd(vipAddress)
-	if err := f.execVTYSh(ctx, cmd); err != nil {
+	commands, err := f.addRouteCmd(vipAddress)
+	if err != nil {
+		return err
+	}
+	if err := f.execVTYSh(ctx, commands); err != nil {
 		return fmt.Errorf("failed to announce route for %s: %w", vipAddress, err)
 	}
 
@@ -78,8 +81,11 @@ func (f *FRR) WithdrawVIP(ctx context.Context, vipAddress string) error {
 	}
 	f.mu.Unlock()
 
-	cmd := f.deleteRouteCmd(vipAddress)
-	if err := f.execVTYSh(ctx, cmd); err != nil {
+	commands, err := f.deleteRouteCmd(vipAddress)
+	if err != nil {
+		return err
+	}
+	if err := f.execVTYSh(ctx, commands); err != nil {
 		return fmt.Errorf("failed to withdraw route for %s: %w", vipAddress, err)
 	}
 
@@ -101,33 +107,44 @@ func (f *FRR) Close() error {
 	return nil
 }
 
-func (f *FRR) addRouteCmd(addr string) string {
-	prefix := addr + "/32"
-	if strings.Contains(addr, ":") {
-		prefix = addr + "/128"
+func (f *FRR) addRouteCmd(addr string) ([]string, error) {
+	routeCmd, err := f.routeCmd("ip route", "ipv6 route", addr)
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Sprintf(
-		"configure terminal\nip route %s Null0 tag %d\nend",
-		prefix, f.config.RouteTag,
-	)
+	return []string{"configure terminal", routeCmd, "end"}, nil
 }
 
-func (f *FRR) deleteRouteCmd(addr string) string {
-	prefix := addr + "/32"
-	if strings.Contains(addr, ":") {
-		prefix = addr + "/128"
+func (f *FRR) deleteRouteCmd(addr string) ([]string, error) {
+	routeCmd, err := f.routeCmd("no ip route", "no ipv6 route", addr)
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Sprintf(
-		"configure terminal\nno ip route %s Null0 tag %d\nend",
-		prefix, f.config.RouteTag,
-	)
+	return []string{"configure terminal", routeCmd, "end"}, nil
 }
 
-func (f *FRR) execVTYSh(ctx context.Context, commands string) error {
+func (f *FRR) routeCmd(ipv4Cmd, ipv6Cmd, addr string) (string, error) {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return "", fmt.Errorf("invalid VIP address: %s", addr)
+	}
+
+	if ip.To4() == nil {
+		return fmt.Sprintf("%s %s/128 Null0 tag %d", ipv6Cmd, addr, f.config.RouteTag), nil
+	}
+	return fmt.Sprintf("%s %s/32 Null0 tag %d", ipv4Cmd, addr, f.config.RouteTag), nil
+}
+
+func (f *FRR) execVTYSh(ctx context.Context, commands []string) error {
 	ctx, cancel := context.WithTimeout(ctx, f.config.CmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, f.config.VTYShPath, "-c", commands)
+	args := make([]string, 0, len(commands)*2)
+	for _, command := range commands {
+		args = append(args, "-c", command)
+	}
+
+	cmd := exec.CommandContext(ctx, f.config.VTYShPath, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("vtysh error: %w, output: %s", err, string(output))

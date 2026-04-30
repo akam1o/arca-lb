@@ -13,10 +13,11 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/healthcheck"
 	"github.com/akam1o/arca-lb/internal/agent/reconciler"
 	"github.com/akam1o/arca-lb/internal/agent/routing"
+	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestVIPEventHandlerSkipsReconcileWhenHealthCheckUpdateFails(t *testing.T) {
+func TestVIPEventHandlerPreservesDataplaneWhenHealthCheckUpdateFails(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -28,19 +29,24 @@ func TestVIPEventHandlerSkipsReconcileWhenHealthCheckUpdateFails(t *testing.T) {
 	defer hcEngine.Stop()
 
 	dp := &recordingDataPlane{}
-	reconMgr := reconciler.NewManager(dp, routing.NewNoop(), nil, hcEngine, time.Hour, logger)
+	router := routing.NewNoop()
+	statusUpdater := &recordingHealthCheckConditionUpdater{}
+	reconMgr := reconciler.NewManager(dp, router, nil, hcEngine, time.Hour, logger)
 	reconMgr.Start(ctx)
 	defer reconMgr.Stop()
 
 	handler := &vipEventHandler{
-		reconciler: reconMgr,
-		hcEngine:   hcEngine,
-		logger:     logger,
+		ctx:           ctx,
+		reconciler:    reconMgr,
+		hcEngine:      hcEngine,
+		statusUpdater: statusUpdater,
+		logger:        logger,
 	}
 	vip := &v1alpha1.VirtualIP{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "default",
-			Name:      "web",
+			Namespace:  "default",
+			Name:       "web",
+			Generation: 2,
 		},
 		Spec: v1alpha1.VirtualIPSpec{
 			Address:  "203.0.113.10",
@@ -53,25 +59,51 @@ func TestVIPEventHandlerSkipsReconcileWhenHealthCheckUpdateFails(t *testing.T) {
 		},
 	}
 
+	initial := vip.DeepCopy()
+	initial.Spec.HealthCheck = nil
+	handler.OnVIPUpdate(initial)
+	waitForCondition(t, func() bool {
+		return dp.applyCount() == 1 && dp.backendCount() == 1 && router.IsAnnounced(initial.Spec.Address)
+	}, "initial VIP reconcile")
+
 	handler.OnVIPUpdate(vip)
 
-	if got := len(reconMgr.GetStatus()); got != 0 {
-		t.Fatalf("managed VIPs = %d, want 0 after health check update failure", got)
+	if got := dp.applyCount(); got != 1 {
+		t.Fatalf("dataplane ApplyVIP calls = %d, want 1 after invalid health check update", got)
 	}
-	if got := dp.applyCount(); got != 0 {
-		t.Fatalf("dataplane ApplyVIP calls = %d, want 0 after health check update failure", got)
+	if got := dp.backendCount(); got != 1 {
+		t.Fatalf("dataplane backends = %d, want existing backend to remain", got)
+	}
+	if !router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route was withdrawn after invalid health check update")
+	}
+
+	condition := statusUpdater.lastCondition()
+	if condition.Type != agentstatus.ConditionHealthCheckReady {
+		t.Fatalf("condition type = %q, want %q", condition.Type, agentstatus.ConditionHealthCheckReady)
+	}
+	if condition.Status != metav1.ConditionFalse {
+		t.Fatalf("condition status = %s, want False", condition.Status)
+	}
+	if condition.Reason != "InvalidHealthCheck" {
+		t.Fatalf("condition reason = %q, want InvalidHealthCheck", condition.Reason)
+	}
+	if condition.ObservedGeneration != vip.Generation {
+		t.Fatalf("condition observedGeneration = %d, want %d", condition.ObservedGeneration, vip.Generation)
 	}
 }
 
 type recordingDataPlane struct {
-	mu      sync.Mutex
-	applies int
+	mu       sync.Mutex
+	applies  int
+	backends []v1alpha1.BackendSpec
 }
 
-func (r *recordingDataPlane) ApplyVIP(context.Context, *v1alpha1.VirtualIP, []v1alpha1.BackendSpec) error {
+func (r *recordingDataPlane) ApplyVIP(_ context.Context, _ *v1alpha1.VirtualIP, backends []v1alpha1.BackendSpec) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.applies++
+	r.backends = append([]v1alpha1.BackendSpec(nil), backends...)
 	return nil
 }
 
@@ -103,4 +135,41 @@ func (r *recordingDataPlane) applyCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.applies
+}
+
+func (r *recordingDataPlane) backendCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.backends)
+}
+
+type recordingHealthCheckConditionUpdater struct {
+	mu        sync.Mutex
+	condition metav1.Condition
+}
+
+func (r *recordingHealthCheckConditionUpdater) UpdateHealthCheckCondition(_ context.Context, _ *v1alpha1.VirtualIP, condition metav1.Condition) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.condition = condition
+	return nil
+}
+
+func (r *recordingHealthCheckConditionUpdater) lastCondition() metav1.Condition {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.condition
+}
+
+func waitForCondition(t *testing.T, condition func() bool, description string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
 }

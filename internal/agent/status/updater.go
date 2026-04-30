@@ -9,12 +9,20 @@ import (
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	// ConditionHealthCheckReady reports whether the agent accepted the current
+	// health check configuration.
+	ConditionHealthCheckReady = "HealthCheckReady"
 )
 
 // Config configures Kubernetes API access for status updates.
@@ -90,6 +98,40 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 		current.Status.TotalBackends = len(vip.Spec.Backends)
 		current.Status.HealthyBackends = len(healthyBackends)
 		current.Status.Backends = buildBackendStatuses(vip.Spec.Backends, healthySet)
+
+		return u.client.Status().Update(ctx, &current)
+	})
+}
+
+// UpdateHealthCheckCondition records whether the agent accepted the health check config.
+func (u *Updater) UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.VirtualIP, condition metav1.Condition) error {
+	if u == nil || u.client == nil || vip == nil {
+		return nil
+	}
+
+	key := types.NamespacedName{Namespace: vip.Namespace, Name: vip.Name}
+
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current v1alpha1.VirtualIP
+		if err := u.client.Get(ctx, key, &current); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+
+		if current.UID != vip.UID || current.Generation != vip.Generation || !current.DeletionTimestamp.IsZero() {
+			u.logger.Debug("skipping stale VirtualIP health check condition update",
+				"namespace", vip.Namespace,
+				"name", vip.Name,
+				"observed_generation", vip.Generation,
+				"current_generation", current.Generation)
+			return nil
+		}
+
+		condition.Type = ConditionHealthCheckReady
+		condition.ObservedGeneration = vip.Generation
+		meta.SetStatusCondition(&current.Status.Conditions, condition)
 
 		return u.client.Status().Update(ctx, &current)
 	})

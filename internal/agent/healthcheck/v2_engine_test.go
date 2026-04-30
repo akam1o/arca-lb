@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"testing"
@@ -9,6 +10,30 @@ import (
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestEngineStopReturns(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{WorkerCount: 1, MaxConcurrentChecks: 1}, nil, nil, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := engine.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		engine.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Stop did not return")
+	}
+}
 
 func TestEngineSetCallback(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

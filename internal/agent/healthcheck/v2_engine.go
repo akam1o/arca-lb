@@ -58,9 +58,11 @@ type Engine struct {
 	vips map[string]*vipHealthState // key: namespace/name
 
 	// Worker pool
-	jobCh    chan *probeJob
-	resultCh chan *probeResult
-	wg       sync.WaitGroup
+	jobCh       chan *probeJob
+	resultCh    chan *probeResult
+	schedulerWG sync.WaitGroup
+	workerWG    sync.WaitGroup
+	resultWG    sync.WaitGroup
 
 	// Metrics
 	probeCounter  metric.Int64Counter
@@ -158,12 +160,12 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	// Start workers
 	for i := 0; i < e.config.WorkerCount; i++ {
-		e.wg.Add(1)
+		e.workerWG.Add(1)
 		go e.worker(i)
 	}
 
 	// Start result processor
-	e.wg.Add(1)
+	e.resultWG.Add(1)
 	go e.processResults()
 
 	// Restore persisted state
@@ -201,8 +203,11 @@ func (e *Engine) Stop() {
 	e.vips = make(map[string]*vipHealthState)
 	e.mu.Unlock()
 
+	e.schedulerWG.Wait()
 	close(e.jobCh)
-	e.wg.Wait()
+	e.workerWG.Wait()
+	close(e.resultCh)
+	e.resultWG.Wait()
 
 	e.logger.Info("health check engine stopped")
 }
@@ -216,6 +221,9 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if !e.started {
+		return fmt.Errorf("health check engine is not started")
+	}
 
 	// Stop existing if present
 	if vs, ok := e.vips[vipKey]; ok {
@@ -270,7 +278,11 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 	e.vips[vipKey] = vs
 
 	// Start scheduler goroutine for this VIP
-	go e.scheduleProbes(ctx, vs)
+	e.schedulerWG.Add(1)
+	go func() {
+		defer e.schedulerWG.Done()
+		e.scheduleProbes(ctx, vs)
+	}()
 
 	e.logger.Info("started health check for VIP",
 		"vip", vipKey, "backends", len(vip.Spec.Backends),
@@ -402,7 +414,7 @@ func (e *Engine) emitProbeJobs(vs *vipHealthState) {
 }
 
 func (e *Engine) worker(id int) {
-	defer e.wg.Done()
+	defer e.workerWG.Done()
 
 	for job := range e.jobCh {
 		ctx, cancel := context.WithTimeout(e.ctx, job.timeout)
@@ -440,7 +452,7 @@ func (e *Engine) worker(id int) {
 }
 
 func (e *Engine) processResults() {
-	defer e.wg.Done()
+	defer e.resultWG.Done()
 
 	for result := range e.resultCh {
 		e.handleResult(result)

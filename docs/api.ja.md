@@ -91,7 +91,7 @@ status:
 | `port` | int (1-65535) | はい | 仮想ポート番号 |
 | `protocol` | string | はい | トランスポートプロトコル: `TCP` または `UDP` |
 | `encapType` | string | いいえ | カプセル化タイプ: `GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6`。デフォルト: `L3DSR` |
-| `dscp` | int (0-63) | いいえ | L3DSR モードの DSCP 値 |
+| `dscp` | int (1-63) | いいえ | DSCP ベース L3DSR 用の任意 override。省略時は Agent の既定値を使用 |
 | `backends` | []BackendSpec | いいえ | バックエンドサーバーのリスト |
 | `healthCheck` | HealthCheckSpec | いいえ | ヘルスチェック設定 |
 
@@ -177,7 +177,7 @@ Admission Webhook が以下を検証します：
 - `port` は 1〜65535 の範囲であること
 - `protocol` は `TCP` または `UDP` であること
 - `encapType` は `GRE4`, `GRE6`, `L3DSR`, `NAT4`, `NAT6` のいずれかであること
-- `dscp` は 0〜63 の範囲であること
+- `dscp` は指定する場合 1〜63 の範囲であること
 - バックエンドの `weight` は 1〜100 の範囲であること
 - バックエンドの `address` は有効な IP アドレスであること
 - ヘルスチェックの `type` は `http`, `https`, `tcp`, `ping` のいずれかであること

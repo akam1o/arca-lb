@@ -102,8 +102,8 @@ type VPPLBConfig struct {
 	// Default: GRE4
 	EncapType string `yaml:"encap_type"`
 
-	// DSCP is the DSCP value for encapsulated packets
-	// Valid range: 0-63
+	// DSCP is the default DSCP value for DSCP-based L3DSR.
+	// Valid range: 1-63 when using L3DSR with DSCP steering.
 	// Default: 0
 	DSCP uint8 `yaml:"dscp"`
 
@@ -446,7 +446,7 @@ func validate(cfg *Config) error {
 	}
 
 	if cfg.VPP.LB.DSCP > 63 {
-		return fmt.Errorf("vpp.lb.dscp must be in range 0-63")
+		return fmt.Errorf("vpp.lb.dscp must be <= 63")
 	}
 
 	if cfg.VPP.LB.NewFlowsTableLength > 0 && cfg.VPP.LB.NewFlowsTableLength < 1 {

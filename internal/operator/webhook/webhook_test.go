@@ -64,12 +64,12 @@ func TestValidateVirtualIP_InvalidEncapType(t *testing.T) {
 	}
 }
 
-func TestValidateVirtualIP_L3DSR_RequiresDSCP(t *testing.T) {
+func TestValidateVirtualIP_L3DSR_AllowsMissingDSCP(t *testing.T) {
 	vip := validVIP()
 	vip.Spec.EncapType = v1alpha1.EncapTypeL3DSR
 	vip.Spec.DSCP = nil
-	if err := validateVirtualIP(vip); err == nil {
-		t.Error("expected error when L3DSR has no DSCP")
+	if err := validateVirtualIP(vip); err != nil {
+		t.Errorf("expected L3DSR without per-VIP DSCP to be valid, got: %v", err)
 	}
 }
 

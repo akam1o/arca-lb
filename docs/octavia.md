@@ -81,7 +81,7 @@ namespace = arca-system
 # Default encapsulation type (GRE4, GRE6, L3DSR, NAT4, NAT6).
 default_encap_type = L3DSR
 
-# Default DSCP value for L3DSR mode (0-63).
+# Default DSCP value for DSCP-based L3DSR mode (1-63).
 default_dscp = 10
 
 # Interval in seconds for syncing VirtualIP status back to Octavia.
@@ -249,7 +249,7 @@ Available flavor metadata:
 | Key | Values | Default | Description |
 |-----|--------|---------|-------------|
 | `encap_type` | GRE4, GRE6, L3DSR, NAT4, NAT6 | L3DSR | Encapsulation type for return traffic |
-| `dscp` | 0-63 | 10 | DSCP marking value (L3DSR only) |
+| `dscp` | 1-63 | 10 | DSCP marking value for DSCP-based L3DSR |
 
 ## Limitations
 

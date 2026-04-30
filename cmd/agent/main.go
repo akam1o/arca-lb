@@ -126,7 +126,7 @@ func main() {
 		WorkerCount:         cfg.HealthCheck.WorkerCount,
 		MaxConcurrentChecks: cfg.HealthCheck.MaxConcurrentChecks,
 		DefaultTimeout:      cfg.HealthCheck.DefaultTimeout,
-	}, st, nil, logger) // callback set after reconciler creation
+	}, st, nil, logger)
 
 	// Create reconciler manager
 	reconMgr := reconciler.NewManager(dp, router, st, hcEngine, cfg.Agent.ReconcileInterval, logger)
@@ -138,12 +138,7 @@ func main() {
 			"old", oldState, "new", newState)
 		reconMgr.OnHealthChange(vipName)
 	}
-	// Re-create engine with callback
-	hcEngine = healthcheck.NewEngine(healthcheck.EngineConfig{
-		WorkerCount:         cfg.HealthCheck.WorkerCount,
-		MaxConcurrentChecks: cfg.HealthCheck.MaxConcurrentChecks,
-		DefaultTimeout:      cfg.HealthCheck.DefaultTimeout,
-	}, st, hcCallback, logger)
+	hcEngine.SetCallback(hcCallback)
 
 	// Start health check engine
 	if err := hcEngine.Start(ctx); err != nil {

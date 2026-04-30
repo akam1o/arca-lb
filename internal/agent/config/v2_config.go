@@ -11,14 +11,14 @@ import (
 
 // V2Config is the top-level configuration for the v2 agent.
 type V2Config struct {
-	Agent      AgentSettings      `yaml:"agent"`
-	Kubernetes KubernetesSettings `yaml:"kubernetes"`
-	DataPlane  DataPlaneSettings  `yaml:"dataplane"`
-	Routing    RoutingSettings    `yaml:"routing"`
-	HealthCheck HCSettings        `yaml:"healthCheck"`
-	Metrics    MetricsSettings    `yaml:"metrics"`
-	Telemetry  TelemetrySettings  `yaml:"telemetry"`
-	Log        LogSettings        `yaml:"log"`
+	Agent       AgentSettings      `yaml:"agent"`
+	Kubernetes  KubernetesSettings `yaml:"kubernetes"`
+	DataPlane   DataPlaneSettings  `yaml:"dataplane"`
+	Routing     RoutingSettings    `yaml:"routing"`
+	HealthCheck HCSettings         `yaml:"healthCheck"`
+	Metrics     MetricsSettings    `yaml:"metrics"`
+	Telemetry   TelemetrySettings  `yaml:"telemetry"`
+	Log         LogSettings        `yaml:"log"`
 }
 
 // AgentSettings contains agent identity and tuning.

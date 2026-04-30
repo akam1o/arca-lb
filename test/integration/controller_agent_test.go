@@ -40,7 +40,7 @@ func TestControllerAgentCommunication(t *testing.T) {
 
 	// Create gRPC server
 	grpcServer := grpc.NewServer(cfg, ds, nil)
-	
+
 	// Start server in a goroutine
 	serverErrCh := make(chan error, 1)
 	go func() {
@@ -72,4 +72,3 @@ func TestControllerAgentCommunication(t *testing.T) {
 	// Cleanup
 	grpcServer.Stop()
 }
-

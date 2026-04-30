@@ -27,9 +27,9 @@ var tracer = otel.Tracer("arca-lb/agent/reconciler")
 // HealthTracker provides the current health state of backends.
 type HealthTracker interface {
 	// IsHealthy returns whether a backend is considered healthy.
-	IsHealthy(vipName, backendAddr string) bool
+	IsHealthy(vipKey, backendAddr string) bool
 	// HealthyBackends returns the list of healthy backends for a VIP.
-	HealthyBackends(vipName string, backends []v1alpha1.BackendSpec) []v1alpha1.BackendSpec
+	HealthyBackends(vipKey string, backends []v1alpha1.BackendSpec) []v1alpha1.BackendSpec
 }
 
 // Manager manages per-VIP reconciler goroutines.
@@ -156,17 +156,13 @@ func (m *Manager) onVIPReconcilerStopped(key string, stopped *vipReconciler) {
 }
 
 // OnHealthChange is called when a backend's health status changes.
-func (m *Manager) OnHealthChange(vipName string) {
+func (m *Manager) OnHealthChange(vipKey string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Find the reconciler by VIP name (try all namespaces)
-	for key, vr := range m.vips {
-		if vr.vipName() == vipName {
-			vr.triggerReconcile()
-			m.logger.Debug("health change triggered reconcile", "key", key)
-			return
-		}
+	if vr, ok := m.vips[vipKey]; ok {
+		vr.triggerReconcile()
+		m.logger.Debug("health change triggered reconcile", "key", vipKey)
 	}
 }
 
@@ -220,15 +216,6 @@ func newVIPReconciler(
 		stopped:        make(chan struct{}),
 		onStopped:      onStopped,
 	}
-}
-
-func (vr *vipReconciler) vipName() string {
-	vr.mu.RLock()
-	defer vr.mu.RUnlock()
-	if vr.current != nil {
-		return vr.current.Name
-	}
-	return ""
 }
 
 func (vr *vipReconciler) update(vip *v1alpha1.VirtualIP) {
@@ -321,6 +308,7 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 
 	ctx, span := tracer.Start(ctx, "reconcile",
 		trace.WithAttributes(
+			attribute.String("vip.key", vr.key),
 			attribute.String("vip.name", vip.Name),
 			attribute.String("vip.address", vip.Spec.Address),
 		),
@@ -332,7 +320,7 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	// Determine healthy backends
 	var healthyBackends []v1alpha1.BackendSpec
 	if vip.Spec.HealthCheck != nil && vr.healthTracker != nil {
-		healthyBackends = vr.healthTracker.HealthyBackends(vip.Name, vip.Spec.Backends)
+		healthyBackends = vr.healthTracker.HealthyBackends(vr.key, vip.Spec.Backends)
 	} else {
 		// No health check → all backends are healthy
 		healthyBackends = vip.Spec.Backends
@@ -363,7 +351,7 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	if vr.store != nil {
 		data, err := json.Marshal(vip.Spec)
 		if err == nil {
-			if err := vr.store.SaveLastConfig(vip.Name, data); err != nil {
+			if err := vr.store.SaveLastConfig(vr.key, data); err != nil {
 				vr.logger.Warn("failed to persist last config", "error", err)
 			}
 		}
@@ -377,7 +365,10 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 
 func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.VirtualIP) {
 	ctx, span := tracer.Start(ctx, "delete",
-		trace.WithAttributes(attribute.String("vip.name", vip.Name)),
+		trace.WithAttributes(
+			attribute.String("vip.key", vr.key),
+			attribute.String("vip.name", vip.Name),
+		),
 	)
 	defer span.End()
 
@@ -397,10 +388,10 @@ func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.Virtual
 
 	// Clean up local state
 	if vr.store != nil {
-		if err := vr.store.DeleteLastConfig(vip.Name); err != nil {
+		if err := vr.store.DeleteLastConfig(vr.key); err != nil {
 			vr.logger.Warn("failed to delete last config", "error", err)
 		}
-		if err := vr.store.DeleteHealthStatesForVIP(vip.Name); err != nil {
+		if err := vr.store.DeleteHealthStatesForVIP(vr.key); err != nil {
 			vr.logger.Warn("failed to delete health states", "error", err)
 		}
 	}

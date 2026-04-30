@@ -141,6 +141,37 @@ func TestDeleteHealthStatesForVIP(t *testing.T) {
 	}
 }
 
+func TestHealthStateNamespacedVIPKeys(t *testing.T) {
+	st := tempStore(t)
+
+	if err := st.SaveHealthState("team-a/web", "10.0.0.1", &BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveHealthState("team-b/web", "10.0.0.1", &BackendHealthRecord{State: "down"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.DeleteHealthStatesForVIP("team-a/web"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := st.LoadHealthState("team-a/web", "10.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec != nil {
+		t.Fatal("team-a/web health state should be deleted")
+	}
+
+	rec, err = st.LoadHealthState("team-b/web", "10.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec == nil || rec.State != "down" {
+		t.Fatalf("team-b/web health state = %#v, want state down", rec)
+	}
+}
+
 func TestLoadAllHealthStates(t *testing.T) {
 	st := tempStore(t)
 
@@ -178,6 +209,37 @@ func TestSaveAndLoadLastConfig(t *testing.T) {
 	}
 	if string(loaded) != string(config) {
 		t.Errorf("LoadLastConfig = %q, want %q", loaded, config)
+	}
+}
+
+func TestLastConfigNamespacedVIPKeys(t *testing.T) {
+	st := tempStore(t)
+
+	if err := st.SaveLastConfig("team-a/web", []byte(`{"namespace":"team-a"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveLastConfig("team-b/web", []byte(`{"namespace":"team-b"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.DeleteLastConfig("team-a/web"); err != nil {
+		t.Fatal(err)
+	}
+
+	teamAConfig, err := st.LoadLastConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if teamAConfig != nil {
+		t.Fatal("team-a/web config should be deleted")
+	}
+
+	teamBConfig, err := st.LoadLastConfig("team-b/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(teamBConfig) != `{"namespace":"team-b"}` {
+		t.Fatalf("team-b/web config = %q", teamBConfig)
 	}
 }
 

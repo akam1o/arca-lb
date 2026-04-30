@@ -30,7 +30,8 @@ const (
 )
 
 // V2StateChangeCallback is invoked when a backend transitions between states.
-type V2StateChangeCallback func(vipName, backendAddr string, oldState, newState V2BackendState)
+// vipKey is the namespaced VirtualIP key ("namespace/name").
+type V2StateChangeCallback func(vipKey, backendAddr string, oldState, newState V2BackendState)
 
 // EngineConfig configures the health check engine.
 type EngineConfig struct {
@@ -54,7 +55,7 @@ type Engine struct {
 	cancel  context.CancelFunc
 
 	// Per-VIP tracking
-	vips map[string]*vipHealthState // key: vip name
+	vips map[string]*vipHealthState // key: namespace/name
 
 	// Worker pool
 	jobCh    chan *probeJob
@@ -67,7 +68,7 @@ type Engine struct {
 }
 
 type vipHealthState struct {
-	vipName  string
+	vipKey   string
 	spec     *v1alpha1.HealthCheckSpec
 	backends map[string]*backendHealthState // key: backend address
 	prober   V2Prober
@@ -84,19 +85,27 @@ type backendHealthState struct {
 }
 
 type probeJob struct {
-	vipName     string
+	vipKey      string
 	backendAddr string
 	prober      V2Prober
 	timeout     time.Duration
 }
 
 type probeResult struct {
-	vipName     string
+	vipKey      string
 	backendAddr string
 	success     bool
 	latency     time.Duration
 	err         error
 	timestamp   time.Time
+}
+
+// KeyForVIP returns the stable key used by the v2 agent for namespaced VIPs.
+func KeyForVIP(vip *v1alpha1.VirtualIP) string {
+	if vip.Namespace == "" {
+		return vip.Name
+	}
+	return vip.Namespace + "/" + vip.Name
 }
 
 // NewEngine creates a new health check engine.
@@ -185,7 +194,7 @@ func (e *Engine) Stop() {
 		}
 		if vs.prober != nil {
 			if err := vs.prober.Close(); err != nil {
-				e.logger.Warn("failed to close prober", "vip", vs.vipName, "error", err)
+				e.logger.Warn("failed to close prober", "vip", vs.vipKey, "error", err)
 			}
 		}
 	}
@@ -203,30 +212,31 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 	if vip.Spec.HealthCheck == nil {
 		return nil
 	}
+	vipKey := KeyForVIP(vip)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	// Stop existing if present
-	if vs, ok := e.vips[vip.Name]; ok {
+	if vs, ok := e.vips[vipKey]; ok {
 		if vs.cancel != nil {
 			vs.cancel()
 		}
 		if vs.prober != nil {
 			if err := vs.prober.Close(); err != nil {
-				e.logger.Warn("failed to close prober", "vip", vip.Name, "error", err)
+				e.logger.Warn("failed to close prober", "vip", vipKey, "error", err)
 			}
 		}
 	}
 
 	prober, err := newProberFromSpec(vip.Spec.HealthCheck)
 	if err != nil {
-		return fmt.Errorf("failed to create prober for VIP %s: %w", vip.Name, err)
+		return fmt.Errorf("failed to create prober for VIP %s: %w", vipKey, err)
 	}
 
 	ctx, cancel := context.WithCancel(e.ctx)
 	vs := &vipHealthState{
-		vipName:  vip.Name,
+		vipKey:   vipKey,
 		spec:     vip.Spec.HealthCheck.DeepCopy(),
 		backends: make(map[string]*backendHealthState),
 		prober:   prober,
@@ -243,37 +253,37 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 
 		// Try to restore from persistent store
 		if e.store != nil {
-			if rec, err := e.store.LoadHealthState(vip.Name, be.Address); err == nil && rec != nil {
+			if rec, err := e.store.LoadHealthState(vipKey, be.Address); err == nil && rec != nil {
 				bhs.state = V2BackendState(rec.State)
 				bhs.consecutiveUp = rec.ConsecutiveUp
 				bhs.consecutiveDown = rec.ConsecutiveDown
 				bhs.lastProbeTime = rec.LastProbeTime
 				bhs.lastStateChange = rec.LastStateChange
 				e.logger.Info("restored health state",
-					"vip", vip.Name, "backend", be.Address, "state", bhs.state)
+					"vip", vipKey, "backend", be.Address, "state", bhs.state)
 			}
 		}
 
 		vs.backends[be.Address] = bhs
 	}
 
-	e.vips[vip.Name] = vs
+	e.vips[vipKey] = vs
 
 	// Start scheduler goroutine for this VIP
 	go e.scheduleProbes(ctx, vs)
 
 	e.logger.Info("started health check for VIP",
-		"vip", vip.Name, "backends", len(vip.Spec.Backends),
+		"vip", vipKey, "backends", len(vip.Spec.Backends),
 		"interval", vip.Spec.HealthCheck.IntervalSeconds)
 	return nil
 }
 
 // StopVIP stops health checking for a VIP.
-func (e *Engine) StopVIP(vipName string) {
+func (e *Engine) StopVIP(vipKey string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	vs, ok := e.vips[vipName]
+	vs, ok := e.vips[vipKey]
 	if !ok {
 		return
 	}
@@ -283,27 +293,27 @@ func (e *Engine) StopVIP(vipName string) {
 	}
 	if vs.prober != nil {
 		if err := vs.prober.Close(); err != nil {
-			e.logger.Warn("failed to close prober", "vip", vipName, "error", err)
+			e.logger.Warn("failed to close prober", "vip", vipKey, "error", err)
 		}
 	}
-	delete(e.vips, vipName)
+	delete(e.vips, vipKey)
 
-	e.logger.Info("stopped health check for VIP", "vip", vipName)
+	e.logger.Info("stopped health check for VIP", "vip", vipKey)
 }
 
 // UpdateVIP updates health checking for a VIP (backends may have changed).
 func (e *Engine) UpdateVIP(vip *v1alpha1.VirtualIP) error {
 	// Simple approach: stop and restart
-	e.StopVIP(vip.Name)
+	e.StopVIP(KeyForVIP(vip))
 	return e.StartVIP(vip)
 }
 
 // IsHealthy returns whether a specific backend is healthy.
-func (e *Engine) IsHealthy(vipName, backendAddr string) bool {
+func (e *Engine) IsHealthy(vipKey, backendAddr string) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	vs, ok := e.vips[vipName]
+	vs, ok := e.vips[vipKey]
 	if !ok {
 		return false
 	}
@@ -315,11 +325,11 @@ func (e *Engine) IsHealthy(vipName, backendAddr string) bool {
 }
 
 // HealthyBackends returns the subset of backends that are healthy.
-func (e *Engine) HealthyBackends(vipName string, backends []v1alpha1.BackendSpec) []v1alpha1.BackendSpec {
+func (e *Engine) HealthyBackends(vipKey string, backends []v1alpha1.BackendSpec) []v1alpha1.BackendSpec {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	vs, ok := e.vips[vipName]
+	vs, ok := e.vips[vipKey]
 	if !ok {
 		return nil
 	}
@@ -334,11 +344,11 @@ func (e *Engine) HealthyBackends(vipName string, backends []v1alpha1.BackendSpec
 }
 
 // GetBackendStates returns the health states for all backends of a VIP.
-func (e *Engine) GetBackendStates(vipName string) map[string]V2BackendState {
+func (e *Engine) GetBackendStates(vipKey string) map[string]V2BackendState {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	vs, ok := e.vips[vipName]
+	vs, ok := e.vips[vipKey]
 	if !ok {
 		return nil
 	}
@@ -377,7 +387,7 @@ func (e *Engine) emitProbeJobs(vs *vipHealthState) {
 	timeout := time.Duration(vs.spec.TimeoutSeconds) * time.Second
 	for addr := range vs.backends {
 		job := &probeJob{
-			vipName:     vs.vipName,
+			vipKey:      vs.vipKey,
 			backendAddr: addr,
 			prober:      vs.prober,
 			timeout:     timeout,
@@ -386,7 +396,7 @@ func (e *Engine) emitProbeJobs(vs *vipHealthState) {
 		case e.jobCh <- job:
 		default:
 			e.logger.Warn("job channel full, skipping probe",
-				"vip", vs.vipName, "backend", addr)
+				"vip", vs.vipKey, "backend", addr)
 		}
 	}
 }
@@ -402,7 +412,7 @@ func (e *Engine) worker(id int) {
 		cancel()
 
 		pr := &probeResult{
-			vipName:     job.vipName,
+			vipKey:      job.vipKey,
 			backendAddr: job.backendAddr,
 			success:     result.Success,
 			latency:     latency,
@@ -413,18 +423,18 @@ func (e *Engine) worker(id int) {
 		// Record metrics
 		e.probeCounter.Add(context.Background(), 1,
 			metric.WithAttributes(
-				attribute.String("vip", job.vipName),
+				attribute.String("vip", job.vipKey),
 				attribute.Bool("success", result.Success),
 			))
 		e.probeDuration.Record(context.Background(), latency.Seconds(),
 			metric.WithAttributes(
-				attribute.String("vip", job.vipName),
+				attribute.String("vip", job.vipKey),
 			))
 
 		select {
 		case e.resultCh <- pr:
 		default:
-			e.logger.Warn("result channel full", "vip", job.vipName, "backend", job.backendAddr)
+			e.logger.Warn("result channel full", "vip", job.vipKey, "backend", job.backendAddr)
 		}
 	}
 }
@@ -440,7 +450,7 @@ func (e *Engine) processResults() {
 func (e *Engine) handleResult(result *probeResult) {
 	e.mu.Lock()
 
-	vs, ok := e.vips[result.vipName]
+	vs, ok := e.vips[result.vipKey]
 	if !ok {
 		e.mu.Unlock()
 		return
@@ -476,32 +486,32 @@ func (e *Engine) handleResult(result *probeResult) {
 	newState := bhs.state
 	stateChanged := prevState != newState
 	callback := e.callback
+	rec := &store.BackendHealthRecord{
+		State:           string(bhs.state),
+		ConsecutiveUp:   bhs.consecutiveUp,
+		ConsecutiveDown: bhs.consecutiveDown,
+		LastProbeTime:   bhs.lastProbeTime,
+		LastStateChange: bhs.lastStateChange,
+	}
 
 	e.mu.Unlock()
 
 	// Persist state (outside lock)
 	if e.store != nil {
-		rec := &store.BackendHealthRecord{
-			State:           string(bhs.state),
-			ConsecutiveUp:   bhs.consecutiveUp,
-			ConsecutiveDown: bhs.consecutiveDown,
-			LastProbeTime:   bhs.lastProbeTime,
-			LastStateChange: bhs.lastStateChange,
-		}
-		if err := e.store.SaveHealthState(result.vipName, result.backendAddr, rec); err != nil {
+		if err := e.store.SaveHealthState(result.vipKey, result.backendAddr, rec); err != nil {
 			e.logger.Warn("failed to persist health state",
-				"vip", result.vipName, "backend", result.backendAddr, "error", err)
+				"vip", result.vipKey, "backend", result.backendAddr, "error", err)
 		}
 	}
 
 	// Fire callback on state change
 	if stateChanged && callback != nil {
 		e.logger.Info("backend state changed",
-			"vip", result.vipName,
+			"vip", result.vipKey,
 			"backend", result.backendAddr,
 			"old", prevState,
 			"new", newState)
-		callback(result.vipName, result.backendAddr, prevState, newState)
+		callback(result.vipKey, result.backendAddr, prevState, newState)
 	}
 }
 

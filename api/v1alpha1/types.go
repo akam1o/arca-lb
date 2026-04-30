@@ -43,7 +43,9 @@ type BackendSpec struct {
 	// +kubebuilder:validation:Format=ip
 	Address string `json:"address"`
 
-	// Weight controls the proportion of traffic sent to this backend (1-100).
+	// Weight records the desired proportion of traffic sent to this backend (1-100).
+	// The VPP LB plugin path currently stores this as metadata; weighted AS
+	// programming will take effect once the VPP LB API exposes backend weights.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
 	// +kubebuilder:default=100

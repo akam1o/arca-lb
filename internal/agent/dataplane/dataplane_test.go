@@ -327,3 +327,79 @@ func TestVPPReconcileBackendsReturnsPartialAddError(t *testing.T) {
 		t.Fatal("failed add should not be tracked as applied")
 	}
 }
+
+func TestVPPReconcileBackendsStoresUnequalWeightsAsMetadata(t *testing.T) {
+	var added []v1alpha1.BackendSpec
+	vpp := &VPP{
+		logger: discardLogger(),
+		addBackendFn: func(_ context.Context, _ *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
+			added = append(added, be)
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	entry := &vipEntry{
+		vip:      vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{},
+	}
+
+	err := vpp.reconcileBackendsLocked(
+		context.Background(),
+		key,
+		entry,
+		vip,
+		[]v1alpha1.BackendSpec{
+			{Address: "10.0.1.1", Weight: 10},
+			{Address: "10.0.1.2", Weight: 20},
+		},
+	)
+	if err != nil {
+		t.Fatalf("reconcileBackendsLocked rejected unequal weights: %v", err)
+	}
+	if len(added) != 2 {
+		t.Fatalf("added backend count = %d, want 2", len(added))
+	}
+	if entry.backends["10.0.1.1"].Weight != 10 {
+		t.Fatalf("backend 10.0.1.1 weight = %d, want 10", entry.backends["10.0.1.1"].Weight)
+	}
+	if entry.backends["10.0.1.2"].Weight != 20 {
+		t.Fatalf("backend 10.0.1.2 weight = %d, want 20", entry.backends["10.0.1.2"].Weight)
+	}
+}
+
+func TestVPPReconcileBackendsAllowsEqualWeightMetadataUpdate(t *testing.T) {
+	vpp := &VPP{
+		logger: discardLogger(),
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	entry := &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": {Address: "10.0.1.1", Weight: 100},
+			"10.0.1.2": {Address: "10.0.1.2", Weight: 100},
+		},
+	}
+
+	err := vpp.reconcileBackendsLocked(
+		context.Background(),
+		key,
+		entry,
+		vip,
+		[]v1alpha1.BackendSpec{
+			{Address: "10.0.1.1", Weight: 50},
+			{Address: "10.0.1.2", Weight: 50},
+		},
+	)
+	if err != nil {
+		t.Fatalf("reconcileBackendsLocked rejected equal weights: %v", err)
+	}
+	for addr, be := range entry.backends {
+		if be.Weight != 50 {
+			t.Fatalf("backend %s weight = %d, want 50", addr, be.Weight)
+		}
+	}
+}

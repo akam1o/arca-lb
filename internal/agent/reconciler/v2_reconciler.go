@@ -32,12 +32,18 @@ type HealthTracker interface {
 	HealthyBackends(vipKey string, backends []v1alpha1.BackendSpec) []v1alpha1.BackendSpec
 }
 
+// StatusUpdater updates VirtualIP status with the agent's observed backend health.
+type StatusUpdater interface {
+	UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error
+}
+
 // Manager manages per-VIP reconciler goroutines.
 type Manager struct {
 	dp            dataplane.DataPlane
 	router        routing.Router
 	store         *store.Store
 	healthTracker HealthTracker
+	statusUpdater StatusUpdater
 	logger        *slog.Logger
 
 	safetyInterval time.Duration
@@ -68,6 +74,17 @@ func NewManager(
 		logger:         logger,
 		safetyInterval: safetyInterval,
 		vips:           make(map[string]*vipReconciler),
+	}
+}
+
+// SetStatusUpdater wires the Kubernetes status updater used by new reconcilers.
+func (m *Manager) SetStatusUpdater(updater StatusUpdater) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.statusUpdater = updater
+	for _, vr := range m.vips {
+		vr.statusUpdater = updater
 	}
 }
 
@@ -106,7 +123,7 @@ func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 
 	vr, exists := m.vips[key]
 	if !exists {
-		vr = newVIPReconciler(key, m.dp, m.router, m.store, m.healthTracker, m.safetyInterval, m.logger, m.onVIPReconcilerStopped)
+		vr = newVIPReconciler(key, m.dp, m.router, m.store, m.healthTracker, m.statusUpdater, m.safetyInterval, m.logger, m.onVIPReconcilerStopped)
 		m.vips[key] = vr
 		go vr.run(m.ctx)
 	}
@@ -179,6 +196,7 @@ type vipReconciler struct {
 	router         routing.Router
 	store          *store.Store
 	healthTracker  HealthTracker
+	statusUpdater  StatusUpdater
 	safetyInterval time.Duration
 	logger         *slog.Logger
 
@@ -198,6 +216,7 @@ func newVIPReconciler(
 	router routing.Router,
 	st *store.Store,
 	ht HealthTracker,
+	statusUpdater StatusUpdater,
 	safetyInterval time.Duration,
 	logger *slog.Logger,
 	onStopped func(key string, stopped *vipReconciler),
@@ -208,6 +227,7 @@ func newVIPReconciler(
 		router:         router,
 		store:          st,
 		healthTracker:  ht,
+		statusUpdater:  statusUpdater,
 		safetyInterval: safetyInterval,
 		logger:         logger.With("vip", key),
 		eventCh:        make(chan vipEvent, 8),
@@ -324,6 +344,13 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	} else {
 		// No health check → all backends are healthy
 		healthyBackends = vip.Spec.Backends
+	}
+
+	if vr.statusUpdater != nil {
+		if err := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends); err != nil {
+			vr.logger.Warn("failed to update VirtualIP status", "error", err)
+			span.RecordError(err)
+		}
 	}
 
 	// Apply to data plane

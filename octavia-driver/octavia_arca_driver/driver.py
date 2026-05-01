@@ -175,12 +175,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         protocol = lst.get("protocol", "TCP")
         port = lst.get("protocol_port")
 
-        mapped_protocol = constants.PROTOCOL_MAP.get(protocol)
-        if not mapped_protocol:
-            raise driver_exc.UnsupportedOptionError(
-                user_fault_string=f"Protocol {protocol} is not supported.",
-                operator_fault_string=f"Unsupported protocol: {protocol}",
-            )
+        mapped_protocol = self._map_listener_protocol(protocol)
 
         # We need the VIP address from the loadbalancer. Octavia's normal
         # listener_create payload does not include it, so remember the value
@@ -274,9 +269,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         protocol = lst.get("protocol")
         if protocol:
-            mapped = constants.PROTOCOL_MAP.get(protocol)
-            if mapped:
-                spec["protocol"] = mapped
+            spec["protocol"] = self._map_listener_protocol(protocol)
 
         port = lst.get("protocol_port")
         if port:
@@ -695,6 +688,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _map_listener_protocol(protocol):
+        mapped_protocol = constants.PROTOCOL_MAP.get(protocol)
+        if not mapped_protocol:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=f"Protocol {protocol} is not supported.",
+                operator_fault_string=f"Unsupported protocol: {protocol}",
+            )
+        return mapped_protocol
 
     def _remember_loadbalancer_vip(self, lb_id, vip_address):
         if not lb_id or not vip_address:

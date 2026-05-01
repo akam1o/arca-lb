@@ -268,6 +268,22 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(spec["encapType"], "L3DSR")
         self.assertEqual(spec["dscp"], 10)
 
+    def test_listener_create_rejects_terminated_https(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        listener = FakeObj({
+            "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "loadbalancer_id": "bbbbbbbb-1111-2222-3333-444444444444",
+            "protocol": "TERMINATED_HTTPS",
+            "protocol_port": 443,
+            "vip_address": "203.0.113.10",
+            "project_id": "test-project",
+        })
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.listener_create(listener)
+
+        self.mock_k8s.create_virtualip.assert_not_called()
+
     def test_first_listener_uses_loadbalancer_create_vip(self):
         lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
         listener_id = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -415,6 +431,28 @@ class TestDriverLifecycle(unittest.TestCase):
             "id": "listener-1111",
             "provisioning_status": "ACTIVE",
         }])
+
+    def test_listener_update_rejects_terminated_https(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": []},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+            },
+        )
+        self.mock_k8s.find_by_listener.return_value = existing_vip
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.listener_update(FakeObj({}), FakeObj({
+                "listener_id": "listener-1111",
+                "protocol": "TERMINATED_HTTPS",
+            }))
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+        self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
 
     def test_member_create_adds_backend(self):
         existing_vip = _make_vip(

@@ -29,7 +29,6 @@ PROTOCOL_MAP = {
     "UDP": "UDP",
     "HTTP": "TCP",
     "HTTPS": "TCP",
-    "TERMINATED_HTTPS": "TCP",
 }
 
 # Mapping from Octavia health monitor types to VirtualIP health check types.

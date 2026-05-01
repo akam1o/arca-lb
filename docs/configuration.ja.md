@@ -76,6 +76,8 @@ log:
 
 ### Routing 設定
 
+`routing.type` が `frr` の場合、Agent は `vtysh` 経由で VIP の static route を管理します。Kubernetes デプロイでは FRR はノード上で稼働している前提で、Agent は `/run/frr` の runtime socket directory をマウントして利用します。Agent は FRR プロセスの起動や BGP peer の設定は行いません。
+
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `routing.enabled` | BGP 経路管理を有効化 | `false` |

@@ -14,7 +14,7 @@ This document explains how to install arca-lb.
 
 - **Kubernetes**: 1.28+ (cluster, for VirtualIP CRD watching)
 - **VPP**: 24.10 (recommended, runtime)
-- **FRRouting**: 8.0+ (runtime, required for BGP advertisements)
+- **FRRouting**: 8.0+ (node-local runtime, required for BGP advertisements)
 
 ### Build tools
 
@@ -60,6 +60,11 @@ kubectl get pods -l app.kubernetes.io/name=arca-lb-operator
 ```
 
 #### 4. Deploy the Agent (DaemonSet)
+
+Before applying the Agent DaemonSet, install and start FRR on every LB node. The
+DaemonSet mounts the node's `/run/frr` directory and uses `vtysh` to add or
+remove static VIP routes. Configure BGP peers and static-route redistribution in
+the node-local FRR configuration.
 
 ```bash
 kubectl apply -f config/agent/

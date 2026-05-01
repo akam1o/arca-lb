@@ -1,5 +1,5 @@
 # Multi-stage build for the arca-lb agent.
-# The agent expects VPP and FRR runtime sockets/daemons to be provided by the node.
+# The image includes vtysh; VPP and FRR runtimes are provided by the node.
 
 FROM golang:1.25-alpine AS builder
 

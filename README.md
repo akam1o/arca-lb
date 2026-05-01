@@ -31,7 +31,7 @@
 ┌─────────────────────────────────────────┐
 │      Kubernetes API Server              │
 │  - VirtualIP CRD (arca.io/v1alpha1)     │
-│  - Admission Webhook validation         │
+│  - CRD admission validation             │
 └──────┬──────────────────────┬───────────┘
        │                      │
        ▼                      ▼
@@ -39,7 +39,7 @@
 │   Operator   │   │  Agent (per LB node) │
 │  - Reconcile │   │  - K8s Informer      │
 │  - Status    │   │  - Per-VIP Reconciler │
-│  - Webhook   │   │  - Health Checks     │
+│  - Validation│   │  - Health Checks     │
 └──────────────┘   │  - VPP DataPlane     │
                    │  - FRR Router        │
                    │  - bbolt Local Store  │
@@ -92,7 +92,7 @@ arca-lb/
 │   ├── agent/              # Agent DaemonSet
 │   └── samples/            # Example VirtualIP resources
 ├── internal/
-│   ├── operator/           # Operator reconciler + webhook
+│   ├── operator/           # Operator reconciler + optional webhook
 │   ├── agent/              # Agent implementation
 │   │   ├── config/         # Agent configuration
 │   │   ├── dataplane/      # DataPlane interface (VPP, Noop)

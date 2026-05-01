@@ -171,7 +171,7 @@ When using `kubectl get vip`:
 
 ### Validation Rules
 
-The Admission Webhook enforces:
+The CRD schema and optional admission webhook enforce:
 
 - `address` must be a valid IP address
 - `port` must be between 1 and 65535
@@ -181,6 +181,10 @@ The Admission Webhook enforces:
 - Backend `weight` must be between 1 and 100
 - Backend `address` must be a valid IP address
 - HealthCheck `type` must be one of: `http`, `https`, `tcp`, `ping`
+- HealthCheck `http` is required when `type` is `http` or `https`
+- HealthCheck `tcp` is required when `type` is `tcp`
+- HealthCheck probe ports must be between 1 and 65535
+- HealthCheck `timeoutSeconds` must be less than `intervalSeconds`
 
 ### Examples
 

@@ -40,7 +40,7 @@ This document covers common arca-lb issues and how to resolve them.
    - Inspect metadata: `kubectl get vip <name> -o yaml`
    - Remove finalizer if needed: `kubectl edit vip <name>`
 
-### Webhook validation failing
+### Admission validation failing
 
 **Symptoms**: `kubectl apply` returns admission error.
 
@@ -50,9 +50,9 @@ This document covers common arca-lb issues and how to resolve them.
    - Check error message for specific field.
    - See [API Reference](./api.md) for valid values.
 
-2. **Webhook not registered**
-   - Verify the webhook config exists.
-   - Ensure cert-manager or webhook certificates are valid.
+2. **Optional webhook not registered**
+   - CRD schema validation is always applied with the CRD.
+   - If `--enable-webhooks` is enabled, verify the webhook config exists and certificates are valid.
 
 ## Agent Issues
 

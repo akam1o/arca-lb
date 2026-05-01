@@ -40,7 +40,7 @@
    - メタデータを確認: `kubectl get vip <name> -o yaml`
    - 必要に応じて finalizer を削除: `kubectl edit vip <name>`
 
-### Webhook バリデーションが失敗する
+### Admission バリデーションが失敗する
 
 **症状**: `kubectl apply` でアドミッションエラーが返される。
 
@@ -50,9 +50,9 @@
    - エラーメッセージで具体的なフィールドを確認。
    - 有効な値については [API リファレンス](./api.ja.md) を参照。
 
-2. **Webhook が未登録**
-   - Webhook 設定が存在するか確認。
-   - cert-manager または Webhook 証明書が有効か確認。
+2. **任意の Webhook が未登録**
+   - CRD スキーマバリデーションは CRD 適用時点で常に有効です。
+   - `--enable-webhooks` を有効化している場合は、Webhook 設定と証明書が有効か確認。
 
 ## Agent の問題
 

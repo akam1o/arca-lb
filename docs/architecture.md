@@ -18,7 +18,7 @@ arca-lb is a Kubernetes-native load balancer management system. Users define VIP
 ┌─────────────────────────────────────────┐
 │      Kubernetes API Server              │
 │  - VirtualIP CRD (arca.io/v1alpha1)     │
-│  - Admission Webhook validation         │
+│  - CRD admission validation             │
 └──────┬──────────────────────┬───────────┘
        │                      │
        ▼                      ▼
@@ -32,7 +32,7 @@ arca-lb is a Kubernetes-native load balancer management system. Users define VIP
 │ │ - Finalizer  │ │ │             ▼              │
 │ └──────────────┘ │ │ ┌───────────────────────┐ │
 │ ┌──────────────┐ │ │ │ Per-VIP Reconciler    │ │
-│ │ Admission    │ │ │ │ (goroutine per VIP)   │ │
+│ │ Optional     │ │ │ │ (goroutine per VIP)   │ │
 │ │ Webhook      │ │ │ └──┬─────────┬──────┬──┘ │
 │ └──────────────┘ │ │    │         │      │     │
 └──────────────────┘ │    ▼         ▼      ▼     │
@@ -64,7 +64,7 @@ arca-lb is a Kubernetes-native load balancer management system. Users define VIP
 The Operator runs as a Deployment in the Kubernetes cluster:
 
 1. **VirtualIPReconciler**: Watches VirtualIP CRDs, updates `.status` fields (observedGeneration, healthyBackends, conditions), manages Finalizers
-2. **Admission Webhook**: Validates VirtualIP resources at creation/update time (IP format, port range, protocol, DSCP, backend weights, health check config)
+2. **CRD admission validation**: Validates VirtualIP resources at creation/update time (IP format, port range, protocol, DSCP, backend weights, health check config). The webhook implementation is optional for checks that cannot be expressed in the CRD schema.
 
 ### Agent
 
@@ -86,7 +86,7 @@ The Agent runs as a DaemonSet on each load balancer node:
 1. User → Kubernetes API
    kubectl apply -f virtualip.yaml
 
-2. API Server → Admission Webhook (Operator)
+2. API Server → CRD schema validation
    Validate VirtualIP spec
 
 3. API Server → etcd
@@ -195,7 +195,7 @@ The Agent runs as a DaemonSet on each load balancer node:
 
 - **Language**: Go 1.24+
 - **Framework**: controller-runtime (sigs.k8s.io/controller-runtime)
-- **Webhook**: Admission webhook for CRD validation
+- **Validation**: CRD OpenAPI/CEL validation, with an optional admission webhook implementation
 
 ### Agent
 
@@ -225,7 +225,7 @@ The Agent runs as a DaemonSet on each load balancer node:
 ### Current implementation
 
 - K8s RBAC restricts access to VirtualIP CRDs
-- Admission webhook validates all VirtualIP specs
+- CRD OpenAPI/CEL validation rejects invalid VirtualIP specs at admission time
 - Agent runs with least-privilege RBAC (read-only for VirtualIP resources)
 
 ### Recommendations

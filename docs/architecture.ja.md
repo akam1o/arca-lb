@@ -18,7 +18,7 @@ arca-lb は Kubernetes ネイティブなロードバランサー管理システ
 ┌─────────────────────────────────────────┐
 │      Kubernetes API Server              │
 │  - VirtualIP CRD (arca.io/v1alpha1)     │
-│  - Admission Webhook バリデーション      │
+│  - CRD admission バリデーション          │
 └──────┬──────────────────────┬───────────┘
        │                      │
        ▼                      ▼
@@ -32,7 +32,7 @@ arca-lb は Kubernetes ネイティブなロードバランサー管理システ
 │ │ - Finalizer  │ │ │             ▼              │
 │ └──────────────┘ │ │ ┌───────────────────────┐ │
 │ ┌──────────────┐ │ │ │ VIP 別 Reconciler     │ │
-│ │ Admission    │ │ │ │ (VIP ごとの goroutine)│ │
+│ │ Optional     │ │ │ │ (VIP ごとの goroutine)│ │
 │ │ Webhook      │ │ │ └──┬─────────┬──────┬──┘ │
 │ └──────────────┘ │ │    │         │      │     │
 └──────────────────┘ │    ▼         ▼      ▼     │
@@ -64,7 +64,7 @@ arca-lb は Kubernetes ネイティブなロードバランサー管理システ
 Operator は Kubernetes クラスター内に Deployment として配置されます：
 
 1. **VirtualIPReconciler**: VirtualIP CRD を監視し、`.status` フィールドを更新（observedGeneration, healthyBackends, conditions）、Finalizer を管理
-2. **Admission Webhook**: VirtualIP リソースの作成/更新時にバリデーションを実行（IP フォーマット、ポート範囲、プロトコル、DSCP、バックエンド Weight、ヘルスチェック設定）
+2. **CRD admission バリデーション**: VirtualIP リソースの作成/更新時にバリデーションを実行（IP フォーマット、ポート範囲、プロトコル、DSCP、バックエンド Weight、ヘルスチェック設定）。CRD スキーマで表現できない検証向けに Webhook 実装を任意で利用できます。
 
 ### Agent
 
@@ -86,7 +86,7 @@ Agent は各ロードバランサーノードに DaemonSet として配置され
 1. User → Kubernetes API
    kubectl apply -f virtualip.yaml
 
-2. API Server → Admission Webhook (Operator)
+2. API Server → CRD スキーマバリデーション
    VirtualIP spec のバリデーション
 
 3. API Server → etcd
@@ -195,7 +195,7 @@ Agent は各ロードバランサーノードに DaemonSet として配置され
 
 - **言語**: Go 1.24+
 - **フレームワーク**: controller-runtime (sigs.k8s.io/controller-runtime)
-- **Webhook**: CRD バリデーション用 Admission Webhook
+- **バリデーション**: CRD OpenAPI/CEL バリデーションと任意の Admission Webhook 実装
 
 ### Agent
 
@@ -225,7 +225,7 @@ Agent は各ロードバランサーノードに DaemonSet として配置され
 ### 現在の実装
 
 - K8s RBAC による VirtualIP CRD へのアクセス制御
-- Admission Webhook による VirtualIP spec の完全バリデーション
+- CRD OpenAPI/CEL バリデーションにより、不正な VirtualIP spec を admission 時に拒否
 - Agent は最小権限の RBAC（VirtualIP リソースの読み取り専用）
 
 ### 推奨事項

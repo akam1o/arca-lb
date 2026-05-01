@@ -31,7 +31,7 @@
 ┌─────────────────────────────────────────┐
 │      Kubernetes API Server              │
 │  - VirtualIP CRD (arca.io/v1alpha1)     │
-│  - Admission Webhook バリデーション      │
+│  - CRD admission バリデーション          │
 └──────┬──────────────────────┬───────────┘
        │                      │
        ▼                      ▼
@@ -39,7 +39,7 @@
 │   Operator   │   │  Agent (各 LB ノード) │
 │  - Reconcile │   │  - K8s Informer      │
 │  - Status    │   │  - VIP 別 Reconciler  │
-│  - Webhook   │   │  - ヘルスチェック     │
+│  - Validation│   │  - ヘルスチェック     │
 └──────────────┘   │  - VPP DataPlane     │
                    │  - FRR Router        │
                    │  - bbolt ローカル保存  │
@@ -92,7 +92,7 @@ arca-lb/
 │   ├── agent/              # Agent DaemonSet
 │   └── samples/            # VirtualIP リソースの例
 ├── internal/
-│   ├── operator/           # Operator リコンサイラー + Webhook
+│   ├── operator/           # Operator リコンサイラー + 任意の Webhook
 │   ├── agent/              # Agent 実装
 │   │   ├── config/         # Agent 設定
 │   │   ├── dataplane/      # DataPlane インターフェース (VPP, Noop)

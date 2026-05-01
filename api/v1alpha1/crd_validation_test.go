@@ -1,0 +1,144 @@
+package v1alpha1
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
+	crdPath := filepath.Join("..", "..", "config", "crd", "bases", "arca.io_virtualips.yaml")
+	data, err := os.ReadFile(crdPath)
+	if err != nil {
+		t.Fatalf("failed to read CRD: %v", err)
+	}
+
+	var crd map[string]interface{}
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		t.Fatalf("failed to parse CRD YAML: %v", err)
+	}
+
+	healthCheck := crdSchemaProperty(t, crd, "spec", "healthCheck")
+	messages := validationMessages(t, healthCheck)
+	for _, want := range []string{
+		"spec.healthCheck.http is required for type http or https",
+		"spec.healthCheck.tcp is required for type tcp",
+		"spec.healthCheck.timeoutSeconds must be less than intervalSeconds",
+	} {
+		if !containsString(messages, want) {
+			t.Fatalf("missing CRD validation message %q in %#v", want, messages)
+		}
+	}
+
+	http := nestedMap(t, healthCheck, "properties", "http")
+	if !containsString(stringSlice(t, http["required"]), "port") {
+		t.Fatalf("healthCheck.http.port is not required in CRD schema")
+	}
+
+	tcp := nestedMap(t, healthCheck, "properties", "tcp")
+	if !containsString(stringSlice(t, tcp["required"]), "port") {
+		t.Fatalf("healthCheck.tcp.port is not required in CRD schema")
+	}
+}
+
+func crdSchemaProperty(t *testing.T, crd map[string]interface{}, path ...string) map[string]interface{} {
+	t.Helper()
+
+	versions := nestedSlice(t, crd, "spec", "versions")
+	if len(versions) == 0 {
+		t.Fatalf("CRD has no versions")
+	}
+	current := nestedMapFromValue(t, versions[0], "schema", "openAPIV3Schema")
+	for _, name := range path {
+		current = nestedMapFromValue(t, current, "properties", name)
+	}
+	return current
+}
+
+func validationMessages(t *testing.T, schema map[string]interface{}) []string {
+	t.Helper()
+
+	validations := nestedSlice(t, schema, "x-kubernetes-validations")
+	messages := make([]string, 0, len(validations))
+	for _, validation := range validations {
+		item, ok := validation.(map[string]interface{})
+		if !ok {
+			t.Fatalf("validation item has type %T, want map[string]interface{}", validation)
+		}
+		message, ok := item["message"].(string)
+		if !ok {
+			t.Fatalf("validation message has type %T, want string", item["message"])
+		}
+		messages = append(messages, message)
+	}
+	return messages
+}
+
+func nestedMap(t *testing.T, m map[string]interface{}, path ...string) map[string]interface{} {
+	t.Helper()
+	return nestedMapFromValue(t, m, path...)
+}
+
+func nestedMapFromValue(t *testing.T, value interface{}, path ...string) map[string]interface{} {
+	t.Helper()
+
+	current, ok := value.(map[string]interface{})
+	if !ok {
+		t.Fatalf("value has type %T, want map[string]interface{}", value)
+	}
+	for _, key := range path {
+		next, ok := current[key].(map[string]interface{})
+		if !ok {
+			t.Fatalf("field %q has type %T, want map[string]interface{}", key, current[key])
+		}
+		current = next
+	}
+	return current
+}
+
+func nestedSlice(t *testing.T, m map[string]interface{}, path ...string) []interface{} {
+	t.Helper()
+
+	current := interface{}(m)
+	for _, key := range path {
+		asMap, ok := current.(map[string]interface{})
+		if !ok {
+			t.Fatalf("value before %q has type %T, want map[string]interface{}", key, current)
+		}
+		current = asMap[key]
+	}
+	slice, ok := current.([]interface{})
+	if !ok {
+		t.Fatalf("value has type %T, want []interface{}", current)
+	}
+	return slice
+}
+
+func stringSlice(t *testing.T, value interface{}) []string {
+	t.Helper()
+
+	raw, ok := value.([]interface{})
+	if !ok {
+		t.Fatalf("value has type %T, want []interface{}", value)
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		s, ok := item.(string)
+		if !ok {
+			t.Fatalf("slice item has type %T, want string", item)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

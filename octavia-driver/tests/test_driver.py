@@ -561,6 +561,11 @@ class TestDriverLifecycle(unittest.TestCase):
         with self.assertRaises(driver_exc.UnsupportedOptionError):
             self.driver.validate_flavor({"dscp": "999"})
 
+    def test_validate_flavor_rejects_zero_dscp(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.validate_flavor({"encap_type": "L3DSR", "dscp": "0"})
+
     def test_virtualip_status_change_updates_octavia_status(self):
         vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",

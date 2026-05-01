@@ -18,6 +18,7 @@ import logging
 
 from oslo_config import cfg
 from octavia_lib.api.drivers import data_models as dm
+from octavia_lib.api.drivers import driver_lib
 from octavia_lib.api.drivers import exceptions as driver_exc
 from octavia_lib.api.drivers import provider_base as driver_base
 
@@ -26,6 +27,13 @@ from octavia_arca_driver.k8s_client import VirtualIPClient, VirtualIPStatusWatch
 
 LOG = logging.getLogger(__name__)
 CONF = cfg.CONF
+
+PROVISIONING_ACTIVE = "ACTIVE"
+PROVISIONING_ERROR = "ERROR"
+OPERATING_ONLINE = "ONLINE"
+OPERATING_DEGRADED = "DEGRADED"
+OPERATING_OFFLINE = "OFFLINE"
+OPERATING_ERROR = "ERROR"
 
 
 class ArcaLBDriver(driver_base.ProviderDriver):
@@ -45,6 +53,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         )
         self._default_encap_type = conf.default_encap_type
         self._default_dscp = conf.default_dscp
+        self._driver_lib = driver_lib.DriverLibrary()
 
         # Start background status watcher.
         self._status_watcher = VirtualIPStatusWatcher(
@@ -593,36 +602,144 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         Pushes operating_status updates back to Octavia.
         """
+        if event_type == "DELETED":
+            return
+
         metadata = vip_obj.get("metadata", {})
         annotations = metadata.get("annotations", {})
         status = vip_obj.get("status", {})
 
         lb_id = annotations.get(constants.ANNOTATION_LB_ID)
         listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
+        pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
+        hm_id = annotations.get(constants.ANNOTATION_HM_ID)
         if not lb_id:
             return
 
-        conditions = status.get("conditions", [])
-        is_ready = any(
-            c.get("type") == "Ready" and c.get("status") == "True"
-            for c in conditions
+        ready_condition = self._ready_condition(status.get("conditions", []))
+        if ready_condition is None:
+            LOG.debug(
+                "VirtualIP %s has no Ready condition yet; skipping Octavia "
+                "status update",
+                metadata.get("name"),
+            )
+            return
+        is_ready = ready_condition.get("status") == "True"
+        is_no_backends = (
+            ready_condition.get("status") == "False" and
+            ready_condition.get("reason") == "NoBackends"
         )
 
         # Build Octavia status update.
-        operating_status = "ONLINE" if is_ready else "ERROR"
         healthy = status.get("healthyBackends", 0)
         total = status.get("totalBackends", 0)
-
-        LOG.debug(
-            "VirtualIP %s status: ready=%s, healthy=%d/%d → %s",
-            metadata.get("name"), is_ready, healthy, total, operating_status,
+        provisioning_status = (
+            PROVISIONING_ACTIVE
+            if is_ready or is_no_backends
+            else PROVISIONING_ERROR
+        )
+        operating_status = self._octavia_operating_status(
+            is_ready, is_no_backends, healthy, total
         )
 
-        # Status updates would be pushed via the Octavia driver-agent
-        # status update mechanism (oslo.messaging or REST callback).
-        # This requires integration with octavia_lib.api.drivers.driver_lib.
-        # For now, log the status change.
+        LOG.debug(
+            "VirtualIP %s status: ready=%s, healthy=%d/%d -> %s/%s",
+            metadata.get("name"), is_ready, healthy, total,
+            provisioning_status, operating_status,
+        )
+
+        status_update = self._build_octavia_status_update(
+            lb_id=lb_id,
+            listener_id=listener_id,
+            pool_id=pool_id,
+            hm_id=hm_id,
+            provisioning_status=provisioning_status,
+            operating_status=operating_status,
+        )
+        self._push_octavia_status(status_update, metadata.get("name"))
+
+    @staticmethod
+    def _ready_condition(conditions):
+        for condition in conditions:
+            if condition.get("type") == "Ready":
+                return condition
+        return None
+
+    @staticmethod
+    def _octavia_operating_status(is_ready, is_no_backends, healthy, total):
+        if not is_ready:
+            if is_no_backends:
+                return OPERATING_OFFLINE
+            return OPERATING_ERROR
+        if total <= 0:
+            return OPERATING_OFFLINE
+        if healthy >= total:
+            return OPERATING_ONLINE
+        if healthy > 0:
+            return OPERATING_DEGRADED
+        return OPERATING_ERROR
+
+    @staticmethod
+    def _status_entry(object_id, provisioning_status, operating_status=None):
+        entry = {
+            "id": object_id,
+            "provisioning_status": provisioning_status,
+        }
+        if operating_status is not None:
+            entry["operating_status"] = operating_status
+        return entry
+
+    def _build_octavia_status_update(self, lb_id, listener_id, pool_id, hm_id,
+                                     provisioning_status, operating_status):
+        status_update = {
+            "loadbalancers": [
+                self._status_entry(
+                    lb_id, provisioning_status, operating_status
+                )
+            ],
+            "listeners": [],
+            "pools": [],
+            "members": [],
+            "healthmonitors": [],
+            "l7policies": [],
+            "l7rules": [],
+        }
+        if listener_id:
+            status_update["listeners"].append(
+                self._status_entry(
+                    listener_id, provisioning_status, operating_status
+                )
+            )
+        if pool_id:
+            status_update["pools"].append(
+                self._status_entry(
+                    pool_id, provisioning_status, operating_status
+                )
+            )
+        if hm_id:
+            # Health monitors only need lifecycle status here. Backend health is
+            # reflected by the pool/listener/load balancer operating status.
+            status_update["healthmonitors"].append(
+                self._status_entry(hm_id, provisioning_status)
+            )
+        return status_update
+
+    def _push_octavia_status(self, status_update, vip_name):
+        try:
+            result = self._driver_lib.update_loadbalancer_status(status_update)
+        except Exception:
+            LOG.exception("Failed to update Octavia status for VirtualIP %s",
+                          vip_name)
+            return
+
+        if result:
+            LOG.warning(
+                "Octavia status update for VirtualIP %s returned: %s",
+                vip_name, result,
+            )
+            return
+
         LOG.info(
-            "Status update for LB %s listener %s: %s (healthy=%d/%d)",
-            lb_id, listener_id, operating_status, healthy, total,
+            "Updated Octavia status for VirtualIP %s: %s",
+            vip_name, status_update,
         )

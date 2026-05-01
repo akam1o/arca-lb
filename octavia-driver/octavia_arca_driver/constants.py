@@ -22,6 +22,7 @@ ANNOTATION_POOL_ID = "arca.io/octavia-pool-id"
 ANNOTATION_HM_ID = "arca.io/octavia-healthmonitor-id"
 ANNOTATION_PROJECT_ID = "arca.io/octavia-project-id"
 ANNOTATION_MEMBER_MAP = "arca.io/octavia-member-map"
+ANNOTATION_DRAINING_MEMBER_IDS = "arca.io/octavia-draining-member-ids"
 
 # Mapping from Octavia protocol strings to VirtualIP protocol values.
 PROTOCOL_MAP = {
@@ -29,7 +30,6 @@ PROTOCOL_MAP = {
     "UDP": "UDP",
     "HTTP": "TCP",
     "HTTPS": "TCP",
-    "TERMINATED_HTTPS": "TCP",
 }
 
 # Mapping from Octavia health monitor types to VirtualIP health check types.

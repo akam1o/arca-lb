@@ -36,6 +36,9 @@ OPERATING_ONLINE = "ONLINE"
 OPERATING_DEGRADED = "DEGRADED"
 OPERATING_OFFLINE = "OFFLINE"
 OPERATING_ERROR = "ERROR"
+OPERATING_DRAINING = "DRAINING"
+DEFAULT_MEMBER_WEIGHT = 100
+OCTAVIA_MEMBER_WEIGHT_DRAINING = 0
 
 
 class ArcaLBDriver(driver_base.ProviderDriver):
@@ -175,12 +178,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         protocol = lst.get("protocol", "TCP")
         port = lst.get("protocol_port")
 
-        mapped_protocol = constants.PROTOCOL_MAP.get(protocol)
-        if not mapped_protocol:
-            raise driver_exc.UnsupportedOptionError(
-                user_fault_string=f"Protocol {protocol} is not supported.",
-                operator_fault_string=f"Unsupported protocol: {protocol}",
-            )
+        mapped_protocol = self._map_listener_protocol(protocol)
 
         # We need the VIP address from the loadbalancer. Octavia's normal
         # listener_create payload does not include it, so remember the value
@@ -274,9 +272,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         protocol = lst.get("protocol")
         if protocol:
-            mapped = constants.PROTOCOL_MAP.get(protocol)
-            if mapped:
-                spec["protocol"] = mapped
+            spec["protocol"] = self._map_listener_protocol(protocol)
 
         port = lst.get("protocol_port")
         if port:
@@ -420,8 +416,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         m = member.to_dict() if hasattr(member, 'to_dict') else member
         pool_id = m.get("pool_id")
         address = m.get("address")
-        backend = self._backend_from_member(m)
-        weight = backend["weight"]
+        weight = self._member_weight(m)
+        is_draining = weight == OCTAVIA_MEMBER_WEIGHT_DRAINING
+        backend = None if is_draining else self._backend_from_member(m)
 
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
@@ -436,22 +433,23 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         annotations = vip.get("metadata", {}).get("annotations", {})
         self._validate_member_dataplane_port(vip, m)
 
-        # Avoid duplicates.
-        for b in backends:
-            if b.get("address") == address:
-                self._update_backend_from_member(b, backend)
-                break
-        else:
-            backends.append(backend)
+        backends = self._backends_with_member_state(
+            backends, address, backend, is_draining
+        )
 
         spec["backends"] = backends
         self._remember_member_mapping(annotations, m)
+        self._set_member_draining_state(annotations, m, is_draining)
         self._refresh_health_check_port(
             spec, pool_id, vip, extra_members=[m]
         )
         self._k8s.update_virtualip(name, spec, annotations=annotations)
-        LOG.info("Added member %s (weight=%d) to VirtualIP %s",
-                 address, weight, name)
+        if is_draining:
+            LOG.info("Marked member %s as DRAINING on VirtualIP %s",
+                     address, name)
+        else:
+            LOG.info("Added member %s (weight=%d) to VirtualIP %s",
+                     address, weight, name)
 
     def member_delete(self, member):
         """Remove a backend from the VirtualIP."""
@@ -470,6 +468,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     if b.get("address") != address]
         spec["backends"] = backends
         deleted_member_ids = self._forget_member_mapping(annotations, m)
+        member_id = self._member_id(m)
+        if member_id and member_id not in deleted_member_ids:
+            deleted_member_ids.append(member_id)
+        self._discard_draining_member_ids(annotations, deleted_member_ids)
         self._refresh_health_check_port(spec, pool_id, vip)
         self._k8s.update_virtualip(name, spec, annotations=annotations)
         self._push_deleted_member_statuses(vip, deleted_member_ids)
@@ -480,7 +482,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         m = new_member.to_dict() if hasattr(new_member, 'to_dict') else new_member
         pool_id = m.get("pool_id")
         address = m.get("address")
-        backend = self._backend_from_member(m)
+        weight = self._member_weight(m)
+        is_draining = weight == OCTAVIA_MEMBER_WEIGHT_DRAINING
+        backend = None if is_draining else self._backend_from_member(m)
 
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
@@ -490,12 +494,13 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         spec = vip.get("spec", {})
         annotations = vip.get("metadata", {}).get("annotations", {})
         self._validate_member_dataplane_port(vip, m)
-        for b in spec.get("backends", []):
-            if b.get("address") == address:
-                self._update_backend_from_member(b, backend)
-                break
+        backends = self._backends_with_member_state(
+            spec.get("backends", []), address, backend, is_draining
+        )
+        spec["backends"] = backends
 
         self._remember_member_mapping(annotations, m)
+        self._set_member_draining_state(annotations, m, is_draining)
         self._refresh_health_check_port(
             spec, pool_id, vip, extra_members=[m]
         )
@@ -523,13 +528,21 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         backends = []
         new_member_map = {}
+        draining_member_ids = set()
         for m in member_dicts:
-            backends.append(self._backend_from_member(m))
+            weight = self._member_weight(m)
+            if weight != OCTAVIA_MEMBER_WEIGHT_DRAINING:
+                backends.append(self._backend_from_member(m))
             member_id = self._member_id(m)
             if member_id and m.get("address"):
                 new_member_map[member_id] = m.get("address")
+                if weight == OCTAVIA_MEMBER_WEIGHT_DRAINING:
+                    draining_member_ids.add(member_id)
         spec["backends"] = backends
         self._set_member_map_annotation(annotations, new_member_map)
+        self._set_draining_member_ids_annotation(
+            annotations, draining_member_ids
+        )
         self._refresh_health_check_port(
             spec, pool_id, vip, extra_members=member_dicts
         )
@@ -696,6 +709,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _map_listener_protocol(protocol):
+        mapped_protocol = constants.PROTOCOL_MAP.get(protocol)
+        if not mapped_protocol:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=f"Protocol {protocol} is not supported.",
+                operator_fault_string=f"Unsupported protocol: {protocol}",
+            )
+        return mapped_protocol
+
     def _remember_loadbalancer_vip(self, lb_id, vip_address):
         if not lb_id or not vip_address:
             return
@@ -740,12 +763,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             members = self._resolved_pool_members(pool_id)
             backends = []
             member_map = {}
+            draining_member_ids = set()
             for member in members:
                 if not member.get("address"):
                     continue
                 self._validate_member_dataplane_port(vip, member)
-                backends.append(self._backend_from_member(member))
+                weight = self._member_weight(member)
                 member_id = self._member_id(member)
+                if weight != OCTAVIA_MEMBER_WEIGHT_DRAINING:
+                    backends.append(self._backend_from_member(member))
+                elif member_id:
+                    draining_member_ids.add(member_id)
                 if member_id:
                     member_map[member_id] = member.get("address")
 
@@ -753,6 +781,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             spec = vip.get("spec", {})
             spec["backends"] = backends
             self._set_member_map_annotation(annotations, member_map)
+            self._set_draining_member_ids_annotation(
+                annotations, draining_member_ids
+            )
             self._refresh_health_check_port(
                 spec, pool_id, vip, extra_members=members
             )
@@ -786,6 +817,22 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         member_map[member_id] = address
         self._set_member_map_annotation(annotations, member_map)
 
+    def _set_member_draining_state(self, annotations, member, is_draining):
+        member_id = self._member_id(member)
+        if not member_id:
+            return
+
+        draining_member_ids = self._draining_member_ids_from_annotations(
+            annotations
+        )
+        if is_draining:
+            draining_member_ids.add(member_id)
+        else:
+            draining_member_ids.discard(member_id)
+        self._set_draining_member_ids_annotation(
+            annotations, draining_member_ids
+        )
+
     def _forget_member_mapping(self, annotations, member):
         member_map = self._member_map_from_annotations(annotations)
         member_id = self._member_id(member)
@@ -805,28 +852,82 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             self._set_member_map_annotation(annotations, member_map)
         return removed
 
+    def _discard_draining_member_ids(self, annotations, member_ids):
+        draining_member_ids = self._draining_member_ids_from_annotations(
+            annotations
+        )
+        for member_id in member_ids:
+            draining_member_ids.discard(member_id)
+        self._set_draining_member_ids_annotation(
+            annotations, draining_member_ids
+        )
+
     @staticmethod
     def _member_id(member):
         return member.get("member_id") or member.get("id")
 
-    @staticmethod
-    def _backend_from_member(member):
+    @classmethod
+    def _backends_with_member_state(cls, backends, address, backend,
+                                    is_draining):
+        next_backends = []
+        replaced = False
+        for existing_backend in backends:
+            if existing_backend.get("address") != address:
+                next_backends.append(existing_backend)
+                continue
+            if not is_draining and not replaced:
+                next_backends.append(backend)
+                replaced = True
+
+        if not is_draining and not replaced:
+            next_backends.append(backend)
+        return next_backends
+
+    @classmethod
+    def _member_weight(cls, member):
+        weight = member.get("weight", DEFAULT_MEMBER_WEIGHT)
+        if weight is None:
+            return DEFAULT_MEMBER_WEIGHT
+
+        try:
+            weight = int(weight)
+        except (TypeError, ValueError):
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Member weight must be an integer.",
+                operator_fault_string=(
+                    f"Invalid Octavia member weight: {weight}"
+                ),
+            )
+
+        if weight == OCTAVIA_MEMBER_WEIGHT_DRAINING:
+            return weight
+        return min(max(weight, 1), 100)
+
+    @classmethod
+    def _member_backend_weight(cls, member):
+        weight = cls._member_weight(member)
+        if weight == OCTAVIA_MEMBER_WEIGHT_DRAINING:
+            return DEFAULT_MEMBER_WEIGHT
+        return weight
+
+    @classmethod
+    def _member_is_draining(cls, member):
+        member = cls._as_dict(member)
+        return (
+            cls._member_weight(member) ==
+            OCTAVIA_MEMBER_WEIGHT_DRAINING
+        )
+
+    @classmethod
+    def _backend_from_member(cls, member):
         backend = {
             "address": member.get("address"),
-            "weight": min(max(member.get("weight", 100), 1), 100),
+            "weight": cls._member_backend_weight(member),
         }
         monitor_address = member.get("monitor_address")
         if monitor_address:
             backend["monitorAddress"] = monitor_address
         return backend
-
-    @staticmethod
-    def _update_backend_from_member(existing_backend, desired_backend):
-        existing_backend["weight"] = desired_backend["weight"]
-        if "monitorAddress" in desired_backend:
-            existing_backend["monitorAddress"] = desired_backend["monitorAddress"]
-        else:
-            existing_backend.pop("monitorAddress", None)
 
     @staticmethod
     def _member_map_from_annotations(annotations):
@@ -855,6 +956,31 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
         else:
             annotations.pop(constants.ANNOTATION_MEMBER_MAP, None)
+
+    @staticmethod
+    def _draining_member_ids_from_annotations(annotations):
+        raw = annotations.get(constants.ANNOTATION_DRAINING_MEMBER_IDS, "")
+        if not raw:
+            return set()
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            LOG.warning("Invalid Octavia draining member annotation: %s", raw)
+            return set()
+        if not isinstance(parsed, list):
+            return set()
+        return {str(member_id) for member_id in parsed if member_id}
+
+    @staticmethod
+    def _set_draining_member_ids_annotation(annotations, member_ids):
+        member_ids = sorted(str(member_id) for member_id in member_ids
+                            if member_id)
+        if member_ids:
+            annotations[constants.ANNOTATION_DRAINING_MEMBER_IDS] = json.dumps(
+                member_ids, sort_keys=True, separators=(",", ":")
+            )
+        else:
+            annotations.pop(constants.ANNOTATION_DRAINING_MEMBER_IDS, None)
 
     def _build_health_check(self, hm, vip=None):
         """Convert Octavia HealthMonitor dict to VirtualIP healthCheck spec."""
@@ -993,6 +1119,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             member_id
         ):
             member = self._member_from_octavia(member_id)
+
+        if self._member_is_draining(member):
+            return None
 
         return (
             self._valid_port(member.get("monitor_port")) or
@@ -1154,6 +1283,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             pool_id=pool_id,
             hm_id=hm_id,
             member_map=self._member_map_from_annotations(annotations),
+            draining_member_ids=(
+                self._draining_member_ids_from_annotations(annotations)
+            ),
             backend_statuses=status.get("backends", []),
             provisioning_status=provisioning_status,
             operating_status=operating_status,
@@ -1343,7 +1475,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     def _build_octavia_status_update(self, lb_id, listener_id, pool_id, hm_id,
                                      provisioning_status, operating_status,
                                      member_map=None, backend_statuses=None,
-                                     member_statuses=None):
+                                     member_statuses=None,
+                                     draining_member_ids=None):
         status_update = {
             "loadbalancers": [
                 self._status_entry(
@@ -1363,7 +1496,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             status_update["members"].extend(
                 self._build_member_statuses(
                     member_map, backend_statuses, provisioning_status,
-                    operating_status,
+                    operating_status, draining_member_ids,
                 )
             )
         if listener_id:
@@ -1387,7 +1520,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return status_update
 
     def _build_member_statuses(self, member_map, backend_statuses,
-                               provisioning_status, fallback_operating_status):
+                               provisioning_status, fallback_operating_status,
+                               draining_member_ids=None):
+        draining_member_ids = draining_member_ids or set()
         backend_health = {}
         for backend in backend_statuses or []:
             address = backend.get("address")
@@ -1396,9 +1531,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         member_statuses = []
         for member_id, address in sorted(member_map.items()):
-            operating_status = self._member_operating_status(
-                address, backend_health, fallback_operating_status
-            )
+            if member_id in draining_member_ids:
+                operating_status = OPERATING_DRAINING
+            else:
+                operating_status = self._member_operating_status(
+                    address, backend_health, fallback_operating_status
+                )
             member_statuses.append(
                 self._status_entry(
                     member_id, provisioning_status, operating_status

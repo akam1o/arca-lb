@@ -658,6 +658,29 @@ class TestDriverLifecycle(unittest.TestCase):
             "weight": 50,
         }])
 
+    def test_member_create_defaults_weight_to_one(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": []},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+            "protocol_port": 80,
+        })
+        self.driver.member_create(member)
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["backends"], [{
+            "address": "10.0.1.1",
+            "weight": 1,
+        }])
+
     def test_member_create_refreshes_existing_health_check_port(self):
         existing_vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",

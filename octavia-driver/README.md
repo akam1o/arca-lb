@@ -38,7 +38,7 @@ See [docs/octavia.md](../docs/octavia.md) for full documentation.
 | Pool + Members | backends[] |
 | HealthMonitor | healthCheck |
 
-Member `weight` is stored in the VirtualIP backend spec, but the current VPP LB plugin path does not apply it to live traffic distribution. Weighted backend programming will be enabled once the VPP LB API exposes backend weights.
+Positive member `weight` values in the 1-100 range, including unequal values, are accepted for Octavia API compatibility and stored in the VirtualIP backend spec. Omitted weights default to `1`. The current VPP LB plugin path treats those weights as metadata only and does not apply them to live traffic distribution. Octavia `weight=0` is handled as draining and is not programmed as an active backend.
 
 Octavia backup members are not supported. The driver rejects members with `backup=True` instead of treating them as active backends.
 

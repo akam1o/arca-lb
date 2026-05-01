@@ -40,7 +40,7 @@ OpenStack テナント (API / Horizon / CLI)
 | HealthMonitor | healthCheck | HTTP、HTTPS、TCP、PING、TLS-HELLO に対応します。UDP-CONNECT は拒否します。 |
 | L7Policy/Rule | *（非対応）* | arca-lb は L4 ロードバランサー |
 
-Member weight は VirtualIP backend spec に保持されますが、現時点ではデータプレーン上の実トラフィック分散には反映されません。現在の VPP LB plugin 経路では metadata のみとして扱われます。VPP LB API が backend weight を公開した時点で重み付き AS programming に反映されます。
+正の member weight（1〜100）は、値が不均等でも Octavia API 互換性のため受け付け、VirtualIP backend spec に保持します。Octavia が `weight` を省略した場合は、Octavia やアプライアンス LB と同じデフォルトの `1` を使います。ただし現在の VPP LB plugin 経路では metadata のみで、非 draining backend は weight なしで programming されるため、実トラフィック分散は重み付きになりません。Octavia の `weight=0` は draining として扱い、active backend set から除外します。
 
 ## 前提条件
 
@@ -184,14 +184,14 @@ openstack loadbalancer member create \
   --name backend-1 \
   --address 10.0.1.1 \
   --protocol-port 80 \
-  --weight 100 \
+  --weight 1 \
   web-pool
 
 openstack loadbalancer member create \
   --name backend-2 \
   --address 10.0.1.2 \
   --protocol-port 80 \
-  --weight 100 \
+  --weight 1 \
   web-pool
 
 # ヘルスモニターの作成
@@ -257,7 +257,7 @@ openstack loadbalancer create \
 
 - **L4 のみ**: L7 ポリシーとルールは非対応です。arca-lb はレイヤー 4 ロードバランサーです。
 - **負荷分散アルゴリズム**: VPP は内部的に Maglev コンシステントハッシュを使用します。`lb_algorithm` パラメータは受け付けますが、基盤のアルゴリズムは常に Maglev です（`SOURCE_IP` と機能的に類似）。
-- **Member weight**: Octavia member の `weight` は VirtualIP backend spec に保存されますが、現時点では実トラフィックの分散比率には影響しません。VPP LB API が backend weight を公開した時点でデータプレーンに接続します。
+- **Member weight**: 正の Octavia member `weight`（1〜100）は不均等な値でも互換性のため受け付け、VirtualIP backend spec に保存します。省略時は `1` を使います。ただし現在の VPP LB plugin 経路では非 draining backend を weight なしで programming するため、実トラフィックの分散比率には影響しません。Octavia の `weight=0` は draining として扱い、active backend から除外します。
 - **Backup member**: Octavia member の `backup=True` は非対応です。driver は backup member を active backend として扱わず、拒否します。
 - **フェイルオーバー**: 手動フェイルオーバーは非対応です。arca-lb は BGP ECMP による自動フェイルオーバーに依存します。
 - **Floating IP**: VIP アドレスは arca-lb の BGP アナウンスメントで管理され、Neutron の Floating IP ではありません。

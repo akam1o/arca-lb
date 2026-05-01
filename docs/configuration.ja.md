@@ -142,9 +142,9 @@ spec:
   dscp: 10                   # 任意の DSCP override、1-63 (DSCP ベース L3DSR 用)
   backends:
     - address: 10.0.1.1
-      weight: 100            # 1-100
+      weight: 1              # 1-100
     - address: 10.0.1.2
-      weight: 100
+      weight: 1
   healthCheck:
     type: http               # http, https, tcp, ping
     intervalSeconds: 5
@@ -175,7 +175,7 @@ spec:
 | フィールド | 説明 | 必須 |
 |----------|------|------|
 | `address` | バックエンド IP アドレス | はい |
-| `weight` | 希望するトラフィック重み (1-100)。backend spec に保存されますが、現在の VPP LB plugin 経路では実トラフィック分散には反映されません。VPP LB API が backend weight を公開した時点で重み付き AS programming に反映されます。 | いいえ (デフォルト: 100) |
+| `weight` | 希望するトラフィック重み (1-100)。デフォルト: 1。正の不均等な weight も受け付けて backend spec に保存しますが、現在の VPP LB plugin 経路では metadata のみです。全 backend は weight なしで programming され、実トラフィック分散は重み付きになりません。 | いいえ |
 
 ### HealthCheck Spec フィールド
 

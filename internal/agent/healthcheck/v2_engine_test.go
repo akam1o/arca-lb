@@ -222,6 +222,57 @@ func TestEngineUsesNamespacedVIPKeys(t *testing.T) {
 	}
 }
 
+func TestProbeTargetAddressUsesMonitorAddress(t *testing.T) {
+	backend := v1alpha1.BackendSpec{
+		Address:        "10.0.0.1",
+		MonitorAddress: "192.0.2.10",
+	}
+	if got := probeTargetAddress(backend); got != "192.0.2.10" {
+		t.Fatalf("probe target = %q, want monitor address", got)
+	}
+
+	backend.MonitorAddress = ""
+	if got := probeTargetAddress(backend); got != "10.0.0.1" {
+		t.Fatalf("probe target = %q, want backend address", got)
+	}
+}
+
+func TestEngineProbeJobsUseMonitorAddress(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{MaxConcurrentChecks: 1}, nil, nil, logger)
+	engine.jobCh = make(chan *probeJob, 1)
+
+	vs := &vipHealthState{
+		vipKey: "default/vip-1",
+		epoch:  3,
+		spec: &v1alpha1.HealthCheckSpec{
+			TimeoutSeconds: 2,
+		},
+		backends: map[string]*backendHealthState{
+			"10.0.0.1": {
+				address:       "10.0.0.1",
+				targetAddress: "192.0.2.10",
+				state:         V2StateUnknown,
+			},
+		},
+		prober: &recordingV2Prober{},
+	}
+
+	engine.emitProbeJobs(vs)
+
+	select {
+	case job := <-engine.jobCh:
+		if job.backendAddr != "10.0.0.1" {
+			t.Fatalf("job backend = %q, want 10.0.0.1", job.backendAddr)
+		}
+		if job.targetAddr != "192.0.2.10" {
+			t.Fatalf("job target = %q, want 192.0.2.10", job.targetAddr)
+		}
+	default:
+		t.Fatal("probe job was not emitted")
+	}
+}
+
 func TestKeyForVIP(t *testing.T) {
 	vip := &v1alpha1.VirtualIP{
 		ObjectMeta: metav1.ObjectMeta{

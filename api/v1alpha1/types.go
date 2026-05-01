@@ -43,6 +43,12 @@ type BackendSpec struct {
 	// +kubebuilder:validation:Format=ip
 	Address string `json:"address"`
 
+	// MonitorAddress is an optional alternate IP address used only for health checks.
+	// When omitted, health checks probe Address.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Format=ip
+	MonitorAddress string `json:"monitorAddress,omitempty"`
+
 	// Weight records the desired proportion of traffic sent to this backend (1-100).
 	// The VPP LB plugin path currently stores this as metadata; weighted AS
 	// programming will take effect once the VPP LB API exposes backend weights.

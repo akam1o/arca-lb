@@ -308,6 +308,7 @@ class TestDriverLifecycle(unittest.TestCase):
             "member_id": "member-1111",
             "pool_id": "pool-1111",
             "address": "10.0.1.1",
+            "monitor_address": "192.0.2.10",
             "protocol_port": 80,
             "weight": 100,
         })
@@ -317,6 +318,9 @@ class TestDriverLifecycle(unittest.TestCase):
         spec = self.mock_k8s.update_virtualip.call_args[0][1]
         self.assertEqual(len(spec["backends"]), 1)
         self.assertEqual(spec["backends"][0]["address"], "10.0.1.1")
+        self.assertEqual(
+            spec["backends"][0]["monitorAddress"], "192.0.2.10"
+        )
         annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
         self.assertEqual(
             json.loads(annotations[constants.ANNOTATION_MEMBER_MAP]),
@@ -483,6 +487,35 @@ class TestDriverLifecycle(unittest.TestCase):
             self.driver.member_batch_update("pool-1111", members)
 
         self.mock_k8s.update_virtualip.assert_not_called()
+
+    def test_member_batch_update_preserves_monitor_address(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": []},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        members = [
+            FakeObj({
+                "member_id": "member-1111",
+                "pool_id": "pool-1111",
+                "address": "10.0.1.1",
+                "monitor_address": "192.0.2.10",
+                "protocol_port": 80,
+                "weight": 100,
+            }),
+        ]
+
+        self.driver.member_batch_update("pool-1111", members)
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["backends"], [{
+            "address": "10.0.1.1",
+            "monitorAddress": "192.0.2.10",
+            "weight": 100,
+        }])
 
     def test_loadbalancer_delete_removes_all_vips(self):
         vips = [

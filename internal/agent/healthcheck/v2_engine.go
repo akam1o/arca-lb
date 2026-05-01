@@ -81,6 +81,7 @@ type vipHealthState struct {
 
 type backendHealthState struct {
 	address         string
+	targetAddress   string
 	state           V2BackendState
 	consecutiveUp   int
 	consecutiveDown int
@@ -92,6 +93,7 @@ type probeJob struct {
 	vipKey      string
 	epoch       uint64
 	backendAddr string
+	targetAddr  string
 	prober      V2Prober
 	timeout     time.Duration
 }
@@ -252,8 +254,10 @@ func (e *Engine) startVIPLocked(vipKey string, vip *v1alpha1.VirtualIP) error {
 
 	// Initialize backend states (restore from store if available)
 	for _, be := range vip.Spec.Backends {
+		targetAddress := probeTargetAddress(be)
 		bhs := &backendHealthState{
 			address:         be.Address,
+			targetAddress:   targetAddress,
 			state:           V2StateUnknown,
 			lastStateChange: time.Now(),
 		}
@@ -261,6 +265,8 @@ func (e *Engine) startVIPLocked(vipKey string, vip *v1alpha1.VirtualIP) error {
 		if existing != nil {
 			if current, ok := existing.backends[be.Address]; ok {
 				copied := *current
+				copied.address = be.Address
+				copied.targetAddress = targetAddress
 				vs.backends[be.Address] = &copied
 				continue
 			}
@@ -298,6 +304,13 @@ func (e *Engine) startVIPLocked(vipKey string, vip *v1alpha1.VirtualIP) error {
 		"vip", vipKey, "backends", len(vip.Spec.Backends),
 		"interval", vip.Spec.HealthCheck.IntervalSeconds)
 	return nil
+}
+
+func probeTargetAddress(be v1alpha1.BackendSpec) string {
+	if be.MonitorAddress != "" {
+		return be.MonitorAddress
+	}
+	return be.Address
 }
 
 // StopVIP stops health checking for a VIP.
@@ -420,11 +433,16 @@ func (e *Engine) emitProbeJobs(vs *vipHealthState) {
 	defer e.mu.RUnlock()
 
 	timeout := time.Duration(vs.spec.TimeoutSeconds) * time.Second
-	for addr := range vs.backends {
+	for addr, bhs := range vs.backends {
+		targetAddr := bhs.targetAddress
+		if targetAddr == "" {
+			targetAddr = addr
+		}
 		job := &probeJob{
 			vipKey:      vs.vipKey,
 			epoch:       vs.epoch,
 			backendAddr: addr,
+			targetAddr:  targetAddr,
 			prober:      vs.prober,
 			timeout:     timeout,
 		}
@@ -443,7 +461,11 @@ func (e *Engine) worker(id int) {
 	for job := range e.jobCh {
 		ctx, cancel := context.WithTimeout(e.ctx, job.timeout)
 		start := time.Now()
-		result := job.prober.Probe(ctx, job.backendAddr)
+		targetAddr := job.targetAddr
+		if targetAddr == "" {
+			targetAddr = job.backendAddr
+		}
+		result := job.prober.Probe(ctx, targetAddr)
 		latency := time.Since(start)
 		cancel()
 

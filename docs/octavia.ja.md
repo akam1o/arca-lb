@@ -36,7 +36,7 @@ OpenStack テナント (API / Horizon / CLI)
 | Loadbalancer | VIP アドレス | 1 つの LB に複数の VirtualIP（Listener ごとに 1 つ） |
 | Listener | VirtualIP リソース | port + protocol が VirtualIP を定義 |
 | Pool | backends[] | バックエンドリストにマッピング |
-| Member | backends[].address + weight | 個別のバックエンドエントリ |
+| Member | backends[].address + monitorAddress + weight | 個別のバックエンドエントリ。`monitor_address` はヘルスチェック用の `monitorAddress` にマッピングされます。 |
 | HealthMonitor | healthCheck | プローブタイプとパラメータ |
 | L7Policy/Rule | *（非対応）* | arca-lb は L4 ロードバランサー |
 

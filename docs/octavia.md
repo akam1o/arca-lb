@@ -36,7 +36,7 @@ OpenStack Tenant (API / Horizon / CLI)
 | Loadbalancer | VIP address | One LB can have multiple VirtualIPs (one per listener) |
 | Listener | VirtualIP resource | port + protocol define a VirtualIP |
 | Pool | backends[] | Maps to the backend list |
-| Member | backends[].address + weight | Individual backend entry |
+| Member | backends[].address + monitorAddress + weight | Individual backend entry. `monitor_address` maps to `monitorAddress` for health checks. |
 | HealthMonitor | healthCheck | Probe type and parameters |
 | L7Policy/Rule | *(not supported)* | arca-lb is an L4 load balancer |
 

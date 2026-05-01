@@ -117,6 +117,16 @@ func TestValidateVirtualIP_InvalidBackendAddress(t *testing.T) {
 	}
 }
 
+func TestValidateVirtualIP_InvalidBackendMonitorAddress(t *testing.T) {
+	vip := validVIP()
+	vip.Spec.Backends = []v1alpha1.BackendSpec{
+		{Address: "10.0.1.1", MonitorAddress: "bad-ip", Weight: 100},
+	}
+	if err := validateVirtualIP(vip); err == nil {
+		t.Error("expected error for invalid backend monitor address")
+	}
+}
+
 func TestValidateVirtualIP_InvalidBackendWeight(t *testing.T) {
 	for _, w := range []int{0, -1, 101} {
 		vip := validVIP()

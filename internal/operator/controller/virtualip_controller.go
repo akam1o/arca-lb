@@ -219,9 +219,9 @@ func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
 		if hc.HTTP.Port < 1 || hc.HTTP.Port > 65535 {
 			return fmt.Errorf("spec.healthCheck.http.port must be 1-65535")
 		}
-	case v1alpha1.HCTypeTCP:
+	case v1alpha1.HCTypeTCP, v1alpha1.HCTypeTLSHello:
 		if hc.TCP == nil {
-			return fmt.Errorf("spec.healthCheck.tcp is required for type tcp")
+			return fmt.Errorf("spec.healthCheck.tcp is required for type %q", hc.Type)
 		}
 		if hc.TCP.Port < 1 || hc.TCP.Port > 65535 {
 			return fmt.Errorf("spec.healthCheck.tcp.port must be 1-65535")

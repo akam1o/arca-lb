@@ -38,8 +38,7 @@ HEALTH_MONITOR_TYPE_MAP = {
     "HTTPS": "https",
     "TCP": "tcp",
     "PING": "ping",
-    "UDP-CONNECT": "tcp",
-    "TLS-HELLO": "tcp",
+    "TLS-HELLO": "tls-hello",
 }
 
 # Supported flavor metadata keys.

@@ -825,6 +825,54 @@ class TestDriverLifecycle(unittest.TestCase):
         spec = self.mock_k8s.update_virtualip.call_args[0][1]
         self.assertEqual(spec["healthCheck"]["tcp"]["port"], 9090)
 
+    def test_health_monitor_create_tls_hello(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 443, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        hm = FakeObj({
+            "healthmonitor_id": "hm-1111",
+            "pool_id": "pool-1111",
+            "type": "TLS-HELLO",
+            "delay": 10,
+            "timeout": 5,
+            "max_retries": 3,
+            "max_retries_down": 2,
+        })
+        self.driver.health_monitor_create(hm)
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["healthCheck"]["type"], "tls-hello")
+        self.assertEqual(spec["healthCheck"]["tcp"]["port"], 443)
+
+    def test_health_monitor_create_rejects_udp_connect(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 53, "protocol": "UDP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        hm = FakeObj({
+            "healthmonitor_id": "hm-1111",
+            "pool_id": "pool-1111",
+            "type": "UDP-CONNECT",
+            "delay": 10,
+            "timeout": 5,
+            "max_retries": 3,
+            "max_retries_down": 2,
+        })
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.health_monitor_create(hm)
+        self.mock_k8s.update_virtualip.assert_not_called()
+
     def test_health_monitor_create_rejects_mixed_member_ports(self):
         from octavia_lib.api.drivers import exceptions as driver_exc
         existing_vip = _make_vip(

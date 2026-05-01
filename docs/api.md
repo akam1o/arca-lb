@@ -107,13 +107,13 @@ status:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | string | Yes | Probe type: `http`, `https`, `tcp`, `ping` |
+| `type` | string | Yes | Probe type: `http`, `https`, `tcp`, `ping`, `tls-hello` |
 | `intervalSeconds` | int (≥1) | No | Time between probes. Default: 5 |
 | `timeoutSeconds` | int (≥1) | No | Max time to wait for response. Default: 3 |
 | `riseCount` | int (≥1) | No | Consecutive successes to mark healthy. Default: 3 |
 | `fallCount` | int (≥1) | No | Consecutive failures to mark unhealthy. Default: 2 |
 | `http` | HTTPHealthCheck | No | HTTP/HTTPS-specific settings |
-| `tcp` | TCPHealthCheck | No | TCP-specific settings |
+| `tcp` | TCPHealthCheck | No | TCP/TLS-HELLO-specific settings |
 
 #### HTTPHealthCheck
 
@@ -131,9 +131,9 @@ status:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `port` | int (1-65535) | Yes | Target port for TCP connection |
-| `send` | string | No | Data to send after connection |
-| `expectedResponse` | string | No | Expected substring in response |
+| `port` | int (1-65535) | Yes | Target port for TCP or TLS-HELLO connection |
+| `send` | string | No | Data to send after TCP connection; ignored for TLS-HELLO |
+| `expectedResponse` | string | No | Expected substring in TCP response; ignored for TLS-HELLO |
 
 ### Status Fields
 
@@ -247,6 +247,31 @@ spec:
     fallCount: 3
     tcp:
       port: 3306
+```
+
+#### TLS hello health check
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: tls-vip
+spec:
+  address: 203.0.113.25
+  port: 443
+  protocol: TCP
+  encapType: NAT4
+  backends:
+    - address: 10.0.2.10
+      weight: 100
+  healthCheck:
+    type: tls-hello
+    intervalSeconds: 10
+    timeoutSeconds: 5
+    riseCount: 2
+    fallCount: 3
+    tcp:
+      port: 443
 ```
 
 #### GRE4 with Ping health check

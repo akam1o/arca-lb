@@ -37,7 +37,7 @@ OpenStack テナント (API / Horizon / CLI)
 | Listener | VirtualIP リソース | port + protocol が VirtualIP を定義 |
 | Pool | backends[] | バックエンドリストにマッピング |
 | Member | backends[].address + monitorAddress + weight | 個別のバックエンドエントリ。`monitor_address` はヘルスチェック用の `monitorAddress` にマッピングされます。 |
-| HealthMonitor | healthCheck | プローブタイプとパラメータ |
+| HealthMonitor | healthCheck | HTTP、HTTPS、TCP、PING、TLS-HELLO に対応します。UDP-CONNECT は拒否します。 |
 | L7Policy/Rule | *（非対応）* | arca-lb は L4 ロードバランサー |
 
 Member weight は VirtualIP backend spec に保持されます。現在の VPP LB plugin 経路では metadata のみとして扱われます。VPP LB API が backend weight を公開した時点で重み付き AS programming に反映されます。
@@ -260,6 +260,7 @@ openstack loadbalancer create \
 - **フェイルオーバー**: 手動フェイルオーバーは非対応です。arca-lb は BGP ECMP による自動フェイルオーバーに依存します。
 - **Floating IP**: VIP アドレスは arca-lb の BGP アナウンスメントで管理され、Neutron の Floating IP ではありません。
 - **TERMINATED_HTTPS**: LB レベルでの TLS 終端は非対応です。バックエンド側の TLS による TCP パススルーを使用してください。
+- **UDP-CONNECT health monitor**: 非対応です。TCP probe に暗黙変換せず、driver が拒否します。
 
 ## トラブルシューティング
 

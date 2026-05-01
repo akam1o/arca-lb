@@ -42,6 +42,8 @@ func newProberFromSpec(spec *v1alpha1.HealthCheckSpec) (V2Prober, error) {
 		return newTCPProberFromSpec(spec.TCP)
 	case v1alpha1.HCTypePing:
 		return &pingProber{}, nil
+	case v1alpha1.HCTypeTLSHello:
+		return newTLSHelloProberFromSpec(spec.TCP)
 	default:
 		return nil, fmt.Errorf("unsupported health check type: %s", spec.Type)
 	}
@@ -266,6 +268,40 @@ func bindConnToContext(ctx context.Context, conn net.Conn) (func(), error) {
 
 	return func() { close(done) }, nil
 }
+
+// --- TLS hello prober ---
+
+type tlsHelloProber struct {
+	port int
+}
+
+func newTLSHelloProberFromSpec(cfg *v1alpha1.TCPHealthCheck) (*tlsHelloProber, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("TCP health check config is required for TLS hello")
+	}
+	return &tlsHelloProber{port: cfg.Port}, nil
+}
+
+func (p *tlsHelloProber) Probe(ctx context.Context, target string) V2ProbeResult {
+	start := time.Now()
+	addr := tcpProbeAddress(target, p.port)
+
+	dialer := tls.Dialer{
+		NetDialer: &net.Dialer{},
+		Config: &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // TLS-HELLO only verifies that the backend completes a TLS handshake.
+		},
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
+	defer func() { _ = conn.Close() }()
+
+	return V2ProbeResult{Success: true, Latency: time.Since(start), Timestamp: start}
+}
+
+func (p *tlsHelloProber) Close() error { return nil }
 
 // --- Ping prober ---
 

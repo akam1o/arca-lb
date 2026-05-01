@@ -26,14 +26,15 @@ const (
 )
 
 // HCType specifies the type of health check probe.
-// +kubebuilder:validation:Enum=http;https;tcp;ping
+// +kubebuilder:validation:Enum=http;https;tcp;ping;tls-hello
 type HCType string
 
 const (
-	HCTypeHTTP  HCType = "http"
-	HCTypeHTTPS HCType = "https"
-	HCTypeTCP   HCType = "tcp"
-	HCTypePing  HCType = "ping"
+	HCTypeHTTP     HCType = "http"
+	HCTypeHTTPS    HCType = "https"
+	HCTypeTCP      HCType = "tcp"
+	HCTypePing     HCType = "ping"
+	HCTypeTLSHello HCType = "tls-hello"
 )
 
 // BackendSpec defines a real server backing a VIP.
@@ -60,7 +61,7 @@ type BackendSpec struct {
 
 // HealthCheckSpec configures health checking for backends.
 // +kubebuilder:validation:XValidation:rule="(self.type != 'http' && self.type != 'https') || has(self.http)",message="spec.healthCheck.http is required for type http or https"
-// +kubebuilder:validation:XValidation:rule="self.type != 'tcp' || has(self.tcp)",message="spec.healthCheck.tcp is required for type tcp"
+// +kubebuilder:validation:XValidation:rule="(self.type != 'tcp' && self.type != 'tls-hello') || has(self.tcp)",message="spec.healthCheck.tcp is required for type tcp or tls-hello"
 // +kubebuilder:validation:XValidation:rule="(has(self.timeoutSeconds) ? self.timeoutSeconds : 3) < (has(self.intervalSeconds) ? self.intervalSeconds : 5)",message="spec.healthCheck.timeoutSeconds must be less than intervalSeconds"
 type HealthCheckSpec struct {
 	// Type is the probe type.

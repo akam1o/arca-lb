@@ -14,7 +14,7 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	messages := validationMessages(t, healthCheck)
 	for _, want := range []string{
 		"spec.healthCheck.http is required for type http or https",
-		"spec.healthCheck.tcp is required for type tcp",
+		"spec.healthCheck.tcp is required for type tcp or tls-hello",
 		"spec.healthCheck.timeoutSeconds must be less than intervalSeconds",
 	} {
 		if !containsString(messages, want) {
@@ -30,6 +30,12 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	tcp := nestedMap(t, healthCheck, "properties", "tcp")
 	if !containsString(stringSlice(t, tcp["required"]), "port") {
 		t.Fatalf("healthCheck.tcp.port is not required in CRD schema")
+	}
+
+	typeSchema := nestedMap(t, healthCheck, "properties", "type")
+	typeEnum := stringSlice(t, typeSchema["enum"])
+	if !containsString(typeEnum, "tls-hello") {
+		t.Fatalf("healthCheck.type enum does not include tls-hello: %#v", typeEnum)
 	}
 }
 

@@ -65,6 +65,17 @@ func TestValidateSpecAllowsValidHealthChecks(t *testing.T) {
 			},
 		},
 		{
+			name: "tls-hello",
+			hc: &v1alpha1.HealthCheckSpec{
+				Type:            v1alpha1.HCTypeTLSHello,
+				IntervalSeconds: 5,
+				TimeoutSeconds:  3,
+				TCP: &v1alpha1.TCPHealthCheck{
+					Port: 8443,
+				},
+			},
+		},
+		{
 			name: "ping",
 			hc: &v1alpha1.HealthCheckSpec{
 				Type:            v1alpha1.HCTypePing,
@@ -114,6 +125,14 @@ func TestValidateSpecRejectsInvalidHealthChecks(t *testing.T) {
 			name: "tcp missing config",
 			hc: &v1alpha1.HealthCheckSpec{
 				Type:            v1alpha1.HCTypeTCP,
+				IntervalSeconds: 5,
+				TimeoutSeconds:  3,
+			},
+		},
+		{
+			name: "tls-hello missing config",
+			hc: &v1alpha1.HealthCheckSpec{
+				Type:            v1alpha1.HCTypeTLSHello,
 				IntervalSeconds: 5,
 				TimeoutSeconds:  3,
 			},

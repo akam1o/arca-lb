@@ -258,6 +258,7 @@ Available flavor metadata:
 - **L4 only**: L7 policies and rules are not supported. arca-lb is a Layer 4 load balancer.
 - **Load balancing algorithm**: VPP uses Maglev consistent hashing internally. The `lb_algorithm` parameter is accepted but the underlying algorithm is always Maglev (functionally similar to `SOURCE_IP`).
 - **Member weight**: Octavia member `weight` is stored in the VirtualIP backend spec, but it does not affect live traffic distribution yet. Support will be wired into the data plane once the VPP LB API exposes backend weights.
+- **Backup members**: Octavia member `backup=True` is not supported. The driver rejects backup members instead of treating them as active backends.
 - **Failover**: Manual failover is not supported. arca-lb relies on BGP ECMP for automatic failover across LB nodes.
 - **Floating IP**: VIP addresses are managed by arca-lb's BGP announcements, not by Neutron floating IPs.
 - **TERMINATED_HTTPS**: TLS termination is not supported at the LB level. Use TCP passthrough with backend-side TLS.

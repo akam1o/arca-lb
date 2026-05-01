@@ -61,6 +61,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._driver_lib = driver_lib.DriverLibrary()
         self._loadbalancer_vips = {}
         self._loadbalancer_vips_lock = threading.Lock()
+        self._loadbalancer_pools = {}
+        self._loadbalancer_pools_lock = threading.Lock()
 
         # Start background status watcher.
         self._status_watcher = VirtualIPStatusWatcher(
@@ -113,6 +115,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             name = vip["metadata"]["name"]
             self._k8s.delete_virtualip(name)
         self._forget_loadbalancer_vip(lb_id)
+        self._forget_loadbalancer_pools(lb_id)
         self._push_resource_delete_status(
             f"loadbalancer/{lb_id}",
             lb_id=lb_id,
@@ -222,9 +225,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             constants.ANNOTATION_LISTENER_ID: listener_id,
             constants.ANNOTATION_PROJECT_ID: lst.get("project_id", ""),
         }
+        pool_id = (
+            self._listener_default_pool_id(lst) or
+            self._loadbalancer_pool(lb_id)
+        )
+        if pool_id:
+            annotations[constants.ANNOTATION_POOL_ID] = pool_id
 
         self._k8s.create_virtualip(name, spec, annotations=annotations)
         self._remember_loadbalancer_vip(lb_id, vip_address)
+        self._forget_loadbalancer_pool(lb_id, pool_id)
         LOG.info("Created VirtualIP %s for listener %s (LB %s)",
                  name, listener_id, lb_id)
 
@@ -269,6 +279,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
+        annotations = vip.get("metadata", {}).get("annotations", {})
+        lb_id = annotations.get(constants.ANNOTATION_LB_ID) or lst.get(
+            "loadbalancer_id"
+        )
 
         protocol = lst.get("protocol")
         if protocol:
@@ -278,6 +292,13 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if port:
             spec["port"] = port
 
+        pool_id = self._listener_default_pool_id(lst)
+        if not pool_id:
+            pool_id = self._loadbalancer_pool(lb_id)
+        if pool_id:
+            annotations[constants.ANNOTATION_POOL_ID] = pool_id
+            self._forget_loadbalancer_pool(lb_id, pool_id)
+
         admin_state = lst.get("admin_state_up")
         if admin_state is False:
             spec["backends"] = []
@@ -285,20 +306,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             if self._restore_virtualip_backends([vip]):
                 self._push_resource_active_status(
                     name,
-                    lb_id=vip.get("metadata", {}).get("annotations", {}).get(
-                        constants.ANNOTATION_LB_ID
-                    ),
+                    lb_id=lb_id,
                     active_listener_ids=[listener_id],
+                    active_pool_ids=[
+                        annotations.get(constants.ANNOTATION_POOL_ID)
+                    ],
                 )
                 return
 
-        self._k8s.update_virtualip(name, spec)
+        self._k8s.update_virtualip(name, spec, annotations=annotations)
         self._push_resource_active_status(
             name,
-            lb_id=vip.get("metadata", {}).get("annotations", {}).get(
-                constants.ANNOTATION_LB_ID
-            ),
+            lb_id=lb_id,
             active_listener_ids=[listener_id],
+            active_pool_ids=[annotations.get(constants.ANNOTATION_POOL_ID)],
         )
 
     # ------------------------------------------------------------------
@@ -313,12 +334,34 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         """
         p = pool.to_dict() if hasattr(pool, 'to_dict') else pool
         pool_id = p.get("pool_id")
-        listener_id = p.get("listener_id")
+        listener_id = self._pool_listener_id(p)
+        lb_id = self._pool_loadbalancer_id(p)
 
         if not listener_id:
             # Pool may be associated via loadbalancer_id + default_pool_id.
-            LOG.info("Pool %s created without listener_id, no VirtualIP update",
-                     pool_id)
+            self._remember_loadbalancer_pool(lb_id, pool_id)
+            associated = self._associate_pool_with_loadbalancer_vip(
+                lb_id, pool_id
+            )
+            if associated:
+                name, associated_lb_id, associated_listener_id = associated
+                self._forget_loadbalancer_pool(lb_id, pool_id)
+                self._push_resource_active_status(
+                    name,
+                    lb_id=associated_lb_id,
+                    active_listener_ids=[associated_listener_id],
+                    active_pool_ids=[pool_id],
+                )
+                LOG.info("Pool %s associated with VirtualIP %s", pool_id, name)
+                return
+
+            self._push_resource_active_status(
+                f"pool/{pool_id}",
+                lb_id=lb_id,
+                active_pool_ids=[pool_id],
+            )
+            LOG.info("Pool %s created without listener_id, deferred VirtualIP "
+                     "association", pool_id)
             return
 
         vip = self._k8s.find_by_listener(listener_id)
@@ -327,11 +370,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                         listener_id, pool_id)
             return
 
-        name = vip["metadata"]["name"]
-        annotations = vip.get("metadata", {}).get("annotations", {})
-        annotations[constants.ANNOTATION_POOL_ID] = pool_id
-        self._k8s.update_virtualip(name, vip.get("spec", {}),
-                                   annotations=annotations)
+        associated = self._associate_pool_with_virtualip(vip, pool_id)
+        if not associated:
+            return
+        name, associated_lb_id, associated_listener_id = associated
+        self._push_resource_active_status(
+            name,
+            lb_id=associated_lb_id or lb_id,
+            active_listener_ids=[associated_listener_id or listener_id],
+            active_pool_ids=[pool_id],
+        )
+        self._forget_loadbalancer_pool(associated_lb_id or lb_id, pool_id)
         LOG.info("Pool %s associated with VirtualIP %s", pool_id, name)
 
     def pool_delete(self, pool):
@@ -340,10 +389,13 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         pool_id = p.get("pool_id")
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
+            self._forget_loadbalancer_pool(
+                self._pool_loadbalancer_id(p), pool_id
+            )
             self._push_resource_delete_status(
                 f"pool/{pool_id}",
-                lb_id=p.get("loadbalancer_id"),
-                active_listener_ids=[p.get("listener_id")],
+                lb_id=self._pool_loadbalancer_id(p),
+                active_listener_ids=[self._pool_listener_id(p)],
                 deleted_pool_ids=[pool_id],
             )
             return
@@ -357,6 +409,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         lb_id = annotations.get(constants.ANNOTATION_LB_ID)
         listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
         hm_id = annotations.get(constants.ANNOTATION_HM_ID)
+        self._forget_loadbalancer_pool(lb_id, pool_id)
         deleted_member_ids = sorted(
             self._member_map_from_annotations(annotations)
         )
@@ -754,6 +807,133 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         vip_address = lb.get("vip_address", "")
         self._remember_loadbalancer_vip(lb_id, vip_address)
         return vip_address
+
+    def _remember_loadbalancer_pool(self, lb_id, pool_id):
+        if not lb_id or not pool_id:
+            return
+        with self._loadbalancer_pools_lock:
+            self._loadbalancer_pools.setdefault(lb_id, set()).add(pool_id)
+
+    def _forget_loadbalancer_pool(self, lb_id, pool_id):
+        if not lb_id or not pool_id:
+            return
+        with self._loadbalancer_pools_lock:
+            pool_ids = self._loadbalancer_pools.get(lb_id)
+            if not pool_ids:
+                return
+            pool_ids.discard(pool_id)
+            if not pool_ids:
+                self._loadbalancer_pools.pop(lb_id, None)
+
+    def _forget_loadbalancer_pools(self, lb_id):
+        if not lb_id:
+            return
+        with self._loadbalancer_pools_lock:
+            self._loadbalancer_pools.pop(lb_id, None)
+
+    def _loadbalancer_pool(self, lb_id):
+        if not lb_id:
+            return ""
+        with self._loadbalancer_pools_lock:
+            pool_ids = self._loadbalancer_pools.get(lb_id, set())
+            if len(pool_ids) == 1:
+                return next(iter(pool_ids))
+        return ""
+
+    def _associate_pool_with_loadbalancer_vip(self, lb_id, pool_id):
+        if not lb_id or not pool_id:
+            return None
+
+        vips = self._k8s.find_by_loadbalancer(lb_id)
+        if len(vips) != 1:
+            if len(vips) > 1:
+                LOG.warning(
+                    "Pool %s has loadbalancer_id=%s but no listener_id; "
+                    "cannot choose between %d VirtualIPs",
+                    pool_id, lb_id, len(vips),
+                )
+            return None
+
+        return self._associate_pool_with_virtualip(vips[0], pool_id)
+
+    def _associate_pool_with_virtualip(self, vip, pool_id):
+        if not vip or not pool_id:
+            return None
+
+        metadata = vip.get("metadata", {})
+        name = metadata.get("name")
+        annotations = metadata.get("annotations") or {}
+        existing_pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
+        if existing_pool_id and existing_pool_id != pool_id:
+            LOG.warning(
+                "VirtualIP %s is already associated with pool %s; "
+                "cannot associate pool %s",
+                name, existing_pool_id, pool_id,
+            )
+            return None
+
+        if existing_pool_id != pool_id:
+            annotations[constants.ANNOTATION_POOL_ID] = pool_id
+            self._k8s.update_virtualip(
+                name, vip.get("spec", {}), annotations=annotations
+            )
+
+        return (
+            name,
+            annotations.get(constants.ANNOTATION_LB_ID),
+            annotations.get(constants.ANNOTATION_LISTENER_ID),
+        )
+
+    @classmethod
+    def _pool_listener_id(cls, pool):
+        pool = cls._as_dict(pool)
+        return (
+            pool.get("listener_id") or
+            cls._first_object_id(pool.get("listeners"), "listener_id", "id")
+        )
+
+    @classmethod
+    def _pool_loadbalancer_id(cls, pool):
+        pool = cls._as_dict(pool)
+        return (
+            pool.get("loadbalancer_id") or
+            cls._first_object_id(
+                pool.get("loadbalancers"), "loadbalancer_id", "id"
+            )
+        )
+
+    @classmethod
+    def _listener_default_pool_id(cls, listener):
+        listener = cls._as_dict(listener)
+        return (
+            listener.get("default_pool_id") or
+            cls._object_id(
+                listener.get("default_pool"), "pool_id", "id"
+            )
+        )
+
+    @classmethod
+    def _first_object_id(cls, value, *keys):
+        if not value:
+            return ""
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                object_id = cls._object_id(item, *keys)
+                if object_id:
+                    return object_id
+            return ""
+        return cls._object_id(value, *keys)
+
+    @classmethod
+    def _object_id(cls, value, *keys):
+        if isinstance(value, str):
+            return value
+        data = cls._as_dict(value)
+        for key in keys:
+            object_id = data.get(key)
+            if object_id:
+                return object_id
+        return ""
 
     def _restore_virtualip_backends(self, vips):
         restored = 0

@@ -258,6 +258,7 @@ openstack loadbalancer create \
 - **L4 のみ**: L7 ポリシーとルールは非対応です。arca-lb はレイヤー 4 ロードバランサーです。
 - **負荷分散アルゴリズム**: VPP は内部的に Maglev コンシステントハッシュを使用します。`lb_algorithm` パラメータは受け付けますが、基盤のアルゴリズムは常に Maglev です（`SOURCE_IP` と機能的に類似）。
 - **Member weight**: Octavia member の `weight` は VirtualIP backend spec に保存されますが、現時点では実トラフィックの分散比率には影響しません。VPP LB API が backend weight を公開した時点でデータプレーンに接続します。
+- **Backup member**: Octavia member の `backup=True` は非対応です。driver は backup member を active backend として扱わず、拒否します。
 - **フェイルオーバー**: 手動フェイルオーバーは非対応です。arca-lb は BGP ECMP による自動フェイルオーバーに依存します。
 - **Floating IP**: VIP アドレスは arca-lb の BGP アナウンスメントで管理され、Neutron の Floating IP ではありません。
 - **TERMINATED_HTTPS**: LB レベルでの TLS 終端は非対応です。バックエンド側の TLS による TCP パススルーを使用してください。

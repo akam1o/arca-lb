@@ -414,6 +414,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     def member_create(self, member):
         """Add a backend to the VirtualIP."""
         m = member.to_dict() if hasattr(member, 'to_dict') else member
+        self._validate_member_supported(m)
         pool_id = m.get("pool_id")
         address = m.get("address")
         weight = self._member_weight(m)
@@ -480,6 +481,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     def member_update(self, old_member, new_member):
         """Update a backend's weight in the VirtualIP."""
         m = new_member.to_dict() if hasattr(new_member, 'to_dict') else new_member
+        self._validate_member_supported(m)
         pool_id = m.get("pool_id")
         address = m.get("address")
         weight = self._member_weight(m)
@@ -524,6 +526,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             for member in members
         ]
         for m in member_dicts:
+            self._validate_member_supported(m)
             self._validate_member_dataplane_port(vip, m)
 
         backends = []
@@ -767,6 +770,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             for member in members:
                 if not member.get("address"):
                     continue
+                self._validate_member_supported(member)
                 self._validate_member_dataplane_port(vip, member)
                 is_draining = self._member_is_draining(member)
                 member_id = self._member_id(member)
@@ -871,7 +875,28 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return (
             not member.get("address") or
             "admin_state_up" not in member or
+            "backup" not in member or
             "weight" not in member
+        )
+
+    @classmethod
+    def _validate_member_supported(cls, member):
+        member = cls._as_dict(member)
+        backup = member.get("backup")
+        if isinstance(backup, str):
+            is_backup = backup.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            is_backup = bool(backup)
+        if not is_backup:
+            return
+
+        raise driver_exc.UnsupportedOptionError(
+            user_fault_string="Backup members are not supported by ArcaLB provider.",
+            operator_fault_string=(
+                "VirtualIP does not support Octavia backup member failover "
+                "semantics for member "
+                f"{cls._member_id(member) or member.get('address')}"
+            ),
         )
 
     @classmethod

@@ -40,6 +40,8 @@ See [docs/octavia.md](../docs/octavia.md) for full documentation.
 
 Member `weight` is stored in the VirtualIP backend spec, but the current VPP LB plugin path does not apply it to live traffic distribution. Weighted backend programming will be enabled once the VPP LB API exposes backend weights.
 
+Octavia backup members are not supported. The driver rejects members with `backup=True` instead of treating them as active backends.
+
 ## Development
 
 ```bash

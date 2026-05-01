@@ -1,9 +1,15 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func validVirtualIPSpec() v1alpha1.VirtualIPSpec {
@@ -53,6 +59,84 @@ func TestApplyDefaultsUsesBackendWeightOne(t *testing.T) {
 	}
 	if got := vip.Spec.Backends[0].Weight; got != v1alpha1.DefaultBackendWeight {
 		t.Fatalf("backend weight default = %d, want %d", got, v1alpha1.DefaultBackendWeight)
+	}
+}
+
+func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 7,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:   "203.0.113.10",
+			Port:      80,
+			Protocol:  v1alpha1.ProtocolTCP,
+			EncapType: v1alpha1.EncapTypeL3DSR,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.1.1", Weight: 100},
+				{Address: "10.0.1.2", Weight: 100},
+			},
+		},
+		Status: v1alpha1.VirtualIPStatus{
+			ObservedGeneration: 6,
+			HealthyBackends:    1,
+			TotalBackends:      1,
+			Backends: []v1alpha1.BackendStatus{
+				{Address: "10.0.1.1", Healthy: true},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	if err := reconciler.updateStatus(context.Background(), vip); err != nil {
+		t.Fatalf("updateStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	key := types.NamespacedName{Namespace: "default", Name: "web"}
+	if err := k8sClient.Get(context.Background(), key, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.Status.ObservedGeneration != 6 {
+		t.Fatalf("ObservedGeneration = %d, want agent-observed generation 6", got.Status.ObservedGeneration)
+	}
+	if got.Status.HealthyBackends != 1 {
+		t.Fatalf("HealthyBackends = %d, want preserved agent value 1", got.Status.HealthyBackends)
+	}
+	if len(got.Status.Backends) != 1 || got.Status.Backends[0].Address != "10.0.1.1" {
+		t.Fatalf("Backends = %#v, want preserved agent backend status", got.Status.Backends)
+	}
+	if got.Status.TotalBackends != 2 {
+		t.Fatalf("TotalBackends = %d, want current spec count 2", got.Status.TotalBackends)
+	}
+
+	ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if ready == nil {
+		t.Fatal("Ready condition was not set")
+	}
+	if ready.ObservedGeneration != 7 {
+		t.Fatalf("Ready observedGeneration = %d, want current generation 7", ready.ObservedGeneration)
+	}
+	if ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready status = %s, want True", ready.Status)
 	}
 }
 

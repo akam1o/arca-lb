@@ -100,6 +100,7 @@ status:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `address` | string (IP) | Yes | Backend server IP address |
+| `monitorAddress` | string (IP) | No | Alternate backend IP address used only for health checks. Defaults to `address`. |
 | `weight` | int (1-100) | No | Desired traffic weight. Default: 100. The VPP LB plugin path currently stores this as metadata; weighted AS programming will take effect once the VPP LB API exposes backend weights. |
 
 #### HealthCheckSpec

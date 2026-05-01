@@ -9,17 +9,7 @@ import (
 )
 
 func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
-	crdPath := filepath.Join("..", "..", "config", "crd", "bases", "arca.io_virtualips.yaml")
-	data, err := os.ReadFile(crdPath)
-	if err != nil {
-		t.Fatalf("failed to read CRD: %v", err)
-	}
-
-	var crd map[string]interface{}
-	if err := yaml.Unmarshal(data, &crd); err != nil {
-		t.Fatalf("failed to parse CRD YAML: %v", err)
-	}
-
+	crd := loadVirtualIPCRD(t)
 	healthCheck := crdSchemaProperty(t, crd, "spec", "healthCheck")
 	messages := validationMessages(t, healthCheck)
 	for _, want := range []string{
@@ -41,6 +31,35 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	if !containsString(stringSlice(t, tcp["required"]), "port") {
 		t.Fatalf("healthCheck.tcp.port is not required in CRD schema")
 	}
+}
+
+func TestVirtualIPCRDDefinesBackendMonitorAddress(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	backends := crdSchemaProperty(t, crd, "spec", "backends")
+	monitorAddress := nestedMap(t, backends, "items", "properties", "monitorAddress")
+
+	if got := monitorAddress["format"]; got != "ip" {
+		t.Fatalf("monitorAddress format = %v, want ip", got)
+	}
+	if containsString(stringSlice(t, nestedMap(t, backends, "items")["required"]), "monitorAddress") {
+		t.Fatalf("monitorAddress is required in CRD schema")
+	}
+}
+
+func loadVirtualIPCRD(t *testing.T) map[string]interface{} {
+	t.Helper()
+
+	crdPath := filepath.Join("..", "..", "config", "crd", "bases", "arca.io_virtualips.yaml")
+	data, err := os.ReadFile(crdPath)
+	if err != nil {
+		t.Fatalf("failed to read CRD: %v", err)
+	}
+
+	var crd map[string]interface{}
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		t.Fatalf("failed to parse CRD YAML: %v", err)
+	}
+	return crd
 }
 
 func crdSchemaProperty(t *testing.T, crd map[string]interface{}, path ...string) map[string]interface{} {

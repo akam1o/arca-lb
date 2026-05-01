@@ -100,6 +100,7 @@ status:
 | フィールド | 型 | 必須 | 説明 |
 |----------|-----|------|------|
 | `address` | string (IP) | はい | バックエンドサーバーの IP アドレス |
+| `monitorAddress` | string (IP) | いいえ | ヘルスチェックだけに使う代替バックエンド IP アドレス。省略時は `address` を使います。 |
 | `weight` | int (1-100) | いいえ | 希望するトラフィック重み。デフォルト: 100。現在の VPP LB plugin 経路では metadata として保持されます。VPP LB API が backend weight を公開した時点で重み付き AS programming に反映されます。 |
 
 #### HealthCheckSpec

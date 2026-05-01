@@ -83,6 +83,11 @@ func validateVirtualIP(vip *v1alpha1.VirtualIP) error {
 		if ip := net.ParseIP(be.Address); ip == nil {
 			return fmt.Errorf("spec.backends[%d].address %q is not a valid IP", i, be.Address)
 		}
+		if be.MonitorAddress != "" {
+			if ip := net.ParseIP(be.MonitorAddress); ip == nil {
+				return fmt.Errorf("spec.backends[%d].monitorAddress %q is not a valid IP", i, be.MonitorAddress)
+			}
+		}
 		if seenAddr[be.Address] {
 			return fmt.Errorf("spec.backends[%d].address %q is duplicated", i, be.Address)
 		}

@@ -320,7 +320,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         m = member.to_dict() if hasattr(member, 'to_dict') else member
         pool_id = m.get("pool_id")
         address = m.get("address")
-        weight = m.get("weight", 100)
+        backend = self._backend_from_member(m)
+        weight = backend["weight"]
 
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
@@ -338,13 +339,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         # Avoid duplicates.
         for b in backends:
             if b.get("address") == address:
-                b["weight"] = min(max(weight, 1), 100)
+                self._update_backend_from_member(b, backend)
                 break
         else:
-            backends.append({
-                "address": address,
-                "weight": min(max(weight, 1), 100),
-            })
+            backends.append(backend)
 
         spec["backends"] = backends
         self._remember_member_mapping(annotations, m)
@@ -382,7 +380,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         m = new_member.to_dict() if hasattr(new_member, 'to_dict') else new_member
         pool_id = m.get("pool_id")
         address = m.get("address")
-        weight = m.get("weight", 100)
+        backend = self._backend_from_member(m)
 
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
@@ -394,7 +392,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._validate_member_dataplane_port(vip, m)
         for b in spec.get("backends", []):
             if b.get("address") == address:
-                b["weight"] = min(max(weight, 1), 100)
+                self._update_backend_from_member(b, backend)
                 break
 
         self._remember_member_mapping(annotations, m)
@@ -426,10 +424,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         backends = []
         new_member_map = {}
         for m in member_dicts:
-            backends.append({
-                "address": m.get("address"),
-                "weight": min(max(m.get("weight", 100), 1), 100),
-            })
+            backends.append(self._backend_from_member(m))
             member_id = self._member_id(m)
             if member_id and m.get("address"):
                 new_member_map[member_id] = m.get("address")
@@ -650,6 +645,25 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     @staticmethod
     def _member_id(member):
         return member.get("member_id") or member.get("id")
+
+    @staticmethod
+    def _backend_from_member(member):
+        backend = {
+            "address": member.get("address"),
+            "weight": min(max(member.get("weight", 100), 1), 100),
+        }
+        monitor_address = member.get("monitor_address")
+        if monitor_address:
+            backend["monitorAddress"] = monitor_address
+        return backend
+
+    @staticmethod
+    def _update_backend_from_member(existing_backend, desired_backend):
+        existing_backend["weight"] = desired_backend["weight"]
+        if "monitorAddress" in desired_backend:
+            existing_backend["monitorAddress"] = desired_backend["monitorAddress"]
+        else:
+            existing_backend.pop("monitorAddress", None)
 
     @staticmethod
     def _member_map_from_annotations(annotations):

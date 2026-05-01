@@ -73,6 +73,12 @@ spec:
                       description: Address is the IP address of the backend server.
                       format: ip
                       type: string
+                    monitorAddress:
+                      description: |-
+                        MonitorAddress is an optional alternate IP address used only for health checks.
+                        When omitted, health checks probe Address.
+                      format: ip
+                      type: string
                     weight:
                       default: 100
                       description: |-

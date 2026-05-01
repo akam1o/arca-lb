@@ -286,11 +286,10 @@ func newVIPReconciler(
 }
 
 func (vr *vipReconciler) update(vip *v1alpha1.VirtualIP) {
-	select {
-	case vr.eventCh <- vipEvent{vip: vip}:
-	default:
-		vr.logger.Warn("event channel full, dropping event")
-	}
+	vr.mu.Lock()
+	vr.current = vip
+	vr.mu.Unlock()
+	vr.triggerReconcile()
 }
 
 func (vr *vipReconciler) markDeleted(vip *v1alpha1.VirtualIP) {
@@ -350,10 +349,6 @@ func (vr *vipReconciler) run(ctx context.Context) {
 				vr.handleDelete(ctx, ev.vip)
 				return // exit goroutine after delete
 			}
-			vr.mu.Lock()
-			vr.current = ev.vip
-			vr.mu.Unlock()
-			vr.reconcile(ctx)
 
 		case <-vr.reconcileCh:
 			vr.reconcile(ctx)

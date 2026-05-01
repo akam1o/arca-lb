@@ -116,6 +116,40 @@ func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 	}
 }
 
+func TestV2ReconcilerCoalescesBurstUpdatesToLatestSpec(t *testing.T) {
+	dp := newRecordingDataPlane()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	vr := newVIPReconciler(
+		"default/web",
+		dp,
+		routing.NewNoop(),
+		nil,
+		nil,
+		nil,
+		time.Hour,
+		TuningDriftConfig{},
+		logger,
+		nil,
+	)
+
+	for i := 1; i <= 20; i++ {
+		vip := newV2TestVIP("default", "web", "uid-1")
+		vip.Generation = int64(i)
+		vip.Spec.Port = 80 + i
+		vr.update(vip)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go vr.run(ctx)
+	defer vr.stop()
+
+	waitFor(t, func() bool {
+		vip := dp.lastAppliedVIP()
+		return vip != nil && vip.Generation == 20 && vip.Spec.Port == 100
+	}, "latest VIP spec to be applied after burst updates")
+}
+
 func newV2TestVIP(namespace, name string, uid types.UID) *v1alpha1.VirtualIP {
 	return &v1alpha1.VirtualIP{
 		ObjectMeta: metav1.ObjectMeta{
@@ -175,16 +209,18 @@ type recordingDataPlane struct {
 	recreates int
 	drifts    []dataplane.VIPTuningDrift
 	events    *eventRecorder
+	lastVIP   *v1alpha1.VirtualIP
 }
 
 func newRecordingDataPlane() *recordingDataPlane {
 	return &recordingDataPlane{}
 }
 
-func (r *recordingDataPlane) ApplyVIP(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec) error {
+func (r *recordingDataPlane) ApplyVIP(_ context.Context, vip *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.applies++
+	r.lastVIP = vip.DeepCopy()
 	return r.applyErr
 }
 
@@ -234,6 +270,15 @@ func (r *recordingDataPlane) applyCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.applies
+}
+
+func (r *recordingDataPlane) lastAppliedVIP() *v1alpha1.VirtualIP {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastVIP == nil {
+		return nil
+	}
+	return r.lastVIP.DeepCopy()
 }
 
 func (r *recordingDataPlane) removeCount() int {

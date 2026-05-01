@@ -437,6 +437,78 @@ func TestClientCancellation(t *testing.T) {
 	}
 }
 
+func TestClientStopDoesNotHoldLockWhileWaitingForWorkers(t *testing.T) {
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID: "test-agent",
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, nil)
+	client.started = true
+	client.connected = true
+	client.stopCh = make(chan struct{})
+	client.doneCh = make(chan struct{})
+	client.cancel = func() {}
+
+	workerSawStop := make(chan struct{})
+	allowReadLock := make(chan struct{})
+	readLockAcquired := make(chan struct{})
+
+	client.wg.Add(1)
+	go func() {
+		defer client.wg.Done()
+		<-client.stopCh
+		close(workerSawStop)
+		<-allowReadLock
+		client.mu.RLock()
+		close(readLockAcquired)
+		client.mu.RUnlock()
+	}()
+
+	stopped := make(chan struct{})
+	go func() {
+		client.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-workerSawStop:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not close stopCh")
+	}
+
+	close(client.doneCh)
+	time.Sleep(100 * time.Millisecond)
+	close(allowReadLock)
+
+	select {
+	case <-readLockAcquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker could not acquire read lock during Stop")
+	}
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not complete")
+	}
+
+	if isClientStarted(client) {
+		t.Error("Client still marked as started after Stop()")
+	}
+}
+
 func TestClientWatchError(t *testing.T) {
 	mock := &mockConfigSyncServer{
 		registerSuccess:  true,

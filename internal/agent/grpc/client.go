@@ -136,6 +136,10 @@ func (c *Client) Stop() {
 
 	<-c.doneCh
 
+	// Wait for watch/heartbeat goroutines before taking c.mu. Heartbeat paths
+	// acquire c.mu.RLock(), so holding the write lock while waiting can deadlock.
+	c.wg.Wait()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn != nil {
@@ -147,9 +151,7 @@ func (c *Client) Stop() {
 	}
 	// Reset started flag for restartability
 	c.started = false
-
-	// Ensure background goroutines fully exit before allowing restart
-	c.wg.Wait()
+	c.connected = false
 }
 
 // connect establishes a connection to the controller with retry logic

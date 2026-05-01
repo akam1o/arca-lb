@@ -38,6 +38,7 @@ EXPOSE 9090
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:9090/health || exit 1
 
-ENV ARCA_AGENT_CONFIG=/etc/arca-lb/agent.yaml
+# Agent configuration is environment-specific. Mount a config file and pass
+# --config=/path/to/agent.yaml, or set ARCA_AGENT_CONFIG at runtime.
 
 ENTRYPOINT ["/app/arcalb-agent"]

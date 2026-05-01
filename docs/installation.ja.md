@@ -104,6 +104,15 @@ docker build -f deploy/docker/Dockerfile.agent -t arcalb-agent:latest .
 
 `config/manager/` と `config/agent/` のマニフェストを、ご自身のイメージレジストリを参照するように編集してください。
 
+Agent イメージには既定の設定ファイルを含めていません。Kubernetes マニフェスト外で実行する場合は、設定ファイルをマウントして明示的に渡してください：
+
+```bash
+docker run --rm \
+  -v "$PWD/deploy/config/agent.yaml:/etc/arca-lb/agent.yaml:ro" \
+  arcalb-agent:latest \
+  --config=/etc/arca-lb/agent.yaml
+```
+
 ### 方法 3: Kubernetes 外で Agent を実行
 
 Agent は kubeconfig ファイルを使用して、クラスター外から K8s API Server に接続できます：

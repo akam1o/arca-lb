@@ -14,6 +14,7 @@ Mapping:
     Octavia HealthMonitor →  VirtualIP.spec.healthCheck
 """
 
+import json
 import logging
 import threading
 
@@ -30,6 +31,7 @@ CONF = cfg.CONF
 
 PROVISIONING_ACTIVE = "ACTIVE"
 PROVISIONING_ERROR = "ERROR"
+PROVISIONING_DELETED = "DELETED"
 OPERATING_ONLINE = "ONLINE"
 OPERATING_DEGRADED = "DEGRADED"
 OPERATING_OFFLINE = "OFFLINE"
@@ -330,6 +332,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
         backends = spec.get("backends", [])
+        annotations = vip.get("metadata", {}).get("annotations", {})
 
         # Avoid duplicates.
         for b in backends:
@@ -343,10 +346,11 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             })
 
         spec["backends"] = backends
+        self._remember_member_mapping(annotations, m)
         self._refresh_health_check_port(
             spec, pool_id, vip, extra_members=[m]
         )
-        self._k8s.update_virtualip(name, spec)
+        self._k8s.update_virtualip(name, spec, annotations=annotations)
         LOG.info("Added member %s (weight=%d) to VirtualIP %s",
                  address, weight, name)
 
@@ -362,11 +366,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
+        annotations = vip.get("metadata", {}).get("annotations", {})
         backends = [b for b in spec.get("backends", [])
                     if b.get("address") != address]
         spec["backends"] = backends
+        deleted_member_ids = self._forget_member_mapping(annotations, m)
         self._refresh_health_check_port(spec, pool_id, vip)
-        self._k8s.update_virtualip(name, spec)
+        self._k8s.update_virtualip(name, spec, annotations=annotations)
+        self._push_deleted_member_statuses(vip, deleted_member_ids)
         LOG.info("Removed member %s from VirtualIP %s", address, name)
 
     def member_update(self, old_member, new_member):
@@ -382,15 +389,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
+        annotations = vip.get("metadata", {}).get("annotations", {})
         for b in spec.get("backends", []):
             if b.get("address") == address:
                 b["weight"] = min(max(weight, 1), 100)
                 break
 
+        self._remember_member_mapping(annotations, m)
         self._refresh_health_check_port(
             spec, pool_id, vip, extra_members=[m]
         )
-        self._k8s.update_virtualip(name, spec)
+        self._k8s.update_virtualip(name, spec, annotations=annotations)
 
     def member_batch_update(self, pool_id, members):
         """Replace all members of a pool at once."""
@@ -403,21 +412,31 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
+        annotations = vip.get("metadata", {}).get("annotations", {})
+        old_member_map = self._member_map_from_annotations(annotations)
         member_dicts = [
             member.to_dict() if hasattr(member, 'to_dict') else member
             for member in members
         ]
         backends = []
+        new_member_map = {}
         for m in member_dicts:
             backends.append({
                 "address": m.get("address"),
                 "weight": min(max(m.get("weight", 100), 1), 100),
             })
+            member_id = self._member_id(m)
+            if member_id and m.get("address"):
+                new_member_map[member_id] = m.get("address")
         spec["backends"] = backends
+        self._set_member_map_annotation(annotations, new_member_map)
         self._refresh_health_check_port(
             spec, pool_id, vip, extra_members=member_dicts
         )
-        self._k8s.update_virtualip(name, spec)
+        self._k8s.update_virtualip(name, spec, annotations=annotations)
+        self._push_deleted_member_statuses(
+            vip, sorted(set(old_member_map) - set(new_member_map))
+        )
         LOG.info("Batch updated %d members for VirtualIP %s",
                  len(backends), name)
 
@@ -593,6 +612,67 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         vip_address = lb.get("vip_address", "")
         self._remember_loadbalancer_vip(lb_id, vip_address)
         return vip_address
+
+    def _remember_member_mapping(self, annotations, member):
+        member_id = self._member_id(member)
+        address = member.get("address")
+        if not member_id or not address:
+            return
+
+        member_map = self._member_map_from_annotations(annotations)
+        member_map[member_id] = address
+        self._set_member_map_annotation(annotations, member_map)
+
+    def _forget_member_mapping(self, annotations, member):
+        member_map = self._member_map_from_annotations(annotations)
+        member_id = self._member_id(member)
+        address = member.get("address")
+        removed = []
+
+        if member_id and member_id in member_map:
+            removed.append(member_id)
+            member_map.pop(member_id, None)
+        elif address:
+            for mapped_id, mapped_address in list(member_map.items()):
+                if mapped_address == address:
+                    removed.append(mapped_id)
+                    member_map.pop(mapped_id, None)
+
+        if removed:
+            self._set_member_map_annotation(annotations, member_map)
+        return removed
+
+    @staticmethod
+    def _member_id(member):
+        return member.get("member_id") or member.get("id")
+
+    @staticmethod
+    def _member_map_from_annotations(annotations):
+        raw = annotations.get(constants.ANNOTATION_MEMBER_MAP, "")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            LOG.warning("Invalid Octavia member map annotation: %s", raw)
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+
+        member_map = {}
+        for member_id, address in parsed.items():
+            if member_id and address:
+                member_map[str(member_id)] = str(address)
+        return member_map
+
+    @staticmethod
+    def _set_member_map_annotation(annotations, member_map):
+        if member_map:
+            annotations[constants.ANNOTATION_MEMBER_MAP] = json.dumps(
+                member_map, sort_keys=True, separators=(",", ":")
+            )
+        else:
+            annotations.pop(constants.ANNOTATION_MEMBER_MAP, None)
 
     def _build_health_check(self, hm, vip=None):
         """Convert Octavia HealthMonitor dict to VirtualIP healthCheck spec."""
@@ -854,6 +934,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             listener_id=listener_id,
             pool_id=pool_id,
             hm_id=hm_id,
+            member_map=self._member_map_from_annotations(annotations),
+            backend_statuses=status.get("backends", []),
             provisioning_status=provisioning_status,
             operating_status=operating_status,
         )
@@ -891,7 +973,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return entry
 
     def _build_octavia_status_update(self, lb_id, listener_id, pool_id, hm_id,
-                                     provisioning_status, operating_status):
+                                     provisioning_status, operating_status,
+                                     member_map=None, backend_statuses=None,
+                                     member_statuses=None):
         status_update = {
             "loadbalancers": [
                 self._status_entry(
@@ -905,6 +989,15 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             "l7policies": [],
             "l7rules": [],
         }
+        if member_statuses:
+            status_update["members"].extend(member_statuses)
+        elif member_map:
+            status_update["members"].extend(
+                self._build_member_statuses(
+                    member_map, backend_statuses, provisioning_status,
+                    operating_status,
+                )
+            )
         if listener_id:
             status_update["listeners"].append(
                 self._status_entry(
@@ -924,6 +1017,69 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 self._status_entry(hm_id, provisioning_status)
             )
         return status_update
+
+    def _build_member_statuses(self, member_map, backend_statuses,
+                               provisioning_status, fallback_operating_status):
+        backend_health = {}
+        for backend in backend_statuses or []:
+            address = backend.get("address")
+            if address:
+                backend_health[address] = bool(backend.get("healthy"))
+
+        member_statuses = []
+        for member_id, address in sorted(member_map.items()):
+            operating_status = self._member_operating_status(
+                address, backend_health, fallback_operating_status
+            )
+            member_statuses.append(
+                self._status_entry(
+                    member_id, provisioning_status, operating_status
+                )
+            )
+        return member_statuses
+
+    @staticmethod
+    def _member_operating_status(address, backend_health,
+                                 fallback_operating_status):
+        if address in backend_health:
+            return (
+                OPERATING_ONLINE
+                if backend_health[address]
+                else OPERATING_OFFLINE
+            )
+        if fallback_operating_status == OPERATING_ERROR:
+            return OPERATING_ERROR
+        if fallback_operating_status == OPERATING_ONLINE:
+            return OPERATING_ONLINE
+        if fallback_operating_status == OPERATING_OFFLINE:
+            return OPERATING_OFFLINE
+        return fallback_operating_status
+
+    def _push_deleted_member_statuses(self, vip, member_ids):
+        if not member_ids:
+            return
+
+        annotations = vip.get("metadata", {}).get("annotations", {})
+        lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+        if not lb_id:
+            return
+
+        member_statuses = [
+            self._status_entry(member_id, PROVISIONING_DELETED)
+            for member_id in member_ids
+        ]
+        status_update = self._build_octavia_status_update(
+            lb_id=lb_id,
+            listener_id=annotations.get(constants.ANNOTATION_LISTENER_ID),
+            pool_id=annotations.get(constants.ANNOTATION_POOL_ID),
+            hm_id=annotations.get(constants.ANNOTATION_HM_ID),
+            provisioning_status=PROVISIONING_ACTIVE,
+            operating_status=None,
+            member_statuses=member_statuses,
+        )
+        self._push_octavia_status(
+            status_update, vip.get("metadata", {}).get("name")
+        )
 
     def _push_octavia_status(self, status_update, vip_name):
         try:

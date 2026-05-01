@@ -3,6 +3,7 @@
 
 """Unit tests for the ArcaLB Octavia provider driver."""
 
+import json
 import unittest
 from unittest import mock
 
@@ -77,6 +78,7 @@ class TestBuildHealthCheck(unittest.TestCase):
         self.mock_driver_lib = mock_driver_lib_cls.return_value
         self.mock_driver_lib.get_pool.return_value = None
         self.mock_driver_lib.get_member.return_value = None
+        self.mock_driver_lib.update_loadbalancer_status.return_value = None
         self.driver = ArcaLBDriver()
         self.vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",
@@ -216,6 +218,7 @@ class TestDriverLifecycle(unittest.TestCase):
         self.mock_driver_lib = mock_driver_lib_cls.return_value
         self.mock_driver_lib.get_pool.return_value = None
         self.mock_driver_lib.get_member.return_value = None
+        self.mock_driver_lib.update_loadbalancer_status.return_value = None
         self.driver = ArcaLBDriver()
 
     def test_listener_create_creates_virtualip(self):
@@ -302,6 +305,7 @@ class TestDriverLifecycle(unittest.TestCase):
         self.mock_k8s.find_by_pool.return_value = existing_vip
 
         member = FakeObj({
+            "member_id": "member-1111",
             "pool_id": "pool-1111",
             "address": "10.0.1.1",
             "weight": 100,
@@ -312,6 +316,11 @@ class TestDriverLifecycle(unittest.TestCase):
         spec = self.mock_k8s.update_virtualip.call_args[0][1]
         self.assertEqual(len(spec["backends"]), 1)
         self.assertEqual(spec["backends"][0]["address"], "10.0.1.1")
+        annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
+        self.assertEqual(
+            json.loads(annotations[constants.ANNOTATION_MEMBER_MAP]),
+            {"member-1111": "10.0.1.1"},
+        )
 
     def test_member_create_refreshes_existing_health_check_port(self):
         existing_vip = _make_vip(
@@ -351,12 +360,47 @@ class TestDriverLifecycle(unittest.TestCase):
         )
         self.mock_k8s.find_by_pool.return_value = existing_vip
 
-        member = FakeObj({"pool_id": "pool-1111", "address": "10.0.1.1"})
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+        })
         self.driver.member_delete(member)
 
         spec = self.mock_k8s.update_virtualip.call_args[0][1]
         self.assertEqual(len(spec["backends"]), 1)
         self.assertEqual(spec["backends"][0]["address"], "10.0.1.2")
+
+    def test_member_delete_reports_deleted_status(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+        })
+        self.driver.member_delete(member)
+
+        annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
+        self.assertNotIn(constants.ANNOTATION_MEMBER_MAP, annotations)
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["members"], [{
+            "id": "member-1111",
+            "provisioning_status": "DELETED",
+        }])
 
     def test_loadbalancer_delete_removes_all_vips(self):
         vips = [
@@ -526,10 +570,18 @@ class TestDriverLifecycle(unittest.TestCase):
                 constants.ANNOTATION_LISTENER_ID: "listener-1111",
                 constants.ANNOTATION_POOL_ID: "pool-1111",
                 constants.ANNOTATION_HM_ID: "hm-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                    "member-2222": "10.0.1.2",
+                }),
             },
             status={
                 "healthyBackends": 2,
                 "totalBackends": 2,
+                "backends": [
+                    {"address": "10.0.1.1", "healthy": True},
+                    {"address": "10.0.1.2", "healthy": True},
+                ],
                 "conditions": [
                     {"type": "Ready", "status": "True"},
                 ],
@@ -554,7 +606,18 @@ class TestDriverLifecycle(unittest.TestCase):
                 "provisioning_status": "ACTIVE",
                 "operating_status": "ONLINE",
             }],
-            "members": [],
+            "members": [
+                {
+                    "id": "member-1111",
+                    "provisioning_status": "ACTIVE",
+                    "operating_status": "ONLINE",
+                },
+                {
+                    "id": "member-2222",
+                    "provisioning_status": "ACTIVE",
+                    "operating_status": "ONLINE",
+                },
+            ],
             "healthmonitors": [{
                 "id": "hm-1111",
                 "provisioning_status": "ACTIVE",
@@ -570,10 +633,18 @@ class TestDriverLifecycle(unittest.TestCase):
             annotations={
                 constants.ANNOTATION_LB_ID: "lb-1111",
                 constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                    "member-2222": "10.0.1.2",
+                }),
             },
             status={
                 "healthyBackends": 1,
                 "totalBackends": 2,
+                "backends": [
+                    {"address": "10.0.1.1", "healthy": True},
+                    {"address": "10.0.1.2", "healthy": False},
+                ],
                 "conditions": [
                     {"type": "Ready", "status": "True"},
                 ],
@@ -589,6 +660,18 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(
             status["loadbalancers"][0]["operating_status"], "DEGRADED"
         )
+        self.assertEqual(status["members"], [
+            {
+                "id": "member-1111",
+                "provisioning_status": "ACTIVE",
+                "operating_status": "ONLINE",
+            },
+            {
+                "id": "member-2222",
+                "provisioning_status": "ACTIVE",
+                "operating_status": "OFFLINE",
+            },
+        ])
 
     def test_virtualip_status_change_reports_error_when_not_ready(self):
         vip = _make_vip(

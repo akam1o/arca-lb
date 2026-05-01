@@ -250,11 +250,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     LOG.exception("Failed to delete VirtualIP %s after "
                                   "listener_create restore failure", name)
                 try:
-                    self._push_resource_error_status(
-                        name,
-                        lb_id=lb_id,
-                        error_listener_ids=[listener_id],
-                        error_pool_ids=[pool_id],
+                    self._push_pool_restore_error_status(
+                        name, lb_id, listener_id, pool_id
                     )
                 except Exception:
                     LOG.exception("Failed to push Octavia ERROR status for "
@@ -329,7 +326,23 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if admin_state is False:
             spec["backends"] = []
         elif admin_state is True or should_restore_pool:
-            if self._restore_virtualip_backends([vip]):
+            try:
+                restored = self._restore_virtualip_backends([vip])
+            except Exception:
+                error_pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
+                LOG.exception(
+                    "Failed to restore pool %s while updating listener %s",
+                    error_pool_id, listener_id,
+                )
+                try:
+                    self._push_pool_restore_error_status(
+                        name, lb_id, listener_id, error_pool_id
+                    )
+                except Exception:
+                    LOG.exception("Failed to push Octavia ERROR status for "
+                                  "listener %s", listener_id)
+                raise
+            if restored:
                 self._push_resource_active_status(
                     name,
                     lb_id=lb_id,
@@ -1051,6 +1064,40 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             self._k8s.update_virtualip(name, spec, annotations=annotations)
             restored += 1
         return restored
+
+    def _push_pool_restore_error_status(self, vip_name, lb_id, listener_id,
+                                        pool_id):
+        member_ids, hm_ids = self._pool_dependent_resource_ids(pool_id)
+        self._push_resource_error_status(
+            vip_name,
+            lb_id=lb_id,
+            error_listener_ids=[listener_id],
+            error_pool_ids=[pool_id],
+            error_hm_ids=hm_ids,
+            error_member_ids=member_ids,
+        )
+
+    def _pool_dependent_resource_ids(self, pool_id):
+        pool = self._pool_from_octavia(pool_id)
+
+        member_ids = []
+        for member in self._pool_members(pool_id, pool=pool):
+            member_id = self._object_id(member, "member_id", "id")
+            if member_id:
+                member_ids.append(member_id)
+
+        hm_id = ""
+        if "healthmonitor" in pool:
+            hm_id = self._object_id(
+                pool.get("healthmonitor"), "healthmonitor_id", "id"
+            )
+        if not hm_id:
+            hm_id = (
+                pool.get("healthmonitor_id") or
+                pool.get("health_monitor_id")
+            )
+
+        return self._clean_ids(member_ids), self._clean_ids([hm_id])
 
     def _resolved_pool_members(self, pool_id, pool=None):
         members = []

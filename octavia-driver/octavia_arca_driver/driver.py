@@ -92,6 +92,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
 
         self._remember_loadbalancer_vip(lb_id, vip_address)
+        self._push_loadbalancer_status(
+            lb_id, PROVISIONING_ACTIVE, OPERATING_OFFLINE
+        )
         LOG.info("Loadbalancer %s created with VIP %s (deferred until listener)",
                  lb_id, vip_address)
 
@@ -100,10 +103,22 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         lb = loadbalancer.to_dict() if hasattr(loadbalancer, 'to_dict') else loadbalancer
         lb_id = lb.get("loadbalancer_id")
         vips = self._k8s.find_by_loadbalancer(lb_id)
+        listener_ids, pool_ids, hm_ids, member_ids = (
+            self._octavia_ids_from_virtualips(vips)
+        )
         for vip in vips:
             name = vip["metadata"]["name"]
             self._k8s.delete_virtualip(name)
         self._forget_loadbalancer_vip(lb_id)
+        self._push_resource_delete_status(
+            f"loadbalancer/{lb_id}",
+            lb_id=lb_id,
+            delete_loadbalancer=True,
+            deleted_listener_ids=listener_ids,
+            deleted_pool_ids=pool_ids,
+            deleted_hm_ids=hm_ids,
+            deleted_member_ids=member_ids,
+        )
         LOG.info("Deleted %d VirtualIP(s) for loadbalancer %s",
                  len(vips), lb_id)
 
@@ -210,11 +225,31 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         """Delete the VirtualIP CRD for this listener."""
         lst = listener.to_dict() if hasattr(listener, 'to_dict') else listener
         listener_id = lst.get("listener_id")
+        lb_id = lst.get("loadbalancer_id")
         vip = self._k8s.find_by_listener(listener_id)
         if vip:
+            annotations = vip.get("metadata", {}).get("annotations", {})
+            lb_id = lb_id or annotations.get(constants.ANNOTATION_LB_ID)
+            pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
+            hm_id = annotations.get(constants.ANNOTATION_HM_ID)
+            member_ids = sorted(self._member_map_from_annotations(annotations))
             name = vip["metadata"]["name"]
             self._k8s.delete_virtualip(name)
+            self._push_resource_delete_status(
+                name,
+                lb_id=lb_id,
+                deleted_listener_ids=[listener_id],
+                deleted_pool_ids=[pool_id],
+                deleted_hm_ids=[hm_id],
+                deleted_member_ids=member_ids,
+            )
             LOG.info("Deleted VirtualIP %s for listener %s", name, listener_id)
+        else:
+            self._push_resource_delete_status(
+                f"listener/{listener_id}",
+                lb_id=lb_id,
+                deleted_listener_ids=[listener_id],
+            )
 
     def listener_update(self, old_listener, new_listener):
         """Update VirtualIP for an updated listener."""
@@ -283,6 +318,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         pool_id = p.get("pool_id")
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
+            self._push_resource_delete_status(
+                f"pool/{pool_id}",
+                lb_id=p.get("loadbalancer_id"),
+                active_listener_ids=[p.get("listener_id")],
+                deleted_pool_ids=[pool_id],
+            )
             return
 
         name = vip["metadata"]["name"]
@@ -291,10 +332,25 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         spec.pop("healthCheck", None)
 
         annotations = vip.get("metadata", {}).get("annotations", {})
+        lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+        listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
+        hm_id = annotations.get(constants.ANNOTATION_HM_ID)
+        deleted_member_ids = sorted(
+            self._member_map_from_annotations(annotations)
+        )
         annotations.pop(constants.ANNOTATION_POOL_ID, None)
         annotations.pop(constants.ANNOTATION_HM_ID, None)
+        annotations.pop(constants.ANNOTATION_MEMBER_MAP, None)
 
         self._k8s.update_virtualip(name, spec, annotations=annotations)
+        self._push_resource_delete_status(
+            name,
+            lb_id=lb_id,
+            active_listener_ids=[listener_id],
+            deleted_pool_ids=[pool_id],
+            deleted_hm_ids=[hm_id],
+            deleted_member_ids=deleted_member_ids,
+        )
         LOG.info("Pool %s removed from VirtualIP %s", pool_id, name)
 
     def pool_update(self, old_pool, new_pool):
@@ -471,9 +527,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         """Remove the health check from the VirtualIP."""
         hm = health_monitor.to_dict() if hasattr(health_monitor, 'to_dict') else health_monitor
         pool_id = hm.get("pool_id")
+        hm_id = hm.get("healthmonitor_id")
 
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
+            self._push_resource_delete_status(
+                f"healthmonitor/{hm_id}",
+                deleted_hm_ids=[hm_id],
+            )
             return
 
         name = vip["metadata"]["name"]
@@ -481,9 +542,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         spec.pop("healthCheck", None)
 
         annotations = vip.get("metadata", {}).get("annotations", {})
+        lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+        listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
+        pool_id = annotations.get(constants.ANNOTATION_POOL_ID) or pool_id
+        hm_id = annotations.get(constants.ANNOTATION_HM_ID) or hm_id
         annotations.pop(constants.ANNOTATION_HM_ID, None)
 
         self._k8s.update_virtualip(name, spec, annotations=annotations)
+        self._push_resource_delete_status(
+            name,
+            lb_id=lb_id,
+            active_listener_ids=[listener_id],
+            active_pool_ids=[pool_id],
+            deleted_hm_ids=[hm_id],
+        )
         LOG.info("Health monitor removed from VirtualIP %s", name)
 
     def health_monitor_update(self, old_hm, new_hm):
@@ -1019,6 +1091,124 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if operating_status is not None:
             entry["operating_status"] = operating_status
         return entry
+
+    @staticmethod
+    def _empty_octavia_status_update():
+        return {
+            "loadbalancers": [],
+            "listeners": [],
+            "pools": [],
+            "members": [],
+            "healthmonitors": [],
+            "l7policies": [],
+            "l7rules": [],
+        }
+
+    @staticmethod
+    def _clean_ids(object_ids):
+        if not object_ids:
+            return []
+
+        unique = []
+        seen = set()
+        for object_id in object_ids:
+            if not object_id or object_id in seen:
+                continue
+            unique.append(object_id)
+            seen.add(object_id)
+        return unique
+
+    def _extend_status_entries(self, status_update, collection, object_ids,
+                               provisioning_status, operating_status=None):
+        for object_id in self._clean_ids(object_ids):
+            status_update[collection].append(
+                self._status_entry(
+                    object_id, provisioning_status, operating_status
+                )
+            )
+
+    def _push_loadbalancer_status(self, lb_id, provisioning_status,
+                                  operating_status=None):
+        if not lb_id:
+            return
+
+        status_update = self._empty_octavia_status_update()
+        status_update["loadbalancers"].append(
+            self._status_entry(
+                lb_id, provisioning_status, operating_status
+            )
+        )
+        self._push_octavia_status(status_update, f"loadbalancer/{lb_id}")
+
+    def _push_resource_delete_status(self, vip_name, lb_id=None,
+                                     delete_loadbalancer=False,
+                                     active_listener_ids=None,
+                                     active_pool_ids=None,
+                                     deleted_listener_ids=None,
+                                     deleted_pool_ids=None,
+                                     deleted_hm_ids=None,
+                                     deleted_member_ids=None):
+        status_update = self._empty_octavia_status_update()
+
+        if lb_id:
+            lb_status = (
+                PROVISIONING_DELETED
+                if delete_loadbalancer
+                else PROVISIONING_ACTIVE
+            )
+            status_update["loadbalancers"].append(
+                self._status_entry(lb_id, lb_status)
+            )
+
+        self._extend_status_entries(
+            status_update, "listeners", active_listener_ids,
+            PROVISIONING_ACTIVE,
+        )
+        self._extend_status_entries(
+            status_update, "pools", active_pool_ids,
+            PROVISIONING_ACTIVE,
+        )
+        self._extend_status_entries(
+            status_update, "listeners", deleted_listener_ids,
+            PROVISIONING_DELETED,
+        )
+        self._extend_status_entries(
+            status_update, "pools", deleted_pool_ids,
+            PROVISIONING_DELETED,
+        )
+        self._extend_status_entries(
+            status_update, "healthmonitors", deleted_hm_ids,
+            PROVISIONING_DELETED,
+        )
+        self._extend_status_entries(
+            status_update, "members", deleted_member_ids,
+            PROVISIONING_DELETED,
+        )
+
+        if any(status_update.values()):
+            self._push_octavia_status(status_update, vip_name)
+
+    def _octavia_ids_from_virtualips(self, vips):
+        listener_ids = []
+        pool_ids = []
+        hm_ids = []
+        member_ids = []
+
+        for vip in vips:
+            annotations = vip.get("metadata", {}).get("annotations", {})
+            listener_ids.append(annotations.get(constants.ANNOTATION_LISTENER_ID))
+            pool_ids.append(annotations.get(constants.ANNOTATION_POOL_ID))
+            hm_ids.append(annotations.get(constants.ANNOTATION_HM_ID))
+            member_ids.extend(
+                self._member_map_from_annotations(annotations).keys()
+            )
+
+        return (
+            self._clean_ids(listener_ids),
+            self._clean_ids(pool_ids),
+            self._clean_ids(hm_ids),
+            self._clean_ids(member_ids),
+        )
 
     def _build_octavia_status_update(self, lb_id, listener_id, pool_id, hm_id,
                                      provisioning_status, operating_status,

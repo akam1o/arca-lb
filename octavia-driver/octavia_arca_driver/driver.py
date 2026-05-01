@@ -18,7 +18,6 @@ import logging
 import threading
 
 from oslo_config import cfg
-from octavia_lib.api.drivers import data_models as dm
 from octavia_lib.api.drivers import driver_lib
 from octavia_lib.api.drivers import exceptions as driver_exc
 from octavia_lib.api.drivers import provider_base as driver_base
@@ -344,6 +343,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             })
 
         spec["backends"] = backends
+        self._refresh_health_check_port(
+            spec, pool_id, vip, extra_members=[m]
+        )
         self._k8s.update_virtualip(name, spec)
         LOG.info("Added member %s (weight=%d) to VirtualIP %s",
                  address, weight, name)
@@ -363,6 +365,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         backends = [b for b in spec.get("backends", [])
                     if b.get("address") != address]
         spec["backends"] = backends
+        self._refresh_health_check_port(spec, pool_id, vip)
         self._k8s.update_virtualip(name, spec)
         LOG.info("Removed member %s from VirtualIP %s", address, name)
 
@@ -384,6 +387,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 b["weight"] = min(max(weight, 1), 100)
                 break
 
+        self._refresh_health_check_port(
+            spec, pool_id, vip, extra_members=[m]
+        )
         self._k8s.update_virtualip(name, spec)
 
     def member_batch_update(self, pool_id, members):
@@ -397,14 +403,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
+        member_dicts = [
+            member.to_dict() if hasattr(member, 'to_dict') else member
+            for member in members
+        ]
         backends = []
-        for member in members:
-            m = member.to_dict() if hasattr(member, 'to_dict') else member
+        for m in member_dicts:
             backends.append({
                 "address": m.get("address"),
                 "weight": min(max(m.get("weight", 100), 1), 100),
             })
         spec["backends"] = backends
+        self._refresh_health_check_port(
+            spec, pool_id, vip, extra_members=member_dicts
+        )
         self._k8s.update_virtualip(name, spec)
         LOG.info("Batch updated %d members for VirtualIP %s",
                  len(backends), name)
@@ -428,7 +440,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
-        spec["healthCheck"] = self._build_health_check(hm)
+        spec["healthCheck"] = self._build_health_check(hm, vip)
 
         annotations = vip.get("metadata", {}).get("annotations", {})
         annotations[constants.ANNOTATION_HM_ID] = hm_id
@@ -466,7 +478,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
-        spec["healthCheck"] = self._build_health_check(hm)
+        spec["healthCheck"] = self._build_health_check(hm, vip)
         self._k8s.update_virtualip(name, spec)
 
     # ------------------------------------------------------------------
@@ -582,7 +594,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._remember_loadbalancer_vip(lb_id, vip_address)
         return vip_address
 
-    def _build_health_check(self, hm):
+    def _build_health_check(self, hm, vip=None):
         """Convert Octavia HealthMonitor dict to VirtualIP healthCheck spec."""
         hm_type = hm.get("type", "TCP")
         mapped_type = constants.HEALTH_MONITOR_TYPE_MAP.get(
@@ -601,12 +613,13 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             http_method = hm.get("http_method", "GET")
             url_path = hm.get("url_path", "/")
             expected_codes = hm.get("expected_codes", "200")
+            port = self._resolve_health_check_port(hm, vip)
 
             # Parse expected_codes string (e.g., "200,201,301-302") to list.
             codes = self._parse_expected_codes(expected_codes)
 
             hc["http"] = {
-                "port": hm.get("admin_state_port", 80),
+                "port": port,
                 "path": url_path,
                 "method": http_method if http_method in ("GET", "HEAD", "POST") else "GET",
                 "expectedCodes": codes,
@@ -615,11 +628,151 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             if host:
                 hc["http"]["host"] = host
         elif mapped_type == "tcp":
+            port = self._resolve_health_check_port(hm, vip)
             hc["tcp"] = {
-                "port": hm.get("admin_state_port", 0),
+                "port": port,
             }
 
         return hc
+
+    def _refresh_health_check_port(self, spec, pool_id, vip,
+                                   extra_members=None):
+        """Keep an existing health check pointed at Octavia member ports."""
+        hc = spec.get("healthCheck")
+        if not hc:
+            return
+
+        hc_type = hc.get("type")
+        if hc_type not in ("http", "https", "tcp"):
+            return
+
+        port = self._resolve_health_check_port(
+            {"pool_id": pool_id}, vip, extra_members=extra_members
+        )
+        if hc_type in ("http", "https"):
+            hc.setdefault("http", {})["port"] = port
+        else:
+            hc.setdefault("tcp", {})["port"] = port
+
+    def _resolve_health_check_port(self, hm, vip=None, extra_members=None):
+        """Resolve the single probe port representable by VirtualIP.
+
+        Octavia health monitors do not carry their own port. The probe port is
+        member.monitor_port when set, otherwise member.protocol_port. ArcaLB's
+        current CRD has one health check port per VIP, so mixed member ports are
+        rejected instead of silently probing the wrong target.
+        """
+        pool_id = hm.get("pool_id")
+        member_ports = self._member_probe_ports(pool_id, extra_members)
+        if len(member_ports) == 1:
+            return next(iter(member_ports))
+        if len(member_ports) > 1:
+            ports = ", ".join(str(p) for p in sorted(member_ports))
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "ArcaLB health checks require all pool members to use "
+                    "the same monitor/protocol port."
+                ),
+                operator_fault_string=(
+                    f"Pool {pool_id} has multiple health check ports: {ports}"
+                ),
+            )
+
+        vip_port = self._vip_port(vip)
+        if vip_port is not None:
+            return vip_port
+
+        raise driver_exc.UnsupportedOptionError(
+            user_fault_string="Cannot determine health monitor probe port.",
+            operator_fault_string=(
+                f"No member monitor/protocol port or listener port found for "
+                f"pool {pool_id}"
+            ),
+        )
+
+    def _member_probe_ports(self, pool_id, extra_members=None):
+        ports = set()
+        for member in self._pool_members(pool_id, extra_members):
+            port = self._member_probe_port(member)
+            if port is not None:
+                ports.add(port)
+        return ports
+
+    def _pool_members(self, pool_id, extra_members=None):
+        members = []
+        if extra_members:
+            members.extend(extra_members)
+
+        pool = self._pool_from_octavia(pool_id)
+        pool_members = pool.get("members") if pool else None
+        if pool_members:
+            members.extend(pool_members)
+
+        return members
+
+    def _member_probe_port(self, member):
+        if isinstance(member, str):
+            member = self._member_from_octavia(member)
+        else:
+            member = self._as_dict(member)
+
+        member_id = member.get("member_id") or member.get("id")
+        if (
+            self._valid_port(member.get("monitor_port")) is None and
+            self._valid_port(member.get("protocol_port")) is None and
+            member_id
+        ):
+            member = self._member_from_octavia(member_id)
+
+        return (
+            self._valid_port(member.get("monitor_port")) or
+            self._valid_port(member.get("protocol_port"))
+        )
+
+    def _pool_from_octavia(self, pool_id):
+        if not pool_id:
+            return {}
+        try:
+            return self._as_dict(self._driver_lib.get_pool(pool_id))
+        except Exception:
+            LOG.exception("Failed to fetch Octavia pool %s", pool_id)
+            return {}
+
+    def _member_from_octavia(self, member_id):
+        if not member_id:
+            return {}
+        try:
+            return self._as_dict(self._driver_lib.get_member(member_id))
+        except Exception:
+            LOG.exception("Failed to fetch Octavia member %s", member_id)
+            return {}
+
+    @staticmethod
+    def _as_dict(value):
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "to_dict"):
+            data = value.to_dict()
+            if isinstance(data, dict):
+                return data
+        return {}
+
+    @staticmethod
+    def _valid_port(value):
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            return None
+        if 1 <= port <= 65535:
+            return port
+        return None
+
+    @classmethod
+    def _vip_port(cls, vip):
+        if not vip:
+            return None
+        spec = vip.get("spec", {}) if isinstance(vip, dict) else {}
+        return cls._valid_port(spec.get("port"))
 
     @staticmethod
     def _parse_expected_codes(codes_str):

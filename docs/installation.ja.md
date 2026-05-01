@@ -14,7 +14,7 @@
 
 - **Kubernetes**: 1.28 以上（VirtualIP CRD の監視用）
 - **VPP**: 24.10 (推奨、実行時)
-- **FRRouting**: 8.0 以上（実行時、BGP 経路広報を使用する場合）
+- **FRRouting**: 8.0 以上（ノード上の実行時、BGP 経路広報を使用する場合）
 
 ### ビルドツール
 
@@ -60,6 +60,8 @@ kubectl get pods -l app.kubernetes.io/name=arca-lb-operator
 ```
 
 #### 4. Agent のデプロイ (DaemonSet)
+
+Agent DaemonSet を適用する前に、すべての LB ノードへ FRR をインストールして起動してください。DaemonSet はノードの `/run/frr` をマウントし、`vtysh` 経由で VIP の static route を追加・削除します。BGP peer と static route の再配送は、ノード上の FRR 設定で行います。
 
 ```bash
 kubectl apply -f config/agent/

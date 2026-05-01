@@ -29,6 +29,8 @@ data:
         retained_vip_tuning_drift_policy: rolling_recreate
         retained_vip_tuning_drift_drain: 30s
     routing:
+      # Requires FRR to be installed and running on each scheduled node.
+      # The DaemonSet mounts the host /run/frr socket directory for vtysh.
       enabled: true
       type: frr
       vtyshPath: /usr/bin/vtysh
@@ -71,8 +73,15 @@ spec:
       containers:
         - name: agent
           image: arcalb-agent:latest
-          args:
-            - --config=/etc/arca-lb/agent.yaml
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              until /usr/bin/vtysh -c "show version" >/dev/null 2>&1; do
+                echo "waiting for node-local FRR vty socket"
+                sleep 1
+              done
+              exec /app/arcalb-agent --config=/etc/arca-lb/agent.yaml
           env:
             - name: ARCA_AGENT_ID
               valueFrom:
@@ -88,12 +97,22 @@ spec:
               port: metrics
             initialDelaySeconds: 10
             periodSeconds: 15
+          startupProbe:
+            exec:
+              command:
+                - /usr/bin/vtysh
+                - -c
+                - show version
+            failureThreshold: 12
+            periodSeconds: 5
           volumeMounts:
             - name: config
               mountPath: /etc/arca-lb
               readOnly: true
             - name: vpp-socket
               mountPath: /run/vpp
+            - name: frr-runtime
+              mountPath: /run/frr
             - name: agent-state
               mountPath: /var/lib/arca-lb
           resources:
@@ -104,7 +123,7 @@ spec:
               cpu: 200m
               memory: 128Mi
           securityContext:
-            privileged: true  # Required for VPP and FRR access
+            privileged: true
       volumes:
         - name: config
           configMap:
@@ -113,6 +132,11 @@ spec:
           hostPath:
             path: /run/vpp
             type: DirectoryOrCreate
+        - name: frr-runtime
+          # Node-local FRR must create this directory before the agent starts.
+          hostPath:
+            path: /run/frr
+            type: Directory
         - name: agent-state
           hostPath:
             path: /var/lib/arca-lb

@@ -76,6 +76,11 @@ log:
 
 ### Routing settings
 
+When `routing.type` is `frr`, the Agent uses `vtysh` to manage static VIP
+routes. In Kubernetes deployments, FRR is expected to run on the node and expose
+its runtime socket directory at `/run/frr`; the Agent does not start FRR or
+configure BGP peers.
+
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `routing.enabled` | Enable BGP route management | `false` |

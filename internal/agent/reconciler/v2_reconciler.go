@@ -24,6 +24,23 @@ import (
 
 var tracer = otel.Tracer("arca-lb/agent/reconciler")
 
+const (
+	// TuningDriftPolicyPreserve keeps retained dataplane state even when
+	// tuning-only attributes differ from the desired configuration.
+	TuningDriftPolicyPreserve = "preserve"
+
+	// TuningDriftPolicyRollingRecreate withdraws the local route, waits for
+	// traffic to drain, then recreates the VIP with the desired tuning.
+	TuningDriftPolicyRollingRecreate = "rolling_recreate"
+)
+
+// TuningDriftConfig controls repair of forwarding-compatible retained VIPs
+// that differ only in dataplane tuning.
+type TuningDriftConfig struct {
+	Policy        string
+	DrainDuration time.Duration
+}
+
 // HealthTracker provides the current health state of backends.
 type HealthTracker interface {
 	// IsHealthy returns whether a backend is considered healthy.
@@ -47,6 +64,7 @@ type Manager struct {
 	logger        *slog.Logger
 
 	safetyInterval time.Duration
+	tuningDrift    TuningDriftConfig
 
 	mu     sync.RWMutex
 	vips   map[string]*vipReconciler // key: namespace/name
@@ -73,6 +91,7 @@ func NewManager(
 		healthTracker:  ht,
 		logger:         logger,
 		safetyInterval: safetyInterval,
+		tuningDrift:    normalizeTuningDriftConfig(TuningDriftConfig{}),
 		vips:           make(map[string]*vipReconciler),
 	}
 }
@@ -86,6 +105,30 @@ func (m *Manager) SetStatusUpdater(updater StatusUpdater) {
 	for _, vr := range m.vips {
 		vr.statusUpdater = updater
 	}
+}
+
+// SetTuningDriftConfig updates retained VIP tuning drift handling for new and
+// existing reconcilers.
+func (m *Manager) SetTuningDriftConfig(cfg TuningDriftConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.tuningDrift = normalizeTuningDriftConfig(cfg)
+	for _, vr := range m.vips {
+		vr.tuningDrift = m.tuningDrift
+	}
+}
+
+func normalizeTuningDriftConfig(cfg TuningDriftConfig) TuningDriftConfig {
+	switch cfg.Policy {
+	case TuningDriftPolicyPreserve, TuningDriftPolicyRollingRecreate:
+	default:
+		cfg.Policy = TuningDriftPolicyRollingRecreate
+	}
+	if cfg.DrainDuration == 0 {
+		cfg.DrainDuration = 30 * time.Second
+	}
+	return cfg
 }
 
 // Start starts the manager.
@@ -123,7 +166,7 @@ func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 
 	vr, exists := m.vips[key]
 	if !exists {
-		vr = newVIPReconciler(key, m.dp, m.router, m.store, m.healthTracker, m.statusUpdater, m.safetyInterval, m.logger, m.onVIPReconcilerStopped)
+		vr = newVIPReconciler(key, m.dp, m.router, m.store, m.healthTracker, m.statusUpdater, m.safetyInterval, m.tuningDrift, m.logger, m.onVIPReconcilerStopped)
 		m.vips[key] = vr
 		go vr.run(m.ctx)
 	}
@@ -200,6 +243,8 @@ type vipReconciler struct {
 	safetyInterval time.Duration
 	logger         *slog.Logger
 
+	tuningDrift TuningDriftConfig
+
 	eventCh     chan vipEvent
 	reconcileCh chan struct{}
 	stopCh      chan struct{}
@@ -218,6 +263,7 @@ func newVIPReconciler(
 	ht HealthTracker,
 	statusUpdater StatusUpdater,
 	safetyInterval time.Duration,
+	tuningDrift TuningDriftConfig,
 	logger *slog.Logger,
 	onStopped func(key string, stopped *vipReconciler),
 ) *vipReconciler {
@@ -229,6 +275,7 @@ func newVIPReconciler(
 		healthTracker:  ht,
 		statusUpdater:  statusUpdater,
 		safetyInterval: safetyInterval,
+		tuningDrift:    normalizeTuningDriftConfig(tuningDrift),
 		logger:         logger.With("vip", key),
 		eventCh:        make(chan vipEvent, 8),
 		reconcileCh:    make(chan struct{}, 1),
@@ -345,12 +392,21 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 		// No health check → all backends are healthy
 		healthyBackends = vip.Spec.Backends
 	}
+	hasHealthy := len(healthyBackends) > 0
 
 	// Apply to data plane
 	if err := vr.dp.ApplyVIP(ctx, vip, healthyBackends); err != nil {
 		vr.logger.Error("failed to apply VIP to data plane", "error", err)
 		span.RecordError(err)
 		return
+	}
+
+	if drifts := dataplaneTuningDrifts(vr.dp, vr.key); len(drifts) > 0 {
+		if err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts); err != nil {
+			vr.logger.Error("failed to repair retained VIP tuning drift", "error", err, "drifts", drifts)
+			span.RecordError(err)
+			return
+		}
 	}
 
 	if vr.statusUpdater != nil {
@@ -361,7 +417,6 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	}
 
 	// Manage BGP route
-	hasHealthy := len(healthyBackends) > 0
 	if hasHealthy {
 		if err := vr.router.AnnounceVIP(ctx, vip.Spec.Address); err != nil {
 			vr.logger.Error("failed to announce route", "error", err)
@@ -388,6 +443,63 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 		"healthy", len(healthyBackends),
 		"total", len(vip.Spec.Backends),
 		"route_announced", hasHealthy)
+}
+
+func dataplaneTuningDrifts(dp dataplane.DataPlane, vipKey string) []dataplane.VIPTuningDrift {
+	reporter, ok := dp.(dataplane.TuningDriftReporter)
+	if !ok {
+		return nil
+	}
+	return reporter.TuningDrifts(vipKey)
+}
+
+func (vr *vipReconciler) repairTuningDrift(
+	ctx context.Context,
+	vip *v1alpha1.VirtualIP,
+	healthyBackends []v1alpha1.BackendSpec,
+	hasHealthy bool,
+	drifts []dataplane.VIPTuningDrift,
+) error {
+	cfg := normalizeTuningDriftConfig(vr.tuningDrift)
+	if cfg.Policy == TuningDriftPolicyPreserve {
+		vr.logger.Warn("retained VIP tuning drift preserved", "drifts", drifts)
+		return nil
+	}
+
+	recreator, ok := vr.dp.(dataplane.VIPRecreator)
+	if !ok {
+		return fmt.Errorf("dataplane does not support VIP recreation")
+	}
+
+	vr.logger.Info("repairing retained VIP tuning drift", "policy", cfg.Policy, "drain", cfg.DrainDuration, "drifts", drifts)
+	if err := vr.router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
+		return fmt.Errorf("failed to withdraw route before VIP recreate: %w", err)
+	}
+	if hasHealthy {
+		if err := sleepContext(ctx, cfg.DrainDuration); err != nil {
+			return err
+		}
+	}
+	if err := recreator.RecreateVIP(ctx, vip, healthyBackends); err != nil {
+		return fmt.Errorf("failed to recreate VIP: %w", err)
+	}
+	return nil
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.VirtualIP) {

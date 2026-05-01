@@ -20,7 +20,9 @@ kubernetes:
 dataplane:
   type: "vpp"              # "vpp" or "noop"
   vpp:
-    socketPath: "/run/vpp/api.sock"
+    socket_path: "/run/vpp/api.sock"
+    retained_vip_tuning_drift_policy: "rolling_recreate"
+    retained_vip_tuning_drift_drain: "30s"
 
 routing:
   enabled: true
@@ -68,7 +70,9 @@ log:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `dataplane.type` | Data plane backend (`vpp` or `noop`) | `vpp` |
-| `dataplane.vpp.socketPath` | VPP API socket path | `/run/vpp/api.sock` |
+| `dataplane.vpp.socket_path` | VPP API socket path | `/run/vpp/api.sock` |
+| `dataplane.vpp.retained_vip_tuning_drift_policy` | Handling for retained VIP tuning drift (`rolling_recreate` or `preserve`) | `rolling_recreate` |
+| `dataplane.vpp.retained_vip_tuning_drift_drain` | Drain time before recreating a retained VIP with tuning drift | `30s` |
 
 ### Routing settings
 

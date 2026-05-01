@@ -143,6 +143,7 @@ func main() {
 	// Create reconciler manager
 	reconMgr := reconciler.NewManager(dp, router, st, hcEngine, cfg.Agent.ReconcileInterval, logger)
 	reconMgr.SetStatusUpdater(statusUpdater)
+	reconMgr.SetTuningDriftConfig(retainedVIPTuningDriftConfig(cfg.DataPlane.VPP, logger))
 
 	// Wire health change callback: when health changes, trigger reconcile
 	hcCallback := func(vipKey, backendAddr string, oldState, newState healthcheck.V2BackendState) {
@@ -423,6 +424,53 @@ func uint8PtrEqual(a, b *uint8) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func retainedVIPTuningDriftConfig(vpp map[string]interface{}, logger *slog.Logger) reconciler.TuningDriftConfig {
+	cfg := reconciler.TuningDriftConfig{}
+	if vpp == nil {
+		return cfg
+	}
+
+	if policy, ok := vpp["retained_vip_tuning_drift_policy"].(string); ok && policy != "" {
+		cfg.Policy = policy
+	}
+
+	for _, key := range []string{"retained_vip_tuning_drift_drain", "rolling_recreate_drain"} {
+		value, ok := vpp[key]
+		if !ok {
+			continue
+		}
+		drain, err := durationSetting(value)
+		if err != nil {
+			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", err)
+			continue
+		}
+		cfg.DrainDuration = drain
+		break
+	}
+
+	return cfg
+}
+
+func durationSetting(value interface{}) (time.Duration, error) {
+	switch v := value.(type) {
+	case time.Duration:
+		return v, nil
+	case string:
+		if v == "" {
+			return 0, nil
+		}
+		return time.ParseDuration(v)
+	case int:
+		return time.Duration(v) * time.Second, nil
+	case int64:
+		return time.Duration(v) * time.Second, nil
+	case float64:
+		return time.Duration(v * float64(time.Second)), nil
+	default:
+		return 0, fmt.Errorf("unsupported duration type %T", value)
+	}
 }
 
 func setupLogger(cfg agentconfig.LogSettings) *slog.Logger {

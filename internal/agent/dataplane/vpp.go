@@ -71,6 +71,8 @@ type VPP struct {
 
 	mu   sync.RWMutex
 	vips map[string]*vipEntry // key: namespace/name
+
+	tuningDrifts map[string][]VIPTuningDrift // key: namespace/name
 }
 
 type vipEntry struct {
@@ -98,10 +100,11 @@ func NewVPP(cfg map[string]interface{}) (*VPP, error) {
 	}
 
 	return &VPP{
-		config: config,
-		conn:   conn,
-		logger: slog.Default().With("component", "dataplane-vpp"),
-		vips:   make(map[string]*vipEntry),
+		config:       config,
+		conn:         conn,
+		logger:       slog.Default().With("component", "dataplane-vpp"),
+		vips:         make(map[string]*vipEntry),
+		tuningDrifts: make(map[string][]VIPTuningDrift),
 	}, nil
 }
 
@@ -130,6 +133,7 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 				return fmt.Errorf("failed to delete existing VIP for update: %w", err)
 			}
 			delete(v.vips, key)
+			v.clearTuningDriftsLocked(key)
 			exists = false
 		}
 	}
@@ -149,6 +153,7 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 				backends: make(map[string]v1alpha1.BackendSpec),
 			}
 			v.vips[key] = existing
+			v.clearTuningDriftsLocked(key)
 		} else {
 			existing = v.vips[key]
 		}
@@ -173,6 +178,7 @@ func (v *VPP) RemoveVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 			return fmt.Errorf("failed to inspect VIP before remove: %w", err)
 		}
 		if !exists {
+			v.clearTuningDriftsLocked(key)
 			return nil // already removed
 		}
 	}
@@ -182,6 +188,7 @@ func (v *VPP) RemoveVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 	}
 
 	delete(v.vips, key)
+	v.clearTuningDriftsLocked(key)
 	return nil
 }
 
@@ -194,6 +201,7 @@ func (v *VPP) adoptExistingVIPLocked(ctx context.Context, vip *v1alpha1.VirtualI
 		if err := v.deleteVIPLocked(ctx, vip); err != nil {
 			return false, fmt.Errorf("failed to delete retained VIP with stale attributes: %w", err)
 		}
+		v.clearTuningDriftsLocked(v.vipKey(vip))
 		return false, nil
 	}
 
@@ -207,8 +215,51 @@ func (v *VPP) adoptExistingVIPLocked(ctx context.Context, vip *v1alpha1.VirtualI
 		vip:      vip.DeepCopy(),
 		backends: backends,
 	}
-	v.logger.Info("adopted retained VPP VIP", "vip", key, "backends", len(backends))
+	drifts := v.detectTuningDrifts(vip, detail)
+	v.setTuningDriftsLocked(key, drifts)
+	v.logger.Info("adopted retained VPP VIP", "vip", key, "backends", len(backends), "tuning_drifts", len(drifts))
 	return true, nil
+}
+
+func (v *VPP) TuningDrifts(vipKey string) []VIPTuningDrift {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	drifts := v.tuningDrifts[vipKey]
+	if len(drifts) == 0 {
+		return nil
+	}
+	out := make([]VIPTuningDrift, len(drifts))
+	copy(out, drifts)
+	return out
+}
+
+func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	key := v.vipKey(vip)
+	if err := v.deleteVIPLocked(ctx, vip); err != nil {
+		return fmt.Errorf("failed to delete VIP before recreate: %w", err)
+	}
+	delete(v.vips, key)
+
+	if err := v.addVIPLocked(ctx, vip); err != nil {
+		v.clearTuningDriftsLocked(key)
+		return fmt.Errorf("failed to add VIP during recreate: %w", err)
+	}
+
+	entry := &vipEntry{
+		vip:      vip.DeepCopy(),
+		backends: make(map[string]v1alpha1.BackendSpec),
+	}
+	v.vips[key] = entry
+	v.clearTuningDriftsLocked(key)
+	if err := v.reconcileBackendsLocked(ctx, key, entry, vip, healthyBackends); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (v *VPP) SetBackends(ctx context.Context, vip *v1alpha1.VirtualIP, backends []v1alpha1.BackendSpec) error {
@@ -691,10 +742,51 @@ func (v *VPP) vipDetailsMatchDesired(vip *v1alpha1.VirtualIP, detail *lb.LbVipDe
 	if err != nil {
 		return false
 	}
+	// Flow table length is intentionally excluded here. A retained VIP with
+	// matching forwarding attributes can be adopted first and recreated later
+	// through a drained rolling repair.
 	return detail.Encap == encapToAPI(attrs.encapType) &&
 		uint8(detail.Dscp) == attrs.dscp &&
 		detail.SrvType == serviceTypeToAPI(attrs.serviceType) &&
 		detail.TargetPort == uint16(attrs.port)
+}
+
+func (v *VPP) detectTuningDrifts(vip *v1alpha1.VirtualIP, detail *lb.LbVipDetails) []VIPTuningDrift {
+	attrs, err := v.effectiveVIPAttributes(vip)
+	if err != nil {
+		return nil
+	}
+
+	// VPP's add API accepts u32, while the dump API exposes this field as u16.
+	// Compare using the dump-width representation to avoid recreating a correctly
+	// configured retained VIP forever when the desired value exceeds u16.
+	if detail.FlowTableLength == uint16(attrs.newFlowsTableLength) {
+		return nil
+	}
+
+	return []VIPTuningDrift{{
+		Field:   "new_flows_table_length",
+		Current: fmt.Sprint(detail.FlowTableLength),
+		Desired: fmt.Sprint(attrs.newFlowsTableLength),
+	}}
+}
+
+func (v *VPP) setTuningDriftsLocked(key string, drifts []VIPTuningDrift) {
+	if len(drifts) == 0 {
+		v.clearTuningDriftsLocked(key)
+		return
+	}
+	if v.tuningDrifts == nil {
+		v.tuningDrifts = make(map[string][]VIPTuningDrift)
+	}
+	v.tuningDrifts[key] = append([]VIPTuningDrift(nil), drifts...)
+}
+
+func (v *VPP) clearTuningDriftsLocked(key string) {
+	if v.tuningDrifts == nil {
+		return
+	}
+	delete(v.tuningDrifts, key)
 }
 
 func protocolNumber(p v1alpha1.Protocol) uint8 {

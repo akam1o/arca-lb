@@ -221,6 +221,29 @@ class TestDriverLifecycle(unittest.TestCase):
         self.mock_driver_lib.update_loadbalancer_status.return_value = None
         self.driver = ArcaLBDriver()
 
+    def test_loadbalancer_create_reports_active_status(self):
+        lb_id = "lb-1111"
+        loadbalancer = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+        })
+
+        self.driver.loadbalancer_create(loadbalancer)
+
+        self.mock_driver_lib.update_loadbalancer_status.assert_called_once_with({
+            "loadbalancers": [{
+                "id": lb_id,
+                "provisioning_status": "ACTIVE",
+                "operating_status": "OFFLINE",
+            }],
+            "listeners": [],
+            "pools": [],
+            "members": [],
+            "healthmonitors": [],
+            "l7policies": [],
+            "l7rules": [],
+        })
+
     def test_listener_create_creates_virtualip(self):
         listener = FakeObj({
             "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
@@ -518,18 +541,195 @@ class TestDriverLifecycle(unittest.TestCase):
         }])
 
     def test_loadbalancer_delete_removes_all_vips(self):
+        lb_id = "lb-1111"
         vips = [
-            _make_vip("octavia-bbbbbbbb-aaaaaaaa",
-                       {"address": "203.0.113.10", "port": 80}),
-            _make_vip("octavia-bbbbbbbb-cccccccc",
-                       {"address": "203.0.113.10", "port": 443}),
+            _make_vip(
+                "octavia-bbbbbbbb-aaaaaaaa",
+                {"address": "203.0.113.10", "port": 80},
+                annotations={
+                    constants.ANNOTATION_LB_ID: lb_id,
+                    constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                    constants.ANNOTATION_POOL_ID: "pool-1111",
+                    constants.ANNOTATION_HM_ID: "hm-1111",
+                    constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                        "member-1111": "10.0.1.1",
+                    }),
+                },
+            ),
+            _make_vip(
+                "octavia-bbbbbbbb-cccccccc",
+                {"address": "203.0.113.10", "port": 443},
+                annotations={
+                    constants.ANNOTATION_LB_ID: lb_id,
+                    constants.ANNOTATION_LISTENER_ID: "listener-2222",
+                    constants.ANNOTATION_POOL_ID: "pool-2222",
+                    constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                        "member-2222": "10.0.2.1",
+                    }),
+                },
+            ),
         ]
         self.mock_k8s.find_by_loadbalancer.return_value = vips
 
-        lb = FakeObj({"loadbalancer_id": "bbbbbbbb-1111-2222-3333-444444444444"})
+        lb = FakeObj({"loadbalancer_id": lb_id})
         self.driver.loadbalancer_delete(lb)
 
         self.assertEqual(self.mock_k8s.delete_virtualip.call_count, 2)
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": lb_id,
+            "provisioning_status": "DELETED",
+        }])
+        self.assertEqual(status["listeners"], [
+            {"id": "listener-1111", "provisioning_status": "DELETED"},
+            {"id": "listener-2222", "provisioning_status": "DELETED"},
+        ])
+        self.assertEqual(status["pools"], [
+            {"id": "pool-1111", "provisioning_status": "DELETED"},
+            {"id": "pool-2222", "provisioning_status": "DELETED"},
+        ])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "DELETED",
+        }])
+        self.assertEqual(status["members"], [
+            {"id": "member-1111", "provisioning_status": "DELETED"},
+            {"id": "member-2222", "provisioning_status": "DELETED"},
+        ])
+
+    def test_listener_delete_reports_deleted_status(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+        )
+        self.mock_k8s.find_by_listener.return_value = existing_vip
+
+        self.driver.listener_delete(FakeObj({
+            "listener_id": "listener-1111",
+        }))
+
+        self.mock_k8s.delete_virtualip.assert_called_once_with(
+            "octavia-bbbbbbbb-aaaaaaaa"
+        )
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "DELETED",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "DELETED",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "DELETED",
+        }])
+        self.assertEqual(status["members"], [{
+            "id": "member-1111",
+            "provisioning_status": "DELETED",
+        }])
+
+    def test_pool_delete_reports_deleted_status(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80,
+             "backends": [{"address": "10.0.1.1", "weight": 100}],
+             "healthCheck": {"type": "tcp", "tcp": {"port": 80}}},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        self.driver.pool_delete(FakeObj({"pool_id": "pool-1111"}))
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["backends"], [])
+        self.assertNotIn("healthCheck", spec)
+        annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
+        self.assertNotIn(constants.ANNOTATION_POOL_ID, annotations)
+        self.assertNotIn(constants.ANNOTATION_HM_ID, annotations)
+        self.assertNotIn(constants.ANNOTATION_MEMBER_MAP, annotations)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "DELETED",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "DELETED",
+        }])
+        self.assertEqual(status["members"], [{
+            "id": "member-1111",
+            "provisioning_status": "DELETED",
+        }])
+
+    def test_health_monitor_delete_reports_deleted_status(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80,
+             "healthCheck": {"type": "tcp", "tcp": {"port": 80}}},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        self.driver.health_monitor_delete(FakeObj({
+            "healthmonitor_id": "hm-1111",
+            "pool_id": "pool-1111",
+        }))
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertNotIn("healthCheck", spec)
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "DELETED",
+        }])
 
     def test_health_monitor_create(self):
         existing_vip = _make_vip(

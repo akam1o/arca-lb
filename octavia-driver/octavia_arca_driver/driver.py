@@ -417,7 +417,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         pool_id = m.get("pool_id")
         address = m.get("address")
         weight = self._member_weight(m)
-        is_draining = weight == OCTAVIA_MEMBER_WEIGHT_DRAINING
+        is_draining = self._member_is_draining(m)
         backend = None if is_draining else self._backend_from_member(m)
 
         vip = self._k8s.find_by_pool(pool_id)
@@ -483,7 +483,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         pool_id = m.get("pool_id")
         address = m.get("address")
         weight = self._member_weight(m)
-        is_draining = weight == OCTAVIA_MEMBER_WEIGHT_DRAINING
+        is_draining = self._member_is_draining(m)
         backend = None if is_draining else self._backend_from_member(m)
 
         vip = self._k8s.find_by_pool(pool_id)
@@ -530,13 +530,13 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         new_member_map = {}
         draining_member_ids = set()
         for m in member_dicts:
-            weight = self._member_weight(m)
-            if weight != OCTAVIA_MEMBER_WEIGHT_DRAINING:
+            is_draining = self._member_is_draining(m)
+            if not is_draining:
                 backends.append(self._backend_from_member(m))
             member_id = self._member_id(m)
             if member_id and m.get("address"):
                 new_member_map[member_id] = m.get("address")
-                if weight == OCTAVIA_MEMBER_WEIGHT_DRAINING:
+                if is_draining:
                     draining_member_ids.add(member_id)
         spec["backends"] = backends
         self._set_member_map_annotation(annotations, new_member_map)
@@ -768,9 +768,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 if not member.get("address"):
                     continue
                 self._validate_member_dataplane_port(vip, member)
-                weight = self._member_weight(member)
+                is_draining = self._member_is_draining(member)
                 member_id = self._member_id(member)
-                if weight != OCTAVIA_MEMBER_WEIGHT_DRAINING:
+                if not is_draining:
                     backends.append(self._backend_from_member(member))
                 elif member_id:
                     draining_member_ids.add(member_id)
@@ -799,7 +799,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             else:
                 member = self._as_dict(member)
                 member_id = self._member_id(member)
-                if member_id and not member.get("address"):
+                if member_id and self._member_needs_detail_fetch(member):
                     fetched = self._member_from_octavia(member_id)
                     if fetched:
                         member.update(fetched)
@@ -867,6 +867,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return member.get("member_id") or member.get("id")
 
     @classmethod
+    def _member_needs_detail_fetch(cls, member):
+        return (
+            not member.get("address") or
+            "admin_state_up" not in member or
+            "weight" not in member
+        )
+
+    @classmethod
     def _backends_with_member_state(cls, backends, address, backend,
                                     is_draining):
         next_backends = []
@@ -910,9 +918,22 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return DEFAULT_MEMBER_WEIGHT
         return weight
 
+    @staticmethod
+    def _member_admin_state_up(member):
+        admin_state_up = member.get("admin_state_up")
+        if admin_state_up is None:
+            return True
+        if isinstance(admin_state_up, str):
+            return admin_state_up.strip().lower() not in (
+                "false", "0", "no", "off"
+            )
+        return bool(admin_state_up)
+
     @classmethod
     def _member_is_draining(cls, member):
         member = cls._as_dict(member)
+        if not cls._member_admin_state_up(member):
+            return True
         return (
             cls._member_weight(member) ==
             OCTAVIA_MEMBER_WEIGHT_DRAINING
@@ -1113,12 +1134,18 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             member = self._as_dict(member)
 
         member_id = member.get("member_id") or member.get("id")
-        if (
+        ports_missing = (
             self._valid_port(member.get("monitor_port")) is None and
-            self._valid_port(member.get("protocol_port")) is None and
-            member_id
-        ):
-            member = self._member_from_octavia(member_id)
+            self._valid_port(member.get("protocol_port")) is None
+        )
+        state_missing = (
+            "admin_state_up" not in member or
+            "weight" not in member
+        )
+        if member_id and (ports_missing or state_missing):
+            fetched = self._member_from_octavia(member_id)
+            if fetched:
+                member.update(fetched)
 
         if self._member_is_draining(member):
             return None

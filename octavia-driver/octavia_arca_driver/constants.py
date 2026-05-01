@@ -21,6 +21,7 @@ ANNOTATION_LISTENER_ID = "arca.io/octavia-listener-id"
 ANNOTATION_POOL_ID = "arca.io/octavia-pool-id"
 ANNOTATION_HM_ID = "arca.io/octavia-healthmonitor-id"
 ANNOTATION_PROJECT_ID = "arca.io/octavia-project-id"
+ANNOTATION_MEMBER_MAP = "arca.io/octavia-member-map"
 
 # Mapping from Octavia protocol strings to VirtualIP protocol values.
 PROTOCOL_MAP = {

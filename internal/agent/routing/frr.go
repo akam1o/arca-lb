@@ -74,12 +74,14 @@ func (f *FRR) AnnounceVIP(ctx context.Context, vipAddress string) error {
 }
 
 func (f *FRR) WithdrawVIP(ctx context.Context, vipAddress string) error {
-	f.mu.Lock()
-	if !f.announced[vipAddress] {
-		f.mu.Unlock()
-		return nil // not announced
+	f.mu.RLock()
+	announced := f.announced[vipAddress]
+	f.mu.RUnlock()
+	if !announced {
+		// The agent intentionally leaves FRR routes in place across process
+		// restarts, so an empty local map does not prove the route is absent.
+		f.logger.Debug("route is not tracked locally, attempting withdraw", "vip", vipAddress)
 	}
-	f.mu.Unlock()
 
 	commands, err := f.deleteRouteCmd(vipAddress)
 	if err != nil {

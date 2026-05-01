@@ -6,12 +6,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -170,14 +172,22 @@ func main() {
 	}
 
 	// Create and start K8s watcher
-	w, err := watcher.New(watcher.Config{
+	watcherCfg := watcher.Config{
 		Kubeconfig:     cfg.Kubernetes.Kubeconfig,
 		Namespace:      cfg.Kubernetes.Namespace,
 		ResyncInterval: cfg.Kubernetes.ResyncInterval,
-	}, handler, logger)
+	}
+	w, err := watcher.New(watcherCfg, handler, logger)
 	if err != nil {
 		logger.Error("failed to create watcher", "error", err)
 		os.Exit(1)
+	}
+
+	currentVIPs, err := watcher.ListCurrent(ctx, watcherCfg)
+	if err != nil {
+		logger.Warn("failed to list current VirtualIPs for stale dataplane cleanup", "error", err)
+	} else if err := cleanupStaleLastConfigs(ctx, st, dp, currentVIPs, logger); err != nil {
+		logger.Warn("stale dataplane cleanup completed with errors", "error", err)
 	}
 
 	// Start metrics server
@@ -302,6 +312,101 @@ func (h *vipEventHandler) updateHealthCheckCondition(vip *v1alpha1.VirtualIP, st
 	if err := h.statusUpdater.UpdateHealthCheckCondition(ctx, vip, condition); err != nil {
 		h.logger.Warn("failed to update health check condition", "vip", healthcheck.KeyForVIP(vip), "error", err)
 	}
+}
+
+func cleanupStaleLastConfigs(ctx context.Context, st *store.Store, dp dataplane.DataPlane, currentVIPs []v1alpha1.VirtualIP, logger *slog.Logger) error {
+	if st == nil || dp == nil {
+		return nil
+	}
+
+	lastConfigs, err := st.LoadAllLastConfigs()
+	if err != nil {
+		return fmt.Errorf("failed to load last-applied configs: %w", err)
+	}
+	if len(lastConfigs) == 0 {
+		return nil
+	}
+
+	currentByKey := make(map[string]*v1alpha1.VirtualIP, len(currentVIPs))
+	for i := range currentVIPs {
+		currentByKey[healthcheck.KeyForVIP(&currentVIPs[i])] = &currentVIPs[i]
+	}
+
+	var firstErr error
+	for key, data := range lastConfigs {
+		vip, err := virtualIPFromLastConfig(key, data)
+		if err != nil {
+			logger.Warn("failed to decode stale last-applied config", "vip", key, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if currentVIP, ok := currentByKey[key]; ok && sameRetainedVIPIdentity(vip, currentVIP) {
+			continue
+		}
+
+		logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "address", vip.Spec.Address)
+		if err := dp.RemoveVIP(ctx, vip); err != nil {
+			logger.Warn("failed to remove stale retained VIP from dataplane", "vip", key, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := st.DeleteLastConfig(key); err != nil {
+			logger.Warn("failed to delete stale last-applied config", "vip", key, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		if err := st.DeleteHealthStatesForVIP(key); err != nil {
+			logger.Warn("failed to delete stale health states", "vip", key, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
+	return firstErr
+}
+
+func virtualIPFromLastConfig(key string, data []byte) (*v1alpha1.VirtualIP, error) {
+	namespace, name, ok := strings.Cut(key, "/")
+	if !ok || namespace == "" || name == "" {
+		return nil, fmt.Errorf("invalid namespaced VIP key %q", key)
+	}
+
+	var spec v1alpha1.VirtualIPSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("failed to decode last-applied config for %s: %w", key, err)
+	}
+
+	return &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      name,
+		},
+		Spec: spec,
+	}, nil
+}
+
+func sameRetainedVIPIdentity(a, b *v1alpha1.VirtualIP) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Spec.Address == b.Spec.Address &&
+		a.Spec.Port == b.Spec.Port &&
+		a.Spec.Protocol == b.Spec.Protocol &&
+		a.Spec.EncapType == b.Spec.EncapType &&
+		uint8PtrEqual(a.Spec.DSCP, b.Spec.DSCP)
+}
+
+func uint8PtrEqual(a, b *uint8) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func setupLogger(cfg agentconfig.LogSettings) *slog.Logger {

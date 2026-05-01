@@ -135,15 +135,23 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 	}
 
 	if !exists {
-		if err := v.addVIPLocked(ctx, vip); err != nil {
-			return fmt.Errorf("failed to add VIP: %w", err)
+		adopted, err := v.adoptExistingVIPLocked(ctx, vip, healthyBackends)
+		if err != nil {
+			return fmt.Errorf("failed to inspect existing VIP for %s: %w", key, err)
 		}
+		if !adopted {
+			if err := v.addVIPLocked(ctx, vip); err != nil {
+				return fmt.Errorf("failed to add VIP: %w", err)
+			}
 
-		existing = &vipEntry{
-			vip:      vip.DeepCopy(),
-			backends: make(map[string]v1alpha1.BackendSpec),
+			existing = &vipEntry{
+				vip:      vip.DeepCopy(),
+				backends: make(map[string]v1alpha1.BackendSpec),
+			}
+			v.vips[key] = existing
+		} else {
+			existing = v.vips[key]
 		}
-		v.vips[key] = existing
 	}
 
 	if err := v.reconcileBackendsLocked(ctx, key, existing, vip, healthyBackends); err != nil {
@@ -160,7 +168,13 @@ func (v *VPP) RemoveVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 
 	key := v.vipKey(vip)
 	if _, ok := v.vips[key]; !ok {
-		return nil // already removed
+		exists, err := v.vipExistsLocked(ctx, vip)
+		if err != nil {
+			return fmt.Errorf("failed to inspect VIP before remove: %w", err)
+		}
+		if !exists {
+			return nil // already removed
+		}
 	}
 
 	if err := v.deleteVIPLocked(ctx, vip); err != nil {
@@ -169,6 +183,32 @@ func (v *VPP) RemoveVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 
 	delete(v.vips, key)
 	return nil
+}
+
+func (v *VPP) adoptExistingVIPLocked(ctx context.Context, vip *v1alpha1.VirtualIP, desiredBackends []v1alpha1.BackendSpec) (bool, error) {
+	detail, exists, err := v.lookupVIPLocked(ctx, vip)
+	if err != nil || !exists {
+		return exists, err
+	}
+	if !v.vipDetailsMatchDesired(vip, detail) {
+		if err := v.deleteVIPLocked(ctx, vip); err != nil {
+			return false, fmt.Errorf("failed to delete retained VIP with stale attributes: %w", err)
+		}
+		return false, nil
+	}
+
+	backends, err := v.dumpBackendsLocked(ctx, vip, desiredBackends)
+	if err != nil {
+		return false, err
+	}
+
+	key := v.vipKey(vip)
+	v.vips[key] = &vipEntry{
+		vip:      vip.DeepCopy(),
+		backends: backends,
+	}
+	v.logger.Info("adopted retained VPP VIP", "vip", key, "backends", len(backends))
+	return true, nil
 }
 
 func (v *VPP) SetBackends(ctx context.Context, vip *v1alpha1.VirtualIP, backends []v1alpha1.BackendSpec) error {
@@ -335,6 +375,95 @@ func (v *VPP) newChannel() (api.Channel, error) {
 		return nil, fmt.Errorf("failed to create API channel: %w", err)
 	}
 	return ch, nil
+}
+
+func (v *VPP) vipExistsLocked(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error) {
+	_, exists, err := v.lookupVIPLocked(ctx, vip)
+	return exists, err
+}
+
+func (v *VPP) lookupVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+	ch, err := v.newChannel()
+	if err != nil {
+		return nil, false, err
+	}
+	defer ch.Close()
+
+	pfx, err := parseIPPrefix(vip.Spec.Address)
+	if err != nil {
+		return nil, false, err
+	}
+	protocol := protocolNumber(vip.Spec.Protocol)
+	port := uint16(vip.Spec.Port)
+
+	reqCtx := ch.SendMultiRequest(&lb.LbVipDump{})
+	for {
+		detail := &lb.LbVipDetails{}
+		stop, err := reqCtx.ReceiveReply(detail)
+		if err != nil {
+			return nil, false, fmt.Errorf("LbVipDump failed: %w", err)
+		}
+		if stop {
+			break
+		}
+		if lbVIPMatches(detail.Vip, pfx, protocol, port) {
+			return detail, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func (v *VPP) dumpBackendsLocked(_ context.Context, vip *v1alpha1.VirtualIP, desiredBackends []v1alpha1.BackendSpec) (map[string]v1alpha1.BackendSpec, error) {
+	ch, err := v.newChannel()
+	if err != nil {
+		return nil, err
+	}
+	defer ch.Close()
+
+	pfx, err := parseIPPrefix(vip.Spec.Address)
+	if err != nil {
+		return nil, err
+	}
+	protocol := protocolNumber(vip.Spec.Protocol)
+	port := uint16(vip.Spec.Port)
+
+	desiredByAddress := make(map[string]v1alpha1.BackendSpec, len(desiredBackends))
+	for _, be := range desiredBackends {
+		desiredByAddress[be.Address] = be
+	}
+
+	backends := make(map[string]v1alpha1.BackendSpec)
+	req := &lb.LbAsDump{
+		Pfx:      pfx,
+		Protocol: protocol,
+		Port:     port,
+	}
+	reqCtx := ch.SendMultiRequest(req)
+	for {
+		detail := &lb.LbAsDetails{}
+		stop, err := reqCtx.ReceiveReply(detail)
+		if err != nil {
+			return nil, fmt.Errorf("LbAsDump failed: %w", err)
+		}
+		if stop {
+			break
+		}
+		if !lbVIPMatches(detail.Vip, pfx, protocol, port) {
+			continue
+		}
+
+		addr, err := addressToString(detail.AppSrv)
+		if err != nil {
+			return nil, err
+		}
+		if be, ok := desiredByAddress[addr]; ok {
+			backends[addr] = be
+		} else {
+			backends[addr] = v1alpha1.BackendSpec{Address: addr, Weight: 100}
+		}
+	}
+
+	return backends, nil
 }
 
 func (v *VPP) sameVIPAttributes(existing, desired *v1alpha1.VirtualIP) bool {
@@ -539,6 +668,34 @@ func (v *VPP) removeBackendLocked(_ context.Context, vip *v1alpha1.VirtualIP, be
 }
 
 // --- helpers ---
+
+func lbVIPMatches(vip lb_types.LbVip, pfx ip_types.AddressWithPrefix, protocol uint8, port uint16) bool {
+	return vip.Pfx == pfx && uint8(vip.Protocol) == protocol && vip.Port == port
+}
+
+func addressToString(addr ip_types.Address) (string, error) {
+	switch addr.Af {
+	case ip_types.ADDRESS_IP4:
+		ip4 := addr.Un.GetIP4()
+		return net.IP(ip4[:]).String(), nil
+	case ip_types.ADDRESS_IP6:
+		ip6 := addr.Un.GetIP6()
+		return net.IP(ip6[:]).String(), nil
+	default:
+		return "", fmt.Errorf("unsupported VPP address family: %v", addr.Af)
+	}
+}
+
+func (v *VPP) vipDetailsMatchDesired(vip *v1alpha1.VirtualIP, detail *lb.LbVipDetails) bool {
+	attrs, err := v.effectiveVIPAttributes(vip)
+	if err != nil {
+		return false
+	}
+	return detail.Encap == encapToAPI(attrs.encapType) &&
+		uint8(detail.Dscp) == attrs.dscp &&
+		detail.SrvType == serviceTypeToAPI(attrs.serviceType) &&
+		detail.TargetPort == uint16(attrs.port)
+}
 
 func protocolNumber(p v1alpha1.Protocol) uint8 {
 	switch p {

@@ -107,7 +107,9 @@ func (r *VirtualIPReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *VirtualIPReconciler) updateStatus(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 	newStatus := v1alpha1.VirtualIPStatus{
-		ObservedGeneration: vip.Generation,
+		// Backend health is observed by the agent. Do not advance this generation
+		// from the operator while carrying forward agent-owned health fields.
+		ObservedGeneration: vip.Status.ObservedGeneration,
 		TotalBackends:      len(vip.Spec.Backends),
 		HealthyBackends:    vip.Status.HealthyBackends, // Preserved from agent updates
 		Backends:           vip.Status.Backends,        // Preserved from agent updates

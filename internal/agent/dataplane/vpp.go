@@ -510,7 +510,10 @@ func (v *VPP) dumpBackendsLocked(_ context.Context, vip *v1alpha1.VirtualIP, des
 		if be, ok := desiredByAddress[addr]; ok {
 			backends[addr] = be
 		} else {
-			backends[addr] = v1alpha1.BackendSpec{Address: addr, Weight: 100}
+			backends[addr] = v1alpha1.BackendSpec{
+				Address: addr,
+				Weight:  v1alpha1.DefaultBackendWeight,
+			}
 		}
 	}
 

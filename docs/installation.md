@@ -173,7 +173,7 @@ spec:
   dscp: 10
   backends:
     - address: 10.0.1.1
-      weight: 100
+      weight: 1
 EOF
 
 # Check status

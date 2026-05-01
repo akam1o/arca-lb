@@ -50,9 +50,9 @@ spec:
   dscp: 10
   backends:
     - address: "10.0.1.1"
-      weight: 100
+      weight: 1
     - address: "10.0.1.2"
-      weight: 100
+      weight: 1
   healthCheck:
     type: http
     intervalSeconds: 5
@@ -101,7 +101,7 @@ status:
 |-------|------|----------|-------------|
 | `address` | string (IP) | Yes | Backend server IP address |
 | `monitorAddress` | string (IP) | No | Alternate backend IP address used only for health checks. Defaults to `address`. |
-| `weight` | int (1-100) | No | Desired traffic weight. Default: 100. Stored in the backend spec, but not applied to live traffic distribution by the current VPP LB plugin path; weighted AS programming will take effect once the VPP LB API exposes backend weights. |
+| `weight` | int (1-100) | No | Desired traffic weight. Default: 1. Positive unequal weights are accepted and stored in the backend spec, but the current VPP LB plugin path treats them as metadata only; all listed backends are programmed without weight and live traffic distribution is not weighted. |
 
 #### HealthCheckSpec
 
@@ -204,9 +204,9 @@ spec:
   dscp: 10
   backends:
     - address: 10.0.1.1
-      weight: 100
+      weight: 1
     - address: 10.0.1.2
-      weight: 100
+      weight: 1
     - address: 10.0.1.3
       weight: 50
   healthCheck:
@@ -236,9 +236,9 @@ spec:
   encapType: NAT4
   backends:
     - address: 10.0.2.1
-      weight: 100
+      weight: 1
     - address: 10.0.2.2
-      weight: 100
+      weight: 1
   healthCheck:
     type: tcp
     intervalSeconds: 10
@@ -263,7 +263,7 @@ spec:
   encapType: NAT4
   backends:
     - address: 10.0.2.10
-      weight: 100
+      weight: 1
   healthCheck:
     type: tls-hello
     intervalSeconds: 10

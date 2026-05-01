@@ -156,7 +156,7 @@ func applyDefaults(vip *v1alpha1.VirtualIP) bool {
 
 	for i := range vip.Spec.Backends {
 		if vip.Spec.Backends[i].Weight == 0 {
-			vip.Spec.Backends[i].Weight = 100
+			vip.Spec.Backends[i].Weight = v1alpha1.DefaultBackendWeight
 			changed = true
 		}
 	}

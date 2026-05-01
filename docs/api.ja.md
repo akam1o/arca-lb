@@ -50,9 +50,9 @@ spec:
   dscp: 10
   backends:
     - address: "10.0.1.1"
-      weight: 100
+      weight: 1
     - address: "10.0.1.2"
-      weight: 100
+      weight: 1
   healthCheck:
     type: http
     intervalSeconds: 5
@@ -101,7 +101,7 @@ status:
 |----------|-----|------|------|
 | `address` | string (IP) | はい | バックエンドサーバーの IP アドレス |
 | `monitorAddress` | string (IP) | いいえ | ヘルスチェックだけに使う代替バックエンド IP アドレス。省略時は `address` を使います。 |
-| `weight` | int (1-100) | いいえ | 希望するトラフィック重み。デフォルト: 100。backend spec に保存されますが、現在の VPP LB plugin 経路では実トラフィック分散には反映されません。VPP LB API が backend weight を公開した時点で重み付き AS programming に反映されます。 |
+| `weight` | int (1-100) | いいえ | 希望するトラフィック重み。デフォルト: 1。正の不均等な weight も受け付けて backend spec に保存しますが、現在の VPP LB plugin 経路では metadata のみです。全 backend は weight なしで programming され、実トラフィック分散は重み付きになりません。 |
 
 #### HealthCheckSpec
 
@@ -204,9 +204,9 @@ spec:
   dscp: 10
   backends:
     - address: 10.0.1.1
-      weight: 100
+      weight: 1
     - address: 10.0.1.2
-      weight: 100
+      weight: 1
     - address: 10.0.1.3
       weight: 50
   healthCheck:
@@ -236,9 +236,9 @@ spec:
   encapType: NAT4
   backends:
     - address: 10.0.2.1
-      weight: 100
+      weight: 1
     - address: 10.0.2.2
-      weight: 100
+      weight: 1
   healthCheck:
     type: tcp
     intervalSeconds: 10
@@ -263,7 +263,7 @@ spec:
   encapType: NAT4
   backends:
     - address: 10.0.2.10
-      weight: 100
+      weight: 1
   healthCheck:
     type: tls-hello
     intervalSeconds: 10

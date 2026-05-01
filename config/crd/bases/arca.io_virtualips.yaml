@@ -80,9 +80,10 @@ spec:
                       format: ip
                       type: string
                     weight:
-                      default: 100
+                      default: 1
                       description: |-
                         Weight records the desired proportion of traffic sent to this backend (1-100).
+                        Defaults to 1 when omitted.
                         The VPP LB plugin path currently stores this as metadata; weighted AS
                         programming will take effect once the VPP LB API exposes backend weights.
                       maximum: 100

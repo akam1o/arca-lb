@@ -142,9 +142,9 @@ spec:
   dscp: 10                   # optional DSCP override, 1-63 (for DSCP-based L3DSR)
   backends:
     - address: 10.0.1.1
-      weight: 100            # 1-100
+      weight: 1              # 1-100
     - address: 10.0.1.2
-      weight: 100
+      weight: 1
   healthCheck:
     type: http               # http, https, tcp, ping
     intervalSeconds: 5
@@ -175,7 +175,7 @@ spec:
 | Field | Description | Required |
 |-------|-------------|----------|
 | `address` | Backend IP address | Yes |
-| `weight` | Desired traffic weight (1-100). Stored in the backend spec, but not applied to live traffic distribution by the current VPP LB plugin path; weighted AS programming will take effect once the VPP LB API exposes backend weights. | No (default: 100) |
+| `weight` | Desired traffic weight (1-100). Default: 1. Positive unequal weights are accepted and stored in the backend spec, but the current VPP LB plugin path treats them as metadata only; all listed backends are programmed without weight and live traffic distribution is not weighted. | No |
 
 ### HealthCheck Spec fields
 

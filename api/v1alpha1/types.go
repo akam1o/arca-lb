@@ -37,6 +37,9 @@ const (
 	HCTypeTLSHello HCType = "tls-hello"
 )
 
+// DefaultBackendWeight is the appliance-compatible default backend weight.
+const DefaultBackendWeight = 1
+
 // BackendSpec defines a real server backing a VIP.
 type BackendSpec struct {
 	// Address is the IP address of the backend server.
@@ -51,11 +54,12 @@ type BackendSpec struct {
 	MonitorAddress string `json:"monitorAddress,omitempty"`
 
 	// Weight records the desired proportion of traffic sent to this backend (1-100).
+	// Defaults to 1 when omitted.
 	// The VPP LB plugin path currently stores this as metadata; weighted AS
 	// programming will take effect once the VPP LB API exposes backend weights.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=100
-	// +kubebuilder:default=100
+	// +kubebuilder:default=1
 	Weight int `json:"weight,omitempty"`
 }
 

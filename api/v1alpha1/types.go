@@ -53,6 +53,9 @@ type BackendSpec struct {
 }
 
 // HealthCheckSpec configures health checking for backends.
+// +kubebuilder:validation:XValidation:rule="(self.type != 'http' && self.type != 'https') || has(self.http)",message="spec.healthCheck.http is required for type http or https"
+// +kubebuilder:validation:XValidation:rule="self.type != 'tcp' || has(self.tcp)",message="spec.healthCheck.tcp is required for type tcp"
+// +kubebuilder:validation:XValidation:rule="(has(self.timeoutSeconds) ? self.timeoutSeconds : 3) < (has(self.intervalSeconds) ? self.intervalSeconds : 5)",message="spec.healthCheck.timeoutSeconds must be less than intervalSeconds"
 type HealthCheckSpec struct {
 	// Type is the probe type.
 	// +kubebuilder:validation:Required
@@ -90,6 +93,7 @@ type HealthCheckSpec struct {
 // HTTPHealthCheck configures HTTP/HTTPS probes.
 type HTTPHealthCheck struct {
 	// Port is the target port for the HTTP request.
+	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	Port int `json:"port"`
@@ -123,6 +127,7 @@ type HTTPHealthCheck struct {
 // TCPHealthCheck configures TCP probes.
 type TCPHealthCheck struct {
 	// Port is the target port for the TCP connection.
+	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	Port int `json:"port"`

@@ -2,226 +2,330 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: virtualips.arca.io
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.0
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: virtualips.arca.io
 spec:
   group: arca.io
   names:
     kind: VirtualIP
     listKind: VirtualIPList
     plural: virtualips
-    singular: virtualip
     shortNames:
-      - vip
+    - vip
+    singular: virtualip
   scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      additionalPrinterColumns:
-        - name: Address
-          type: string
-          jsonPath: .spec.address
-        - name: Port
-          type: integer
-          jsonPath: .spec.port
-        - name: Protocol
-          type: string
-          jsonPath: .spec.protocol
-        - name: Healthy
-          type: integer
-          jsonPath: .status.healthyBackends
-        - name: Total
-          type: integer
-          jsonPath: .status.totalBackends
-        - name: Age
-          type: date
-          jsonPath: .metadata.creationTimestamp
-      subresources:
-        status: {}
-      schema:
-        openAPIV3Schema:
-          type: object
-          description: VirtualIP is a Layer 4 virtual IP managed by arca-lb.
-          properties:
-            apiVersion:
-              type: string
-            kind:
-              type: string
-            metadata:
-              type: object
-            spec:
-              type: object
-              required:
-                - address
-                - port
-                - protocol
-              properties:
-                address:
-                  type: string
-                  description: Virtual IP address.
-                  format: ip
-                port:
-                  type: integer
-                  description: Virtual port number.
-                  minimum: 1
-                  maximum: 65535
-                protocol:
-                  type: string
-                  description: Transport protocol.
-                  enum:
-                    - TCP
-                    - UDP
-                encapType:
-                  type: string
-                  description: Encapsulation type for return traffic.
-                  default: L3DSR
-                  enum:
-                    - GRE4
-                    - GRE6
-                    - L3DSR
-                    - NAT4
-                    - NAT6
-                dscp:
-                  type: integer
-                  description: Optional DSCP override for DSCP-based L3DSR steering. When omitted, the agent dataplane default is used.
-                  minimum: 1
-                  maximum: 63
-                backends:
-                  type: array
-                  description: List of real servers.
-                  items:
-                    type: object
-                    required:
-                      - address
-                    properties:
-                      address:
-                        type: string
-                        format: ip
-                      weight:
-                        type: integer
-                        default: 100
-                        minimum: 1
-                        maximum: 100
-                healthCheck:
-                  type: object
-                  description: Health checking configuration.
-                  required:
-                    - type
+  - additionalPrinterColumns:
+    - jsonPath: .spec.address
+      name: Address
+      type: string
+    - jsonPath: .spec.port
+      name: Port
+      type: integer
+    - jsonPath: .spec.protocol
+      name: Protocol
+      type: string
+    - jsonPath: .status.healthyBackends
+      name: Healthy
+      type: integer
+    - jsonPath: .status.totalBackends
+      name: Total
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: VirtualIP is a Layer 4 virtual IP managed by arca-lb.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: VirtualIPSpec defines the desired state of a VirtualIP.
+            properties:
+              address:
+                description: Address is the virtual IP address.
+                format: ip
+                type: string
+              backends:
+                description: Backends is the list of real servers.
+                items:
+                  description: BackendSpec defines a real server backing a VIP.
                   properties:
-                    type:
+                    address:
+                      description: Address is the IP address of the backend server.
+                      format: ip
                       type: string
-                      enum:
-                        - http
-                        - https
-                        - tcp
-                        - ping
-                    intervalSeconds:
-                      type: integer
-                      default: 5
+                    weight:
+                      default: 100
+                      description: |-
+                        Weight records the desired proportion of traffic sent to this backend (1-100).
+                        The VPP LB plugin path currently stores this as metadata; weighted AS
+                        programming will take effect once the VPP LB API exposes backend weights.
+                      maximum: 100
                       minimum: 1
-                    timeoutSeconds:
                       type: integer
-                      default: 3
-                      minimum: 1
-                    riseCount:
-                      type: integer
-                      default: 3
-                      minimum: 1
-                    fallCount:
-                      type: integer
-                      default: 2
-                      minimum: 1
-                    http:
-                      type: object
-                      properties:
-                        port:
-                          type: integer
-                          minimum: 1
-                          maximum: 65535
-                        path:
-                          type: string
-                          default: /
-                        method:
-                          type: string
-                          default: GET
-                          enum:
-                            - GET
-                            - HEAD
-                            - POST
-                        host:
-                          type: string
-                        headers:
-                          type: object
-                          additionalProperties:
-                            type: string
-                        expectedCodes:
-                          type: array
-                          items:
-                            type: integer
-                        skipTLSVerify:
-                          type: boolean
-                    tcp:
-                      type: object
-                      properties:
-                        port:
-                          type: integer
-                          minimum: 1
-                          maximum: 65535
-                        send:
-                          type: string
-                        expectedResponse:
-                          type: string
-            status:
-              type: object
-              properties:
-                observedGeneration:
-                  type: integer
-                  format: int64
-                healthyBackends:
-                  type: integer
-                totalBackends:
-                  type: integer
-                backends:
-                  type: array
-                  items:
-                    type: object
+                  required:
+                  - address
+                  type: object
+                type: array
+              dscp:
+                description: |-
+                  DSCP is an optional DSCP override for DSCP-based L3DSR steering.
+                  When omitted, the agent's dataplane.vpp.dscp default is used.
+                maximum: 63
+                minimum: 1
+                type: integer
+              encapType:
+                default: L3DSR
+                description: EncapType is the encapsulation type for return traffic.
+                enum:
+                - GRE4
+                - GRE6
+                - L3DSR
+                - NAT4
+                - NAT6
+                type: string
+              healthCheck:
+                description: HealthCheck configures health checking for the backends.
+                properties:
+                  fallCount:
+                    default: 2
+                    description: FallCount is the number of consecutive failures to
+                      mark a backend unhealthy.
+                    minimum: 1
+                    type: integer
+                  http:
+                    description: HTTP contains HTTP/HTTPS-specific probe settings.
                     properties:
-                      address:
+                      expectedCodes:
+                        description: ExpectedCodes is the set of HTTP status codes
+                          that indicate success.
+                        items:
+                          type: integer
+                        type: array
+                      headers:
+                        additionalProperties:
+                          type: string
+                        description: Headers are additional HTTP headers to send.
+                        type: object
+                      host:
+                        description: Host sets the Host header for the probe request.
                         type: string
-                      healthy:
-                        type: boolean
-                      lastProbeTime:
-                        type: string
-                        format: date-time
-                      message:
-                        type: string
-                conditions:
-                  type: array
-                  items:
-                    type: object
-                    required:
-                      - type
-                      - status
-                      - reason
-                      - lastTransitionTime
-                    properties:
-                      type:
-                        type: string
-                      status:
-                        type: string
+                      method:
+                        default: GET
+                        description: Method is the HTTP method.
                         enum:
-                          - "True"
-                          - "False"
-                          - Unknown
-                      observedGeneration:
+                        - GET
+                        - HEAD
+                        - POST
+                        type: string
+                      path:
+                        default: /
+                        description: Path is the HTTP path to probe.
+                        type: string
+                      port:
+                        description: Port is the target port for the HTTP request.
+                        maximum: 65535
+                        minimum: 1
                         type: integer
-                        format: int64
-                      lastTransitionTime:
+                      skipTLSVerify:
+                        description: SkipTLSVerify skips TLS certificate verification
+                          (HTTPS only).
+                        type: boolean
+                    required:
+                    - port
+                    type: object
+                  intervalSeconds:
+                    default: 5
+                    description: IntervalSeconds is the time between probes.
+                    minimum: 1
+                    type: integer
+                  riseCount:
+                    default: 3
+                    description: RiseCount is the number of consecutive successes
+                      to mark a backend healthy.
+                    minimum: 1
+                    type: integer
+                  tcp:
+                    description: TCP contains TCP-specific probe settings.
+                    properties:
+                      expectedResponse:
+                        description: ExpectedResponse is an optional substring expected
+                          in the response.
                         type: string
-                        format: date-time
-                      reason:
+                      port:
+                        description: Port is the target port for the TCP connection.
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      send:
+                        description: Send is optional data to send after connection.
                         type: string
-                      message:
-                        type: string
+                    required:
+                    - port
+                    type: object
+                  timeoutSeconds:
+                    default: 3
+                    description: TimeoutSeconds is the maximum time to wait for a
+                      probe response.
+                    minimum: 1
+                    type: integer
+                  type:
+                    description: Type is the probe type.
+                    enum:
+                    - http
+                    - https
+                    - tcp
+                    - ping
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: spec.healthCheck.http is required for type http or https
+                  rule: (self.type != 'http' && self.type != 'https') || has(self.http)
+                - message: spec.healthCheck.tcp is required for type tcp
+                  rule: self.type != 'tcp' || has(self.tcp)
+                - message: spec.healthCheck.timeoutSeconds must be less than intervalSeconds
+                  rule: '(has(self.timeoutSeconds) ? self.timeoutSeconds : 3) < (has(self.intervalSeconds)
+                    ? self.intervalSeconds : 5)'
+              port:
+                description: Port is the virtual port.
+                maximum: 65535
+                minimum: 1
+                type: integer
+              protocol:
+                description: Protocol is the transport protocol.
+                enum:
+                - TCP
+                - UDP
+                type: string
+            required:
+            - address
+            - port
+            - protocol
+            type: object
+          status:
+            description: VirtualIPStatus defines the observed state of a VirtualIP.
+            properties:
+              backends:
+                description: Backends reports per-backend health status.
+                items:
+                  description: BackendStatus reports the health state of a single
+                    backend.
+                  properties:
+                    address:
+                      description: Address is the IP address of the backend.
+                      type: string
+                    healthy:
+                      description: Healthy indicates whether the backend is currently
+                        healthy.
+                      type: boolean
+                    lastProbeTime:
+                      description: LastProbeTime is the timestamp of the most recent
+                        probe.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message provides human-readable details.
+                      type: string
+                  required:
+                  - address
+                  - healthy
+                  type: object
+                type: array
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              healthyBackends:
+                description: HealthyBackends is the number of healthy backends.
+                type: integer
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the operator.
+                format: int64
+                type: integer
+              totalBackends:
+                description: TotalBackends is the total number of configured backends.
+                type: integer
+            required:
+            - healthyBackends
+            - totalBackends
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

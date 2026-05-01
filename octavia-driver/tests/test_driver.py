@@ -653,6 +653,7 @@ class TestDriverLifecycle(unittest.TestCase):
         self.mock_k8s.find_by_loadbalancer.return_value = [existing_vip]
         self.mock_driver_lib.get_pool.return_value = FakeObj({
             "pool_id": "pool-1111",
+            "healthmonitor_id": "hm-1111",
             "members": [{
                 "member_id": "member-1111",
                 "address": "10.0.1.1",
@@ -662,14 +663,35 @@ class TestDriverLifecycle(unittest.TestCase):
             }],
         })
 
-        with self.assertRaises(driver_exc.UnsupportedOptionError):
-            self.driver.loadbalancer_update(FakeObj({}), FakeObj({
-                "loadbalancer_id": "lb-1111",
-                "admin_state_up": True,
-            }))
+        with mock.patch("octavia_arca_driver.driver.LOG.exception"):
+            with self.assertRaises(driver_exc.UnsupportedOptionError):
+                self.driver.loadbalancer_update(FakeObj({}), FakeObj({
+                    "loadbalancer_id": "lb-1111",
+                    "admin_state_up": True,
+                }))
 
         self.mock_k8s.update_virtualip.assert_not_called()
-        self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["members"], [{
+            "id": "member-1111",
+            "provisioning_status": "ERROR",
+        }])
 
     def test_listener_update_enabled_restores_backends(self):
         existing_vip = _make_vip(
@@ -747,6 +769,51 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(
             annotations[constants.ANNOTATION_POOL_ID], "pool-1111"
         )
+
+    def test_listener_update_port_revalidates_existing_pool_members(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        self.mock_k8s.find_by_listener.return_value = existing_vip
+        self.mock_driver_lib.get_pool.return_value = FakeObj({
+            "pool_id": "pool-1111",
+            "members": [{
+                "member_id": "member-1111",
+                "address": "10.0.1.1",
+                "protocol_port": 80,
+                "weight": 100,
+            }],
+        })
+
+        with mock.patch("octavia_arca_driver.driver.LOG.exception"):
+            with self.assertRaises(driver_exc.UnsupportedOptionError):
+                self.driver.listener_update(FakeObj({}), FakeObj({
+                    "listener_id": "listener-1111",
+                    "protocol_port": 443,
+                }))
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["members"], [{
+            "id": "member-1111",
+            "provisioning_status": "ERROR",
+        }])
 
     def test_listener_update_restore_failure_reports_dependents_error(self):
         from octavia_lib.api.drivers import exceptions as driver_exc

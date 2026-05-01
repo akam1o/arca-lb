@@ -148,7 +148,31 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             LOG.info("Loadbalancer %s disabled, cleared backends from %d VIPs",
                      lb_id, len(vips))
         elif admin_state is True:
-            restored = self._restore_virtualip_backends(vips)
+            restored = 0
+            for vip in vips:
+                try:
+                    restored += self._restore_virtualip_backends([vip])
+                except Exception:
+                    metadata = vip.get("metadata", {})
+                    annotations = metadata.get("annotations", {})
+                    name = metadata.get("name")
+                    listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
+                    pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
+                    error_lb_id = annotations.get(constants.ANNOTATION_LB_ID) or lb_id
+                    LOG.exception(
+                        "Failed to restore pool %s while enabling loadbalancer %s",
+                        pool_id, lb_id,
+                    )
+                    try:
+                        self._push_pool_restore_error_status(
+                            name, error_lb_id, listener_id, pool_id
+                        )
+                    except Exception:
+                        LOG.exception(
+                            "Failed to push Octavia ERROR status for "
+                            "loadbalancer %s", lb_id
+                        )
+                    raise
             LOG.info("Loadbalancer %s enabled, restored backends on %d VIPs",
                      lb_id, restored)
 
@@ -311,7 +335,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             spec["protocol"] = self._map_listener_protocol(protocol)
 
         port = lst.get("protocol_port")
-        if port:
+        old_port = self._valid_port(spec.get("port"))
+        new_port = self._valid_port(port)
+        port_changed = port is not None and new_port != old_port
+        if port is not None:
             spec["port"] = port
 
         should_restore_pool = False
@@ -321,6 +348,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 annotations.get(constants.ANNOTATION_POOL_ID) != pool_id
             )
             annotations[constants.ANNOTATION_POOL_ID] = pool_id
+        elif port_changed and annotations.get(constants.ANNOTATION_POOL_ID):
+            should_restore_pool = True
 
         admin_state = lst.get("admin_state_up")
         if admin_state is False:

@@ -561,11 +561,11 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if dscp is not None:
             try:
                 dscp_val = int(dscp)
-                if not 0 <= dscp_val <= 63:
+                if not 1 <= dscp_val <= 63:
                     raise ValueError()
             except (ValueError, TypeError):
                 raise driver_exc.UnsupportedOptionError(
-                    user_fault_string="DSCP must be an integer 0-63.",
+                    user_fault_string="DSCP must be an integer 1-63.",
                     operator_fault_string=f"Invalid dscp: {dscp}",
                 )
 

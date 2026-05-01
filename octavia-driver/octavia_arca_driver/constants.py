@@ -45,7 +45,7 @@ HEALTH_MONITOR_TYPE_MAP = {
 # Supported flavor metadata keys.
 FLAVOR_METADATA = {
     "encap_type": "Encapsulation type for return traffic (GRE4, GRE6, L3DSR, NAT4, NAT6)",
-    "dscp": "DSCP marking value for L3DSR mode (0-63)",
+    "dscp": "DSCP marking value for L3DSR mode (1-63)",
 }
 
 VALID_ENCAP_TYPES = {"GRE4", "GRE6", "L3DSR", "NAT4", "NAT6"}

@@ -66,10 +66,8 @@ func New(cfg Config, handler Handler, logger *slog.Logger) (*Watcher, error) {
 		cfg.ResyncInterval = 30 * time.Second
 	}
 
-	scheme := runtime.NewScheme()
-	sb := &runtimescheme.Builder{GroupVersion: v1alpha1.GroupVersion}
-	sb.Register(&v1alpha1.VirtualIP{}, &v1alpha1.VirtualIPList{})
-	if err := sb.AddToScheme(scheme); err != nil {
+	scheme, err := newScheme()
+	if err != nil {
 		return nil, fmt.Errorf("failed to add scheme: %w", err)
 	}
 
@@ -79,6 +77,32 @@ func New(cfg Config, handler Handler, logger *slog.Logger) (*Watcher, error) {
 		logger:  logger.With("component", "watcher"),
 		scheme:  scheme,
 	}, nil
+}
+
+// ListCurrent returns the VirtualIP resources currently present in Kubernetes.
+func ListCurrent(ctx context.Context, cfg Config) ([]v1alpha1.VirtualIP, error) {
+	restCfg, err := buildRESTConfig(cfg.Kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build REST config: %w", err)
+	}
+	scheme, err := newScheme()
+	if err != nil {
+		return nil, fmt.Errorf("failed to add scheme: %w", err)
+	}
+	k8sClient, err := client.New(restCfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
+	var list v1alpha1.VirtualIPList
+	var opts []client.ListOption
+	if cfg.Namespace != "" {
+		opts = append(opts, client.InNamespace(cfg.Namespace))
+	}
+	if err := k8sClient.List(ctx, &list, opts...); err != nil {
+		return nil, fmt.Errorf("failed to list VirtualIPs: %w", err)
+	}
+	return list.Items, nil
 }
 
 // Start starts watching VirtualIP CRDs. Blocks until ctx is cancelled.
@@ -149,10 +173,24 @@ func (w *Watcher) GetClient() (client.Reader, error) {
 }
 
 func (w *Watcher) buildRESTConfig() (*rest.Config, error) {
-	if w.config.Kubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", w.config.Kubeconfig)
+	return buildRESTConfig(w.config.Kubeconfig)
+}
+
+func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
+	if kubeconfig != "" {
+		return clientcmd.BuildConfigFromFlags("", kubeconfig)
 	}
 	return rest.InClusterConfig()
+}
+
+func newScheme() (*runtime.Scheme, error) {
+	scheme := runtime.NewScheme()
+	sb := &runtimescheme.Builder{GroupVersion: v1alpha1.GroupVersion}
+	sb.Register(&v1alpha1.VirtualIP{}, &v1alpha1.VirtualIPList{})
+	if err := sb.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
+	return scheme, nil
 }
 
 // --- event handler ---

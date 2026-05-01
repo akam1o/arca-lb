@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/reconciler"
 	"github.com/akam1o/arca-lb/internal/agent/routing"
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
+	"github.com/akam1o/arca-lb/internal/agent/store"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -93,10 +95,76 @@ func TestVIPEventHandlerPreservesDataplaneWhenHealthCheckUpdateFails(t *testing.
 	}
 }
 
+func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	activeSpec := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP","backends":[{"address":"10.0.0.1","weight":100}]}`)
+	staleSpec := []byte(`{"address":"203.0.113.20","port":443,"protocol":"TCP","backends":[{"address":"10.0.0.2","weight":100}]}`)
+	if err := st.SaveLastConfig("team-a/web", activeSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveLastConfig("team-b/api", staleSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveHealthState("team-b/api", "10.0.0.2", &store.BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	current := []v1alpha1.VirtualIP{{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+		},
+	}}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, current, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	removed := dp.removedVIPs()
+	if len(removed) != 1 {
+		t.Fatalf("removed VIP count = %d, want 1", len(removed))
+	}
+	if removed[0].Namespace != "team-b" || removed[0].Name != "api" || removed[0].Spec.Address != "203.0.113.20" {
+		t.Fatalf("removed VIP = %#v", removed[0])
+	}
+
+	active, err := st.LoadLastConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(active) != string(activeSpec) {
+		t.Fatalf("active config = %q, want %q", active, activeSpec)
+	}
+	stale, err := st.LoadLastConfig("team-b/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != nil {
+		t.Fatal("stale config should be deleted")
+	}
+	hc, err := st.LoadHealthState("team-b/api", "10.0.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hc != nil {
+		t.Fatal("stale health state should be deleted")
+	}
+}
+
 type recordingDataPlane struct {
 	mu       sync.Mutex
 	applies  int
 	backends []v1alpha1.BackendSpec
+	removed  []v1alpha1.VirtualIP
 }
 
 func (r *recordingDataPlane) ApplyVIP(_ context.Context, _ *v1alpha1.VirtualIP, backends []v1alpha1.BackendSpec) error {
@@ -107,7 +175,10 @@ func (r *recordingDataPlane) ApplyVIP(_ context.Context, _ *v1alpha1.VirtualIP, 
 	return nil
 }
 
-func (r *recordingDataPlane) RemoveVIP(context.Context, *v1alpha1.VirtualIP) error {
+func (r *recordingDataPlane) RemoveVIP(_ context.Context, vip *v1alpha1.VirtualIP) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.removed = append(r.removed, *vip.DeepCopy())
 	return nil
 }
 
@@ -141,6 +212,12 @@ func (r *recordingDataPlane) backendCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.backends)
+}
+
+func (r *recordingDataPlane) removedVIPs() []v1alpha1.VirtualIP {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]v1alpha1.VirtualIP(nil), r.removed...)
 }
 
 type recordingHealthCheckConditionUpdater struct {

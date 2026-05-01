@@ -157,6 +157,22 @@ func (s *Store) LoadLastConfig(vipKey string) ([]byte, error) {
 	return result, err
 }
 
+// LoadAllLastConfigs returns all persisted last-applied VIP configs keyed by
+// "namespace/name".
+func (s *Store) LoadAllLastConfigs() (map[string][]byte, error) {
+	result := make(map[string][]byte)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLastConfig)
+		return b.ForEach(func(k, v []byte) error {
+			value := make([]byte, len(v))
+			copy(value, v)
+			result[string(k)] = value
+			return nil
+		})
+	})
+	return result, err
+}
+
 // DeleteLastConfig removes the last-applied config for a VIP.
 func (s *Store) DeleteLastConfig(vipKey string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {

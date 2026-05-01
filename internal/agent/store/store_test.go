@@ -212,6 +212,42 @@ func TestSaveAndLoadLastConfig(t *testing.T) {
 	}
 }
 
+func TestLoadAllLastConfigs(t *testing.T) {
+	st := tempStore(t)
+
+	configs := map[string][]byte{
+		"team-a/web": []byte(`{"address":"203.0.113.10"}`),
+		"team-b/api": []byte(`{"address":"203.0.113.20"}`),
+	}
+	for key, config := range configs {
+		if err := st.SaveLastConfig(key, config); err != nil {
+			t.Fatalf("SaveLastConfig(%s): %v", key, err)
+		}
+	}
+
+	loaded, err := st.LoadAllLastConfigs()
+	if err != nil {
+		t.Fatalf("LoadAllLastConfigs: %v", err)
+	}
+	if len(loaded) != len(configs) {
+		t.Fatalf("LoadAllLastConfigs count = %d, want %d", len(loaded), len(configs))
+	}
+	for key, want := range configs {
+		if string(loaded[key]) != string(want) {
+			t.Fatalf("LoadAllLastConfigs[%s] = %q, want %q", key, loaded[key], want)
+		}
+	}
+
+	loaded["team-a/web"][0] = 'x'
+	again, err := st.LoadAllLastConfigs()
+	if err != nil {
+		t.Fatalf("LoadAllLastConfigs second read: %v", err)
+	}
+	if string(again["team-a/web"]) != string(configs["team-a/web"]) {
+		t.Fatal("LoadAllLastConfigs did not return a copy")
+	}
+}
+
 func TestLastConfigNamespacedVIPKeys(t *testing.T) {
 	st := tempStore(t)
 

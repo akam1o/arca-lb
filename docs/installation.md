@@ -107,6 +107,16 @@ docker build -f deploy/docker/Dockerfile.agent -t arcalb-agent:latest .
 
 Edit `config/manager/` and `config/agent/` manifests to reference your image registry.
 
+The Agent image does not include a default configuration file. When running it
+outside the Kubernetes manifest, mount a config file and pass it explicitly:
+
+```bash
+docker run --rm \
+  -v "$PWD/deploy/config/agent.yaml:/etc/arca-lb/agent.yaml:ro" \
+  arcalb-agent:latest \
+  --config=/etc/arca-lb/agent.yaml
+```
+
 ### Method 3: Run Agent outside Kubernetes
 
 The Agent can connect to a K8s API server from outside the cluster using a kubeconfig file:

@@ -30,15 +30,15 @@ RUN apk add --no-cache ca-certificates frr iputils tzdata
 WORKDIR /app
 
 COPY --from=builder /build/bin/arcalb-agent /app/arcalb-agent
-COPY --from=builder /build/deploy/config/agent.example.yaml /app/config/agent.example.yaml
 
-RUN mkdir -p /run/vpp /var/lib/arca-lb
+RUN mkdir -p /etc/arca-lb /run/vpp /var/lib/arca-lb
 
 EXPOSE 9090
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:9090/health || exit 1
 
-ENV ARCA_AGENT_CONFIG=/app/config/agent.yaml
+# Agent configuration is environment-specific. Mount a config file and pass
+# --config=/path/to/agent.yaml, or set ARCA_AGENT_CONFIG at runtime.
 
 ENTRYPOINT ["/app/arcalb-agent"]

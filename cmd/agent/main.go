@@ -186,7 +186,7 @@ func main() {
 	currentVIPs, err := watcher.ListCurrent(ctx, watcherCfg)
 	if err != nil {
 		logger.Warn("failed to list current VirtualIPs for stale dataplane cleanup", "error", err)
-	} else if err := cleanupStaleLastConfigs(ctx, st, dp, currentVIPs, logger); err != nil {
+	} else if err := cleanupStaleLastConfigs(ctx, st, dp, router, currentVIPs, logger); err != nil {
 		logger.Warn("stale dataplane cleanup completed with errors", "error", err)
 	}
 
@@ -314,7 +314,14 @@ func (h *vipEventHandler) updateHealthCheckCondition(vip *v1alpha1.VirtualIP, st
 	}
 }
 
-func cleanupStaleLastConfigs(ctx context.Context, st *store.Store, dp dataplane.DataPlane, currentVIPs []v1alpha1.VirtualIP, logger *slog.Logger) error {
+func cleanupStaleLastConfigs(
+	ctx context.Context,
+	st *store.Store,
+	dp dataplane.DataPlane,
+	router routing.Router,
+	currentVIPs []v1alpha1.VirtualIP,
+	logger *slog.Logger,
+) error {
 	if st == nil || dp == nil {
 		return nil
 	}
@@ -353,6 +360,15 @@ func cleanupStaleLastConfigs(ctx context.Context, st *store.Store, dp dataplane.
 				firstErr = err
 			}
 			continue
+		}
+		if router != nil {
+			if err := router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
+				logger.Warn("failed to withdraw stale retained VIP route", "vip", key, "error", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
 		}
 		if err := st.DeleteLastConfig(key); err != nil {
 			logger.Warn("failed to delete stale last-applied config", "vip", key, "error", err)

@@ -116,6 +116,13 @@ func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
 	}
 
 	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.20"); err != nil {
+		t.Fatal(err)
+	}
 	current := []v1alpha1.VirtualIP{{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
 		Spec: v1alpha1.VirtualIPSpec{
@@ -125,7 +132,7 @@ func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
 		},
 	}}
 
-	if err := cleanupStaleLastConfigs(context.Background(), st, dp, current, logger); err != nil {
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, current, logger); err != nil {
 		t.Fatalf("cleanupStaleLastConfigs: %v", err)
 	}
 
@@ -157,6 +164,12 @@ func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
 	}
 	if hc != nil {
 		t.Fatal("stale health state should be deleted")
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("active route should remain announced")
+	}
+	if router.IsAnnounced("203.0.113.20") {
+		t.Fatal("stale route should be withdrawn")
 	}
 }
 

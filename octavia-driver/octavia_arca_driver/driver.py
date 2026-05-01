@@ -125,8 +125,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     def loadbalancer_update(self, old_loadbalancer, new_loadbalancer):
         """Handle loadbalancer update.
 
-        Loadbalancer updates (e.g., admin_state_up change, name change)
-        don't affect VirtualIP spec directly.
+        Most load balancer updates are Octavia-only metadata. admin_state_up
+        toggles are reflected by clearing or restoring VirtualIP backends.
         """
         lb = new_loadbalancer.to_dict() if hasattr(new_loadbalancer, 'to_dict') else new_loadbalancer
         lb_id = lb.get("loadbalancer_id")
@@ -134,9 +134,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         vip_address = lb.get("vip_address")
         if vip_address:
             self._remember_loadbalancer_vip(lb_id, vip_address)
+        vips = self._k8s.find_by_loadbalancer(lb_id)
         if admin_state is False:
             # Remove all backends to effectively disable.
-            vips = self._k8s.find_by_loadbalancer(lb_id)
             for vip in vips:
                 name = vip["metadata"]["name"]
                 spec = vip.get("spec", {})
@@ -144,6 +144,15 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 self._k8s.update_virtualip(name, spec)
             LOG.info("Loadbalancer %s disabled, cleared backends from %d VIPs",
                      lb_id, len(vips))
+        elif admin_state is True:
+            restored = self._restore_virtualip_backends(vips)
+            LOG.info("Loadbalancer %s enabled, restored backends on %d VIPs",
+                     lb_id, restored)
+
+        self._push_resource_active_status(
+            f"loadbalancer/{lb_id}",
+            lb_id=lb_id,
+        )
 
     def loadbalancer_failover(self, loadbalancer_id):
         raise driver_exc.UnsupportedOptionError(
@@ -276,8 +285,25 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         admin_state = lst.get("admin_state_up")
         if admin_state is False:
             spec["backends"] = []
+        elif admin_state is True:
+            if self._restore_virtualip_backends([vip]):
+                self._push_resource_active_status(
+                    name,
+                    lb_id=vip.get("metadata", {}).get("annotations", {}).get(
+                        constants.ANNOTATION_LB_ID
+                    ),
+                    active_listener_ids=[listener_id],
+                )
+                return
 
         self._k8s.update_virtualip(name, spec)
+        self._push_resource_active_status(
+            name,
+            lb_id=vip.get("metadata", {}).get("annotations", {}).get(
+                constants.ANNOTATION_LB_ID
+            ),
+            active_listener_ids=[listener_id],
+        )
 
     # ------------------------------------------------------------------
     # Pool operations
@@ -365,6 +391,24 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 "Pool %s requested lb_algorithm=%s, but ArcaLB uses Maglev "
                 "consistent hashing (functionally similar to SOURCE_IP)",
                 pool_id, algorithm,
+            )
+        vip = self._k8s.find_by_pool(pool_id)
+        if vip:
+            annotations = vip.get("metadata", {}).get("annotations", {})
+            self._push_resource_active_status(
+                vip.get("metadata", {}).get("name"),
+                lb_id=annotations.get(constants.ANNOTATION_LB_ID),
+                active_listener_ids=[
+                    annotations.get(constants.ANNOTATION_LISTENER_ID)
+                ],
+                active_pool_ids=[pool_id],
+            )
+        else:
+            self._push_resource_active_status(
+                f"pool/{pool_id}",
+                lb_id=p.get("loadbalancer_id"),
+                active_listener_ids=[p.get("listener_id")],
+                active_pool_ids=[pool_id],
             )
 
     # ------------------------------------------------------------------
@@ -684,6 +728,53 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         vip_address = lb.get("vip_address", "")
         self._remember_loadbalancer_vip(lb_id, vip_address)
         return vip_address
+
+    def _restore_virtualip_backends(self, vips):
+        restored = 0
+        for vip in vips:
+            annotations = vip.get("metadata", {}).get("annotations", {})
+            pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
+            if not pool_id:
+                continue
+
+            members = self._resolved_pool_members(pool_id)
+            backends = []
+            member_map = {}
+            for member in members:
+                if not member.get("address"):
+                    continue
+                self._validate_member_dataplane_port(vip, member)
+                backends.append(self._backend_from_member(member))
+                member_id = self._member_id(member)
+                if member_id:
+                    member_map[member_id] = member.get("address")
+
+            name = vip["metadata"]["name"]
+            spec = vip.get("spec", {})
+            spec["backends"] = backends
+            self._set_member_map_annotation(annotations, member_map)
+            self._refresh_health_check_port(
+                spec, pool_id, vip, extra_members=members
+            )
+            self._k8s.update_virtualip(name, spec, annotations=annotations)
+            restored += 1
+        return restored
+
+    def _resolved_pool_members(self, pool_id):
+        members = []
+        for member in self._pool_members(pool_id):
+            if isinstance(member, str):
+                member = self._member_from_octavia(member)
+            else:
+                member = self._as_dict(member)
+                member_id = self._member_id(member)
+                if member_id and not member.get("address"):
+                    fetched = self._member_from_octavia(member_id)
+                    if fetched:
+                        member.update(fetched)
+            if member:
+                members.append(member)
+        return members
 
     def _remember_member_mapping(self, annotations, member):
         member_id = self._member_id(member)
@@ -1147,6 +1238,37 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
         )
         self._push_octavia_status(status_update, f"loadbalancer/{lb_id}")
+
+    def _push_resource_active_status(self, vip_name, lb_id=None,
+                                     active_listener_ids=None,
+                                     active_pool_ids=None,
+                                     active_hm_ids=None,
+                                     active_member_ids=None):
+        status_update = self._empty_octavia_status_update()
+
+        if lb_id:
+            status_update["loadbalancers"].append(
+                self._status_entry(lb_id, PROVISIONING_ACTIVE)
+            )
+        self._extend_status_entries(
+            status_update, "listeners", active_listener_ids,
+            PROVISIONING_ACTIVE,
+        )
+        self._extend_status_entries(
+            status_update, "pools", active_pool_ids,
+            PROVISIONING_ACTIVE,
+        )
+        self._extend_status_entries(
+            status_update, "healthmonitors", active_hm_ids,
+            PROVISIONING_ACTIVE,
+        )
+        self._extend_status_entries(
+            status_update, "members", active_member_ids,
+            PROVISIONING_ACTIVE,
+        )
+
+        if any(status_update.values()):
+            self._push_octavia_status(status_update, vip_name)
 
     def _push_resource_delete_status(self, vip_name, lb_id=None,
                                      delete_loadbalancer=False,

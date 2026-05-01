@@ -296,6 +296,15 @@ func (c *Client) watchLoop(ctx context.Context) {
 			return
 		default:
 			if err := c.watch(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				select {
+				case <-c.stopCh:
+					return
+				default:
+				}
+
 				c.logger.WithError(err).Error("Watch stream error")
 
 				// Try to reconnect

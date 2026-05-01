@@ -21,21 +21,36 @@ class FakeObj:
         return self._data
 
 
-def _make_vip(name, spec, annotations=None, status=None):
+def _make_vip(name, spec, annotations=None, status=None, generation=1):
     """Build a fake VirtualIP dict as returned by the K8s API."""
+    if status is None:
+        normalized_status = {}
+    else:
+        normalized_status = dict(status)
+        if "conditions" in normalized_status:
+            normalized_status["conditions"] = [
+                dict(condition)
+                for condition in normalized_status["conditions"]
+            ]
+        if normalized_status.get("conditions"):
+            normalized_status.setdefault("observedGeneration", generation)
+            for condition in normalized_status["conditions"]:
+                condition.setdefault("observedGeneration", generation)
+
     return {
         "apiVersion": "arca.io/v1alpha1",
         "kind": "VirtualIP",
         "metadata": {
             "name": name,
             "namespace": "arca-system",
+            "generation": generation,
             "labels": {
                 constants.LABEL_MANAGED_BY: constants.LABEL_MANAGED_BY_VALUE,
             },
             "annotations": annotations or {},
         },
         "spec": spec,
-        "status": status or {},
+        "status": normalized_status,
     }
 
 
@@ -2305,6 +2320,56 @@ class TestDriverLifecycle(unittest.TestCase):
         )
 
         self.driver._on_virtualip_status_change("ADDED", vip)
+
+        self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
+
+    def test_virtualip_status_change_skips_stale_status_generation(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+            },
+            status={
+                "observedGeneration": 1,
+                "healthyBackends": 1,
+                "totalBackends": 1,
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "True",
+                    },
+                ],
+            },
+            generation=2,
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
+
+    def test_virtualip_status_change_skips_stale_ready_condition(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+            },
+            status={
+                "healthyBackends": 1,
+                "totalBackends": 1,
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "True",
+                        "observedGeneration": 1,
+                    },
+                ],
+            },
+            generation=2,
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
 
         self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
 

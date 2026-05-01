@@ -333,6 +333,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         spec = vip.get("spec", {})
         backends = spec.get("backends", [])
         annotations = vip.get("metadata", {}).get("annotations", {})
+        self._validate_member_dataplane_port(vip, m)
 
         # Avoid duplicates.
         for b in backends:
@@ -390,6 +391,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
         annotations = vip.get("metadata", {}).get("annotations", {})
+        self._validate_member_dataplane_port(vip, m)
         for b in spec.get("backends", []):
             if b.get("address") == address:
                 b["weight"] = min(max(weight, 1), 100)
@@ -418,6 +420,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             member.to_dict() if hasattr(member, 'to_dict') else member
             for member in members
         ]
+        for m in member_dicts:
+            self._validate_member_dataplane_port(vip, m)
+
         backends = []
         new_member_map = {}
         for m in member_dicts:
@@ -808,6 +813,35 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             self._valid_port(member.get("monitor_port")) or
             self._valid_port(member.get("protocol_port"))
         )
+
+    def _validate_member_dataplane_port(self, vip, member):
+        member = self._as_dict(member)
+        protocol_port = self._valid_port(member.get("protocol_port"))
+        if protocol_port is None:
+            return
+
+        vip_port = self._vip_port(vip)
+        if vip_port is None:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Cannot determine listener port for member.",
+                operator_fault_string=(
+                    "VirtualIP spec.port is missing while validating Octavia "
+                    f"member {self._member_id(member) or member.get('address')}"
+                ),
+            )
+
+        if protocol_port != vip_port:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "ArcaLB requires member protocol_port to match the "
+                    "listener protocol_port."
+                ),
+                operator_fault_string=(
+                    "ArcaLB maps one VirtualIP port to backend addresses only; "
+                    f"member {self._member_id(member) or member.get('address')} "
+                    f"has protocol_port={protocol_port}, listener port={vip_port}"
+                ),
+            )
 
     def _pool_from_octavia(self, pool_id):
         if not pool_id:

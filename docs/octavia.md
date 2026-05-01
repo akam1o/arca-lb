@@ -40,7 +40,7 @@ OpenStack Tenant (API / Horizon / CLI)
 | HealthMonitor | healthCheck | HTTP, HTTPS, TCP, PING, and TLS-HELLO are supported. UDP-CONNECT is rejected. |
 | L7Policy/Rule | *(not supported)* | arca-lb is an L4 load balancer |
 
-Member weight is preserved in the VirtualIP backend spec. With the current VPP LB plugin path it is metadata only; weighted AS programming will take effect once the VPP LB API exposes backend weights.
+Member weight is preserved in the VirtualIP backend spec, but it is not applied to data-plane traffic today. With the current VPP LB plugin path it is metadata only; weighted AS programming will take effect once the VPP LB API exposes backend weights.
 
 ## Prerequisites
 
@@ -257,6 +257,7 @@ Available flavor metadata:
 
 - **L4 only**: L7 policies and rules are not supported. arca-lb is a Layer 4 load balancer.
 - **Load balancing algorithm**: VPP uses Maglev consistent hashing internally. The `lb_algorithm` parameter is accepted but the underlying algorithm is always Maglev (functionally similar to `SOURCE_IP`).
+- **Member weight**: Octavia member `weight` is stored in the VirtualIP backend spec, but it does not affect live traffic distribution yet. Support will be wired into the data plane once the VPP LB API exposes backend weights.
 - **Failover**: Manual failover is not supported. arca-lb relies on BGP ECMP for automatic failover across LB nodes.
 - **Floating IP**: VIP addresses are managed by arca-lb's BGP announcements, not by Neutron floating IPs.
 - **TERMINATED_HTTPS**: TLS termination is not supported at the LB level. Use TCP passthrough with backend-side TLS.

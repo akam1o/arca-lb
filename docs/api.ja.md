@@ -107,13 +107,13 @@ status:
 
 | フィールド | 型 | 必須 | 説明 |
 |----------|-----|------|------|
-| `type` | string | はい | プローブタイプ: `http`, `https`, `tcp`, `ping` |
+| `type` | string | はい | プローブタイプ: `http`, `https`, `tcp`, `ping`, `tls-hello` |
 | `intervalSeconds` | int (≥1) | いいえ | プローブ間隔。デフォルト: 5 |
 | `timeoutSeconds` | int (≥1) | いいえ | 応答待ちの最大時間。デフォルト: 3 |
 | `riseCount` | int (≥1) | いいえ | 健全と判定する連続成功回数。デフォルト: 3 |
 | `fallCount` | int (≥1) | いいえ | 不健全と判定する連続失敗回数。デフォルト: 2 |
 | `http` | HTTPHealthCheck | いいえ | HTTP/HTTPS 固有の設定 |
-| `tcp` | TCPHealthCheck | いいえ | TCP 固有の設定 |
+| `tcp` | TCPHealthCheck | いいえ | TCP/TLS-HELLO 固有の設定 |
 
 #### HTTPHealthCheck
 
@@ -131,9 +131,9 @@ status:
 
 | フィールド | 型 | 必須 | 説明 |
 |----------|-----|------|------|
-| `port` | int (1-65535) | はい | TCP 接続のターゲットポート |
-| `send` | string | いいえ | 接続後に送信するデータ |
-| `expectedResponse` | string | いいえ | 応答に期待する部分文字列 |
+| `port` | int (1-65535) | はい | TCP または TLS-HELLO 接続のターゲットポート |
+| `send` | string | いいえ | TCP 接続後に送信するデータ。TLS-HELLO では無視されます。 |
+| `expectedResponse` | string | いいえ | TCP 応答に期待する部分文字列。TLS-HELLO では無視されます。 |
 
 ### Status フィールド
 
@@ -247,6 +247,31 @@ spec:
     fallCount: 3
     tcp:
       port: 3306
+```
+
+#### TLS hello ヘルスチェック
+
+```yaml
+apiVersion: arca.io/v1alpha1
+kind: VirtualIP
+metadata:
+  name: tls-vip
+spec:
+  address: 203.0.113.25
+  port: 443
+  protocol: TCP
+  encapType: NAT4
+  backends:
+    - address: 10.0.2.10
+      weight: 100
+  healthCheck:
+    type: tls-hello
+    intervalSeconds: 10
+    timeoutSeconds: 5
+    riseCount: 2
+    fallCount: 3
+    tcp:
+      port: 443
 ```
 
 #### GRE4 + Ping ヘルスチェック

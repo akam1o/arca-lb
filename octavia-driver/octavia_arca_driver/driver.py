@@ -768,9 +768,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     def _build_health_check(self, hm, vip=None):
         """Convert Octavia HealthMonitor dict to VirtualIP healthCheck spec."""
         hm_type = hm.get("type", "TCP")
-        mapped_type = constants.HEALTH_MONITOR_TYPE_MAP.get(
-            hm_type, "tcp"
-        )
+        mapped_type = constants.HEALTH_MONITOR_TYPE_MAP.get(hm_type)
+        if not mapped_type:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    f"Health monitor type {hm_type} is not supported by "
+                    "ArcaLB."
+                ),
+                operator_fault_string=(
+                    f"Unsupported health monitor type: {hm_type}"
+                ),
+            )
 
         hc = {
             "type": mapped_type,
@@ -798,7 +806,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             host = hm.get("domain_name")
             if host:
                 hc["http"]["host"] = host
-        elif mapped_type == "tcp":
+        elif mapped_type in ("tcp", "tls-hello"):
             port = self._resolve_health_check_port(hm, vip)
             hc["tcp"] = {
                 "port": port,
@@ -814,7 +822,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return
 
         hc_type = hc.get("type")
-        if hc_type not in ("http", "https", "tcp"):
+        if hc_type not in ("http", "https", "tcp", "tls-hello"):
             return
 
         port = self._resolve_health_check_port(

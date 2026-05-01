@@ -157,6 +157,23 @@ func TestValidateVirtualIP_HTTPHealthCheck_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateVirtualIP_TLSHelloHealthCheck_Valid(t *testing.T) {
+	vip := validVIP()
+	vip.Spec.HealthCheck = &v1alpha1.HealthCheckSpec{
+		Type:            v1alpha1.HCTypeTLSHello,
+		IntervalSeconds: 5,
+		TimeoutSeconds:  3,
+		RiseCount:       3,
+		FallCount:       2,
+		TCP: &v1alpha1.TCPHealthCheck{
+			Port: 8443,
+		},
+	}
+	if err := validateVirtualIP(vip); err != nil {
+		t.Errorf("expected valid TLS hello health check, got: %v", err)
+	}
+}
+
 func TestValidateVirtualIP_HTTPHealthCheck_MissingHTTPConfig(t *testing.T) {
 	vip := validVIP()
 	vip.Spec.HealthCheck = &v1alpha1.HealthCheckSpec{

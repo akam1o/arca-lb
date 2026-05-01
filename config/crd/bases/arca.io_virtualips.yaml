@@ -201,6 +201,7 @@ spec:
                     - https
                     - tcp
                     - ping
+                    - tls-hello
                     type: string
                 required:
                 - type
@@ -208,8 +209,8 @@ spec:
                 x-kubernetes-validations:
                 - message: spec.healthCheck.http is required for type http or https
                   rule: (self.type != 'http' && self.type != 'https') || has(self.http)
-                - message: spec.healthCheck.tcp is required for type tcp
-                  rule: self.type != 'tcp' || has(self.tcp)
+                - message: spec.healthCheck.tcp is required for type tcp or tls-hello
+                  rule: (self.type != 'tcp' && self.type != 'tls-hello') || has(self.tcp)
                 - message: spec.healthCheck.timeoutSeconds must be less than intervalSeconds
                   rule: '(has(self.timeoutSeconds) ? self.timeoutSeconds : 3) < (has(self.intervalSeconds)
                     ? self.intervalSeconds : 5)'

@@ -37,7 +37,7 @@ OpenStack Tenant (API / Horizon / CLI)
 | Listener | VirtualIP resource | port + protocol define a VirtualIP |
 | Pool | backends[] | Maps to the backend list |
 | Member | backends[].address + monitorAddress + weight | Individual backend entry. `monitor_address` maps to `monitorAddress` for health checks. |
-| HealthMonitor | healthCheck | Probe type and parameters |
+| HealthMonitor | healthCheck | HTTP, HTTPS, TCP, PING, and TLS-HELLO are supported. UDP-CONNECT is rejected. |
 | L7Policy/Rule | *(not supported)* | arca-lb is an L4 load balancer |
 
 Member weight is preserved in the VirtualIP backend spec. With the current VPP LB plugin path it is metadata only; weighted AS programming will take effect once the VPP LB API exposes backend weights.
@@ -260,6 +260,7 @@ Available flavor metadata:
 - **Failover**: Manual failover is not supported. arca-lb relies on BGP ECMP for automatic failover across LB nodes.
 - **Floating IP**: VIP addresses are managed by arca-lb's BGP announcements, not by Neutron floating IPs.
 - **TERMINATED_HTTPS**: TLS termination is not supported at the LB level. Use TCP passthrough with backend-side TLS.
+- **UDP-CONNECT health monitors**: Not supported. The driver rejects this type instead of silently mapping it to a TCP probe.
 
 ## Troubleshooting
 

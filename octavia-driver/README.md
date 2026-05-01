@@ -38,6 +38,8 @@ See [docs/octavia.md](../docs/octavia.md) for full documentation.
 | Pool + Members | backends[] |
 | HealthMonitor | healthCheck |
 
+Member `weight` is stored in the VirtualIP backend spec, but the current VPP LB plugin path does not apply it to live traffic distribution. Weighted backend programming will be enabled once the VPP LB API exposes backend weights.
+
 ## Development
 
 ```bash

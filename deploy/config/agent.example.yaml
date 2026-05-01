@@ -28,6 +28,8 @@ dataplane:
     dscp: 10
     service_type: CLUSTERIP
     new_flows_table_length: 65537
+    retained_vip_tuning_drift_policy: rolling_recreate
+    retained_vip_tuning_drift_drain: 30s
 
 routing:
   # Enable BGP route management via FRR.

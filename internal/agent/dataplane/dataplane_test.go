@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	"go.fd.io/govpp/binapi/lb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -243,6 +244,45 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 	}
 	if entry.vip.Spec.DSCP == nil || *entry.vip.Spec.DSCP != existingDSCP {
 		t.Fatalf("existing VIP was changed: dscp=%v", entry.vip.Spec.DSCP)
+	}
+}
+
+func TestVPPDetectsFlowTableLengthTuningDrift(t *testing.T) {
+	vpp := &VPP{
+		config: VPPConfig{
+			EncapType:           "L3DSR",
+			DSCP:                10,
+			ServiceType:         "CLUSTERIP",
+			NewFlowsTableLength: 2048,
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 1024})
+	if len(drifts) != 1 {
+		t.Fatalf("drift count = %d, want 1", len(drifts))
+	}
+	if drifts[0].Field != "new_flows_table_length" || drifts[0].Current != "1024" || drifts[0].Desired != "2048" {
+		t.Fatalf("drift = %#v, want new_flows_table_length 1024 -> 2048", drifts[0])
+	}
+}
+
+func TestVPPDetectTuningDriftsUsesDumpWidthForFlowTableLength(t *testing.T) {
+	vpp := &VPP{
+		config: VPPConfig{
+			EncapType:           "L3DSR",
+			DSCP:                10,
+			ServiceType:         "CLUSTERIP",
+			NewFlowsTableLength: 65537,
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 1}); len(drifts) != 0 {
+		t.Fatalf("drift count = %d, want 0 when dump-width representation matches", len(drifts))
+	}
+	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 2}); len(drifts) != 1 {
+		t.Fatalf("drift count = %d, want 1 when dump-width representation differs", len(drifts))
 	}
 }
 

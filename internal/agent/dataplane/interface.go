@@ -29,6 +29,14 @@ type State struct {
 	VIPs []VIPState
 }
 
+// VIPTuningDrift describes a retained dataplane VIP that is forwarding-compatible
+// with the desired VIP but has a tuning-only setting that should be repaired.
+type VIPTuningDrift struct {
+	Field   string
+	Current string
+	Desired string
+}
+
 // DataPlane is the abstraction for data-plane operations.
 // Implementations must be safe for concurrent use.
 type DataPlane interface {
@@ -54,6 +62,18 @@ type DataPlane interface {
 
 	// Close releases resources held by the data plane.
 	Close() error
+}
+
+// TuningDriftReporter is optionally implemented by data planes that can detect
+// tuning drift while adopting retained dataplane state after an agent restart.
+type TuningDriftReporter interface {
+	TuningDrifts(vipKey string) []VIPTuningDrift
+}
+
+// VIPRecreator is optionally implemented by data planes that can recreate a VIP
+// after the reconciler has drained traffic from the local node.
+type VIPRecreator interface {
+	RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error
 }
 
 // New creates a DataPlane from a type name and config.

@@ -164,6 +164,54 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(spec["encapType"], "L3DSR")
         self.assertEqual(spec["dscp"], 10)
 
+    def test_first_listener_uses_loadbalancer_create_vip(self):
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        listener_id = "aaaaaaaa-1111-2222-3333-444444444444"
+        loadbalancer = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+        })
+        listener = FakeObj({
+            "listener_id": listener_id,
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "project_id": "test-project",
+        })
+
+        self.mock_k8s.find_by_loadbalancer.return_value = []
+
+        self.driver.loadbalancer_create(loadbalancer)
+        self.driver.listener_create(listener)
+
+        self.mock_k8s.create_virtualip.assert_called_once()
+        spec = self.mock_k8s.create_virtualip.call_args[0][1]
+        self.assertEqual(spec["address"], "203.0.113.10")
+        self.mock_k8s.find_by_loadbalancer.assert_not_called()
+
+    def test_first_listener_can_fetch_vip_from_octavia_loadbalancer(self):
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        listener = FakeObj({
+            "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "project_id": "test-project",
+        })
+
+        self.mock_k8s.find_by_loadbalancer.return_value = []
+        self.mock_driver_lib.get_loadbalancer.return_value = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+        })
+
+        self.driver.listener_create(listener)
+
+        self.mock_driver_lib.get_loadbalancer.assert_called_once_with(lb_id)
+        self.mock_k8s.create_virtualip.assert_called_once()
+        spec = self.mock_k8s.create_virtualip.call_args[0][1]
+        self.assertEqual(spec["address"], "203.0.113.10")
+
     def test_member_create_adds_backend(self):
         existing_vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",

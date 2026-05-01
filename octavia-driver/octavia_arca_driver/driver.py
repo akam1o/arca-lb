@@ -15,6 +15,7 @@ Mapping:
 """
 
 import logging
+import threading
 
 from oslo_config import cfg
 from octavia_lib.api.drivers import data_models as dm
@@ -54,6 +55,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._default_encap_type = conf.default_encap_type
         self._default_dscp = conf.default_dscp
         self._driver_lib = driver_lib.DriverLibrary()
+        self._loadbalancer_vips = {}
+        self._loadbalancer_vips_lock = threading.Lock()
 
         # Start background status watcher.
         self._status_watcher = VirtualIPStatusWatcher(
@@ -87,6 +90,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 operator_fault_string="loadbalancer_create called without vip_address",
             )
 
+        self._remember_loadbalancer_vip(lb_id, vip_address)
         LOG.info("Loadbalancer %s created with VIP %s (deferred until listener)",
                  lb_id, vip_address)
 
@@ -98,6 +102,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         for vip in vips:
             name = vip["metadata"]["name"]
             self._k8s.delete_virtualip(name)
+        self._forget_loadbalancer_vip(lb_id)
         LOG.info("Deleted %d VirtualIP(s) for loadbalancer %s",
                  len(vips), lb_id)
 
@@ -110,6 +115,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         lb = new_loadbalancer.to_dict() if hasattr(new_loadbalancer, 'to_dict') else new_loadbalancer
         lb_id = lb.get("loadbalancer_id")
         admin_state = lb.get("admin_state_up")
+        vip_address = lb.get("vip_address")
+        if vip_address:
+            self._remember_loadbalancer_vip(lb_id, vip_address)
         if admin_state is False:
             # Remove all backends to effectively disable.
             vips = self._k8s.find_by_loadbalancer(lb_id)
@@ -149,14 +157,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 operator_fault_string=f"Unsupported protocol: {protocol}",
             )
 
-        # We need the VIP address from the loadbalancer. Retrieve it from
-        # existing VIPs or require the caller provides it.
+        # We need the VIP address from the loadbalancer. Octavia's normal
+        # listener_create payload does not include it, so remember the value
+        # from loadbalancer_create and fall back to existing VIPs after a
+        # driver restart or for additional listeners on the same LB.
         vip_address = lst.get("vip_address", "")
+        if not vip_address:
+            vip_address = self._loadbalancer_vip(lb_id)
         if not vip_address:
             # Try to find another VIP for this LB to get the address.
             existing = self._k8s.find_by_loadbalancer(lb_id)
             if existing:
                 vip_address = existing[0].get("spec", {}).get("address", "")
+        if not vip_address:
+            vip_address = self._loadbalancer_vip_from_octavia(lb_id)
         if not vip_address:
             raise driver_exc.UnsupportedOptionError(
                 user_fault_string="Cannot determine VIP address for listener.",
@@ -187,6 +201,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         }
 
         self._k8s.create_virtualip(name, spec, annotations=annotations)
+        self._remember_loadbalancer_vip(lb_id, vip_address)
         LOG.info("Created VirtualIP %s for listener %s (LB %s)",
                  name, listener_id, lb_id)
 
@@ -533,6 +548,39 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _remember_loadbalancer_vip(self, lb_id, vip_address):
+        if not lb_id or not vip_address:
+            return
+        with self._loadbalancer_vips_lock:
+            self._loadbalancer_vips[lb_id] = vip_address
+
+    def _forget_loadbalancer_vip(self, lb_id):
+        if not lb_id:
+            return
+        with self._loadbalancer_vips_lock:
+            self._loadbalancer_vips.pop(lb_id, None)
+
+    def _loadbalancer_vip(self, lb_id):
+        if not lb_id:
+            return ""
+        with self._loadbalancer_vips_lock:
+            return self._loadbalancer_vips.get(lb_id, "")
+
+    def _loadbalancer_vip_from_octavia(self, lb_id):
+        if not lb_id:
+            return ""
+        loadbalancer = self._driver_lib.get_loadbalancer(lb_id)
+        if not loadbalancer:
+            return ""
+        lb = (
+            loadbalancer.to_dict()
+            if hasattr(loadbalancer, "to_dict")
+            else loadbalancer
+        )
+        vip_address = lb.get("vip_address", "")
+        self._remember_loadbalancer_vip(lb_id, vip_address)
+        return vip_address
 
     def _build_health_check(self, hm):
         """Convert Octavia HealthMonitor dict to VirtualIP healthCheck spec."""

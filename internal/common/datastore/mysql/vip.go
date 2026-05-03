@@ -262,6 +262,62 @@ func (ds *MySQLDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
 	return vips, nil
 }
 
+func vipUpdateValues(vip *models.VIP, fallback VIPRecord) map[string]interface{} {
+	vipAddress := vip.VIP
+	if vipAddress == "" {
+		vipAddress = fallback.VIP
+	}
+
+	port := vip.Port
+	if port == 0 {
+		port = fallback.Port
+	}
+
+	protocol := string(vip.Protocol)
+	if protocol == "" {
+		protocol = fallback.Protocol
+	}
+
+	lbMethod := string(vip.LBMethod)
+	if lbMethod == "" {
+		lbMethod = fallback.LBMethod
+	}
+	if lbMethod == "" {
+		lbMethod = string(models.LBMethodMaglev)
+	}
+
+	var encapType interface{}
+	if vip.EncapType != "" {
+		encapType = string(vip.EncapType)
+	}
+
+	var dscp interface{}
+	if vip.DSCP != nil {
+		dscp = *vip.DSCP
+	}
+
+	createdAt := vip.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = fallback.CreatedAt
+	}
+
+	updatedAt := vip.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = fallback.UpdatedAt
+	}
+
+	return map[string]interface{}{
+		"vip":        vipAddress,
+		"port":       port,
+		"protocol":   protocol,
+		"lb_method":  lbMethod,
+		"encap_type": encapType,
+		"dscp":       dscp,
+		"created_at": createdAt,
+		"updated_at": updatedAt,
+	}
+}
+
 // UpdateVIP updates an existing VIP in MySQL
 func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 	if vip.ID == "" {
@@ -281,28 +337,21 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 	vip.CreatedAt = existing.CreatedAt
 	vip.UpdatedAt = time.Now()
 
-	// Convert to database record
-	var encapType *string
-	if vip.EncapType != "" {
-		v := string(vip.EncapType)
-		encapType = &v
-	}
-	vipRecord := VIPRecord{
-		ID:        vip.ID,
-		VIP:       vip.VIP,
-		Port:      vip.Port,
-		Protocol:  string(vip.Protocol),
-		LBMethod:  string(vip.LBMethod),
-		EncapType: encapType,
-		DSCP:      vip.DSCP,
-		CreatedAt: vip.CreatedAt,
-		UpdatedAt: vip.UpdatedAt,
+	fallback := VIPRecord{
+		VIP:       existing.VIP,
+		Port:      existing.Port,
+		Protocol:  string(existing.Protocol),
+		LBMethod:  string(existing.LBMethod),
+		CreatedAt: existing.CreatedAt,
+		UpdatedAt: existing.UpdatedAt,
 	}
 
 	// Update VIP in transaction
 	err = ds.db.Transaction(func(tx *gorm.DB) error {
 		// Update VIP
-		result := tx.Model(&VIPRecord{}).Where("id = ?", vip.ID).Updates(&vipRecord)
+		result := tx.Model(&VIPRecord{}).
+			Where("id = ?", vip.ID).
+			Updates(vipUpdateValues(vip, fallback))
 		if result.Error != nil {
 			return normalizeError(fmt.Errorf("failed to update VIP: %w", result.Error))
 		}

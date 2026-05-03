@@ -21,6 +21,10 @@ func RunDataStoreTests(t *testing.T, factory DataStoreFactory) {
 		testVIPCRUD(t, factory)
 	})
 
+	t.Run("VIP Nullable Fields", func(t *testing.T) {
+		testVIPNullableFields(t, factory)
+	})
+
 	t.Run("Backend CRUD", func(t *testing.T) {
 		testBackendCRUD(t, factory)
 	})
@@ -126,6 +130,54 @@ func testVIPCRUD(t *testing.T, factory DataStoreFactory) {
 	// Deleting a missing VIP should report not found consistently.
 	err = ds.DeleteVIP(ctx, vip.ID)
 	assert.ErrorIs(t, err, datastore.ErrNotFound)
+}
+
+func testVIPNullableFields(t *testing.T, factory DataStoreFactory) {
+	ctx := context.Background()
+	ds, cleanup := factory(ctx, t)
+	defer cleanup()
+
+	dscp := uint8(10)
+	vip := &models.VIP{
+		VIP:       "192.168.1.120",
+		Port:      80,
+		Protocol:  models.ProtocolTCP,
+		LBMethod:  models.LBMethodMaglev,
+		EncapType: models.EncapTypeL3DSR,
+		DSCP:      &dscp,
+	}
+
+	err := ds.CreateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	vip.EncapType = ""
+	vip.DSCP = nil
+	err = ds.UpdateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	updated, err := ds.GetVIP(ctx, vip.ID)
+	require.NoError(t, err)
+	assert.Empty(t, updated.EncapType)
+	assert.Nil(t, updated.DSCP)
+
+	nextDSCP := uint8(20)
+	updated.EncapType = models.EncapTypeGRE4
+	updated.DSCP = &nextDSCP
+	err = ds.UpdateVIP(ctx, updated)
+	require.NoError(t, err)
+
+	tx, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	updated.EncapType = ""
+	updated.DSCP = nil
+	err = tx.UpdateVIP(ctx, updated)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+
+	updated, err = ds.GetVIP(ctx, vip.ID)
+	require.NoError(t, err)
+	assert.Empty(t, updated.EncapType)
+	assert.Nil(t, updated.DSCP)
 }
 
 func testBackendCRUD(t *testing.T, factory DataStoreFactory) {

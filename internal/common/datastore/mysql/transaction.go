@@ -187,27 +187,12 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 	}
 
 	vip.UpdatedAt = time.Now()
-
-	// Convert to database record
-	var encapType *string
-	if vip.EncapType != "" {
-		v := string(vip.EncapType)
-		encapType = &v
-	}
-	vipRecord := VIPRecord{
-		ID:        vip.ID,
-		VIP:       vip.VIP,
-		Port:      vip.Port,
-		Protocol:  string(vip.Protocol),
-		LBMethod:  string(vip.LBMethod),
-		EncapType: encapType,
-		DSCP:      vip.DSCP,
-		CreatedAt: existingRecord.CreatedAt, // Preserve CreatedAt
-		UpdatedAt: vip.UpdatedAt,
-	}
+	vip.CreatedAt = existingRecord.CreatedAt
 
 	// Update VIP
-	result := tx.tx.Model(&VIPRecord{}).Where("id = ?", vip.ID).Updates(&vipRecord)
+	result := tx.tx.Model(&VIPRecord{}).
+		Where("id = ?", vip.ID).
+		Updates(vipUpdateValues(vip, existingRecord))
 	if result.Error != nil {
 		return normalizeError(fmt.Errorf("failed to update VIP: %w", result.Error))
 	}

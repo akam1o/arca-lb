@@ -277,6 +277,21 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	retrieved, err := ds.GetVIP(ctx, vip.ID)
 	require.NoError(t, err)
 	assert.Equal(t, vip.ID, retrieved.ID)
+	originalCreatedAt := retrieved.CreatedAt
+
+	txUpdateVIP, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+
+	retrieved.Port = 8080
+	err = txUpdateVIP.UpdateVIP(ctx, retrieved)
+	require.NoError(t, err)
+	err = txUpdateVIP.Commit()
+	require.NoError(t, err)
+
+	updatedVIP, err := ds.GetVIP(ctx, vip.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 8080, updatedVIP.Port)
+	assert.Equal(t, originalCreatedAt, updatedVIP.CreatedAt)
 
 	// A backend created in a transaction should be fully usable after commit.
 	txBackend, err := ds.BeginTx(ctx)
@@ -323,6 +338,26 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	}
 	require.ErrorIs(t, err, datastore.ErrNotFound)
 	_ = txMissingBackend.Rollback()
+
+	// A transactional VIP update must not create a missing VIP.
+	txMissingVIPUpdate, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+
+	missingVIP := &models.VIP{
+		ID:       "missing-vip-update-id-" + time.Now().Format("150405.000000000"),
+		VIP:      "192.168.1.254",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = txMissingVIPUpdate.UpdateVIP(ctx, missingVIP)
+	if err == nil {
+		err = txMissingVIPUpdate.Commit()
+	}
+	require.ErrorIs(t, err, datastore.ErrNotFound)
+	_, err = ds.GetVIP(ctx, missingVIP.ID)
+	require.ErrorIs(t, err, datastore.ErrNotFound)
+	_ = txMissingVIPUpdate.Rollback()
 
 	// Test rollback
 	tx2, err := ds.BeginTx(ctx)

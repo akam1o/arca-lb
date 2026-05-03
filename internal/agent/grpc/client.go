@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -588,9 +589,14 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 
 			// Parse Config JSON if present
 			if pbVipConfig.HealthCheck.Config != "" {
-				// JSON parsing would go here
-				// For now, we'll leave it as empty map
-				vipConfig.HealthCheck.Config = make(models.HCConfig)
+				var hcConfig models.HCConfig
+				if err := json.Unmarshal([]byte(pbVipConfig.HealthCheck.Config), &hcConfig); err != nil {
+					c.logger.WithError(err).
+						WithField("vip_id", pbVipConfig.HealthCheck.VipId).
+						Warn("Failed to parse health check config")
+				} else {
+					vipConfig.HealthCheck.Config = hcConfig
+				}
 			}
 		}
 

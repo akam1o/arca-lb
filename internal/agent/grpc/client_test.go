@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Mock gRPC server for testing
@@ -615,5 +616,65 @@ func TestClientConfigHandler(t *testing.T) {
 
 	if !configReceived {
 		t.Error("Config handler was not called")
+	}
+}
+
+func TestConvertProtoToConfigParsesHealthCheckConfig(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	client := NewClient(&config.Config{}, logger, nil)
+	now := timestamppb.Now()
+
+	got := client.convertProtoToConfig(&pb.ConfigSnapshot{
+		Revision: 7,
+		Vips: []*pb.VIPConfig{
+			{
+				Vip: &pb.VIP{
+					Id:        "vip-1",
+					Vip:       "192.168.1.100",
+					Port:      80,
+					Protocol:  pb.Protocol_PROTOCOL_TCP,
+					LbMethod:  pb.LBMethod_LB_METHOD_MAGLEV,
+					CreatedAt: now,
+					UpdatedAt: now,
+				},
+				HealthCheck: &pb.HealthCheck{
+					Id:          "hc-1",
+					VipId:       "vip-1",
+					Type:        pb.HCType_HC_TYPE_HTTP,
+					IntervalSec: 10,
+					TimeoutSec:  5,
+					RiseCount:   3,
+					FallCount:   3,
+					Config:      `{"port":8080,"path":"/health","expected_codes":[200,204]}`,
+					CreatedAt:   now,
+					UpdatedAt:   now,
+				},
+			},
+		},
+	})
+
+	if got.Revision != 7 {
+		t.Fatalf("Revision = %d, want 7", got.Revision)
+	}
+	if len(got.VIPs) != 1 || got.VIPs[0].HealthCheck == nil {
+		t.Fatalf("expected one VIP with health check, got %#v", got.VIPs)
+	}
+
+	hcConfig := got.VIPs[0].HealthCheck.Config
+	if port, ok := hcConfig["port"].(float64); !ok || port != 8080 {
+		t.Fatalf("port = %#v, want JSON number 8080", hcConfig["port"])
+	}
+	if path, ok := hcConfig["path"].(string); !ok || path != "/health" {
+		t.Fatalf("path = %#v, want /health", hcConfig["path"])
+	}
+	codes, ok := hcConfig["expected_codes"].([]interface{})
+	if !ok || len(codes) != 2 {
+		t.Fatalf("expected_codes = %#v, want [200 204]", hcConfig["expected_codes"])
+	}
+	first, firstOK := codes[0].(float64)
+	second, secondOK := codes[1].(float64)
+	if !firstOK || !secondOK || first != 200 || second != 204 {
+		t.Fatalf("expected_codes = %#v, want [200 204]", hcConfig["expected_codes"])
 	}
 }

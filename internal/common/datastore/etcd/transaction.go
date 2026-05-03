@@ -117,7 +117,21 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 	if vip.ID == "" {
 		return fmt.Errorf("VIP ID is required")
 	}
+	if _, deleted := tx.deletedVIPIDs[vip.ID]; deleted {
+		return datastore.ErrNotFound
+	}
 
+	key := tx.ds.vipKey(vip.ID)
+	if _, created := tx.createdVIPIDs[vip.ID]; !created {
+		existing, err := tx.ds.GetVIP(ctx, vip.ID)
+		if err != nil {
+			return fmt.Errorf("failed to verify VIP: %w", err)
+		}
+		vip.CreatedAt = existing.CreatedAt
+		tx.cmps = append(tx.cmps, clientv3.Compare(clientv3.Version(key), ">", 0))
+	} else if vip.CreatedAt.IsZero() {
+		vip.CreatedAt = time.Now()
+	}
 	vip.UpdatedAt = time.Now()
 
 	// Serialize VIP to JSON
@@ -127,7 +141,6 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 	}
 
 	// Add put operation to transaction
-	key := tx.ds.vipKey(vip.ID)
 	tx.ops = append(tx.ops, clientv3.OpPut(key, string(data)))
 
 	return nil

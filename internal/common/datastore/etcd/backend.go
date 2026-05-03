@@ -174,11 +174,23 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 		return fmt.Errorf("failed to marshal backend: %w", err)
 	}
 
-	// Update in etcd
+	// Update in etcd only if the backend, reverse index, and parent VIP still exist.
 	key := ds.backendKey(backend.VIPID, backend.ID)
-	_, err = ds.client.Put(ctx, key, string(data))
+	indexKey := ds.backendIndexKey(backend.ID)
+	txnResp, err := ds.client.Txn(ctx).If(
+		clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0),
+		clientv3.Compare(clientv3.Version(key), ">", 0),
+		clientv3.Compare(clientv3.Version(indexKey), ">", 0),
+		clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID),
+	).Then(
+		clientv3.OpPut(key, string(data)),
+		clientv3.OpPut(indexKey, backend.VIPID),
+	).Commit()
 	if err != nil {
 		return fmt.Errorf("failed to update backend in etcd: %w", err)
+	}
+	if !txnResp.Succeeded {
+		return datastore.ErrNotFound
 	}
 
 	// Increment revision

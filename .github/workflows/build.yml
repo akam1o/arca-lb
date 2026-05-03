@@ -10,6 +10,7 @@ on:
 
 env:
   GO_VERSION: '1.25.x'
+  PYTHON_VERSION: '3.12'
   DOCKER_BUILDKIT: 1
 
 jobs:
@@ -59,6 +60,30 @@ jobs:
           file: ./coverage.out
           flags: unittests
           name: codecov-umbrella
+
+  octavia-driver-test:
+    name: Octavia Driver Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: octavia-driver/pyproject.toml
+
+      - name: Install Octavia driver test dependencies
+        working-directory: octavia-driver
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Run Octavia driver tests
+        working-directory: octavia-driver
+        run: python -m pytest -q
 
   build:
     name: Build

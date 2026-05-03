@@ -1350,6 +1350,67 @@ class TestDriverLifecycle(unittest.TestCase):
             "provisioning_status": "DELETED",
         }])
 
+    def test_member_delete_fetches_address_when_member_map_missing(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100},
+                          {"address": "10.0.1.2", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+        self.mock_driver_lib.get_member.return_value = FakeObj({
+            "member_id": "member-1111",
+            "address": "10.0.1.1",
+        })
+
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "protocol_port": 80,
+        })
+        self.driver.member_delete(member)
+
+        self.mock_driver_lib.get_member.assert_called_once_with("member-1111")
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["backends"], [{
+            "address": "10.0.1.2",
+            "weight": 100,
+        }])
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["members"], [{
+            "id": "member-1111",
+            "provisioning_status": "DELETED",
+        }])
+
+    def test_member_delete_rejects_unresolved_member_address(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+        self.mock_driver_lib.get_member.return_value = None
+
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "protocol_port": 80,
+        })
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.member_delete(member)
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+        self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
+
     def test_member_delete_reports_deleted_status(self):
         existing_vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",

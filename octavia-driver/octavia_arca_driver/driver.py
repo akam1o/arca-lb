@@ -592,14 +592,19 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         spec = vip.get("spec", {})
         annotations = vip.get("metadata", {}).get("annotations", {})
         delete_address = self._member_delete_address(annotations, m)
-        if delete_address:
-            backends = [b for b in spec.get("backends", [])
-                        if b.get("address") != delete_address]
-        else:
-            backends = list(spec.get("backends", []))
+        member_id = self._member_id(m)
+        if not delete_address:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Cannot determine member address for deletion.",
+                operator_fault_string=(
+                    "Octavia member delete payload and VirtualIP annotations "
+                    f"do not identify member {member_id or address}"
+                ),
+            )
+        backends = [b for b in spec.get("backends", [])
+                    if b.get("address") != delete_address]
         spec["backends"] = backends
         deleted_member_ids = self._forget_member_mapping(annotations, m)
-        member_id = self._member_id(m)
         if member_id and member_id not in deleted_member_ids:
             deleted_member_ids.append(member_id)
         self._discard_draining_member_ids(annotations, deleted_member_ids)
@@ -1282,7 +1287,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return None
 
         member_map = self._member_map_from_annotations(annotations)
-        return member_map.get(member_id)
+        mapped_address = member_map.get(member_id)
+        if mapped_address:
+            return mapped_address
+
+        fetched = self._member_from_octavia(member_id)
+        return fetched.get("address")
 
     def _discard_draining_member_ids(self, annotations, member_ids):
         draining_member_ids = self._draining_member_ids_from_annotations(

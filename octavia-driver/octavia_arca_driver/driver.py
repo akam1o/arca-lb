@@ -40,7 +40,9 @@ OPERATING_DRAINING = "DRAINING"
 DEFAULT_MEMBER_WEIGHT = 1
 OCTAVIA_MEMBER_WEIGHT_DRAINING = 0
 CONDITION_READY = "Ready"
+CONDITION_SERVING = "Serving"
 CONDITION_ROUTE_ADVERTISED = "RouteAdvertised"
+CONDITION_REASON_AGENT_STATUS_EXPIRED = "AgentStatusExpired"
 
 
 class ArcaLBDriver(driver_base.ProviderDriver):
@@ -1759,8 +1761,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         route_condition = self._condition(
             conditions, CONDITION_ROUTE_ADVERTISED
         )
+        serving_condition = self._condition(conditions, CONDITION_SERVING)
         if not self._status_matches_generation(metadata, status,
                                                ready_condition,
+                                               serving_condition,
                                                route_condition):
             LOG.debug(
                 "VirtualIP %s status is stale for generation %s; skipping "
@@ -1777,19 +1781,24 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         healthy = status.get("healthyBackends", 0)
         total = status.get("totalBackends", 0)
         route_advertised = self._route_advertised(route_condition)
+        control_plane_stale = self._agent_status_expired(
+            serving_condition, route_condition
+        )
         provisioning_status = (
             PROVISIONING_ACTIVE
             if is_ready or is_no_backends
             else PROVISIONING_ERROR
         )
         operating_status = self._octavia_operating_status(
-            is_ready, is_no_backends, healthy, total, route_advertised
+            is_ready, is_no_backends, healthy, total, route_advertised,
+            control_plane_stale,
         )
         return {
             "is_ready": is_ready,
             "healthy": healthy,
             "total": total,
             "route_advertised": route_advertised,
+            "control_plane_stale": control_plane_stale,
             "provisioning_status": provisioning_status,
             "operating_status": operating_status,
         }
@@ -1884,17 +1893,33 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     def _route_advertised(route_condition):
         if route_condition is None:
             return None
+        if route_condition.get("status") == "Unknown":
+            if route_condition.get("reason") == CONDITION_REASON_AGENT_STATUS_EXPIRED:
+                return None
+            return False
         return route_condition.get("status") == "True"
 
     @staticmethod
+    def _agent_status_expired(*conditions):
+        return any(
+            condition is not None and
+            condition.get("status") == "Unknown" and
+            condition.get("reason") == CONDITION_REASON_AGENT_STATUS_EXPIRED
+            for condition in conditions
+        )
+
+    @staticmethod
     def _octavia_operating_status(is_ready, is_no_backends, healthy, total,
-                                  route_advertised=None):
+                                  route_advertised=None,
+                                  control_plane_stale=False):
         if not is_ready:
             if is_no_backends:
                 return OPERATING_OFFLINE
             return OPERATING_ERROR
         if total <= 0:
             return OPERATING_OFFLINE
+        if control_plane_stale:
+            return OPERATING_DEGRADED
         if healthy <= 0:
             return OPERATING_ERROR
         if route_advertised is False:

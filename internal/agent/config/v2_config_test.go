@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadV2Config_Defaults(t *testing.T) {
@@ -48,6 +49,9 @@ dataplane:
 	if cfg.Rollout.RetryInterval == 0 {
 		t.Error("Rollout.RetryInterval should default")
 	}
+	if cfg.Agent.StatusTTL != 2*time.Minute {
+		t.Errorf("Agent.StatusTTL = %s, want 2m", cfg.Agent.StatusTTL)
+	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("Log.Level = %q, want info", cfg.Log.Level)
 	}
@@ -74,6 +78,7 @@ dataplane:
 	t.Setenv("ARCA_DATAPLANE_TYPE", "vpp")
 	t.Setenv("ARCA_ROLLOUT_ENABLED", "true")
 	t.Setenv("ARCA_ROLLOUT_LEASE_NAMESPACE", "rollout-ns")
+	t.Setenv("ARCA_AGENT_STATUS_TTL", "5m")
 
 	cfg, err := LoadV2Config(cfgPath)
 	if err != nil {
@@ -91,6 +96,9 @@ dataplane:
 	}
 	if cfg.Rollout.LeaseNamespace != "rollout-ns" {
 		t.Errorf("Rollout.LeaseNamespace = %q, want rollout-ns", cfg.Rollout.LeaseNamespace)
+	}
+	if cfg.Agent.StatusTTL != 5*time.Minute {
+		t.Errorf("Agent.StatusTTL = %s, want 5m", cfg.Agent.StatusTTL)
 	}
 }
 

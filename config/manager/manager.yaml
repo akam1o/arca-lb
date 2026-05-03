@@ -42,6 +42,8 @@ spec:
             - --leader-elect
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
+            - --agent-status-ttl=2m
+            - --agent-status-prune-interval=1m
           ports:
             - name: metrics
               containerPort: 8080

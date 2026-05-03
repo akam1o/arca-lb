@@ -28,6 +28,7 @@ type AgentSettings struct {
 	ID                string        `yaml:"id"`
 	StorePath         string        `yaml:"storePath"`
 	ReconcileInterval time.Duration `yaml:"reconcileInterval"`
+	StatusTTL         time.Duration `yaml:"statusTTL"`
 }
 
 // KubernetesSettings configures K8s API access.
@@ -112,6 +113,11 @@ func applyV2EnvOverrides(cfg *V2Config) {
 	if v := os.Getenv("ARCA_AGENT_ID"); v != "" {
 		cfg.Agent.ID = v
 	}
+	if v := os.Getenv("ARCA_AGENT_STATUS_TTL"); v != "" {
+		if ttl, err := time.ParseDuration(v); err == nil {
+			cfg.Agent.StatusTTL = ttl
+		}
+	}
 	if v := os.Getenv("ARCA_KUBECONFIG"); v != "" {
 		cfg.Kubernetes.Kubeconfig = v
 	}
@@ -143,6 +149,9 @@ func applyV2Defaults(cfg *V2Config) {
 	}
 	if cfg.Agent.ReconcileInterval == 0 {
 		cfg.Agent.ReconcileInterval = 30 * time.Second
+	}
+	if cfg.Agent.StatusTTL == 0 {
+		cfg.Agent.StatusTTL = 4 * cfg.Agent.ReconcileInterval
 	}
 	if cfg.Kubernetes.ResyncInterval == 0 {
 		cfg.Kubernetes.ResyncInterval = 30 * time.Second
@@ -198,6 +207,12 @@ func validateV2(cfg *V2Config) error {
 			return fmt.Errorf("agent.id is required (hostname lookup failed: %w)", err)
 		}
 		cfg.Agent.ID = hostname
+	}
+	if cfg.Agent.ReconcileInterval <= 0 {
+		return fmt.Errorf("agent.reconcileInterval must be positive")
+	}
+	if cfg.Agent.StatusTTL <= 0 {
+		return fmt.Errorf("agent.statusTTL must be positive")
 	}
 
 	switch cfg.DataPlane.Type {

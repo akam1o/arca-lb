@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -33,11 +34,15 @@ func main() {
 	var probeAddr string
 	var enableWebhooks bool
 	var enableLeaderElection bool
+	var agentStatusTTL time.Duration
+	var agentStatusPruneInterval time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
 	flag.BoolVar(&enableWebhooks, "enable-webhooks", false, "Enable admission webhooks.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election.")
+	flag.DurationVar(&agentStatusTTL, "agent-status-ttl", 0, "Maximum age for per-agent VirtualIP status observations. Zero uses the default.")
+	flag.DurationVar(&agentStatusPruneInterval, "agent-status-prune-interval", 0, "How often to recheck VirtualIPs with current per-agent status. Zero uses half of --agent-status-ttl.")
 	flag.Parse()
 
 	ctrllog.SetLogger(zap.New(zap.UseDevMode(true)))
@@ -62,8 +67,10 @@ func main() {
 
 	// Register VirtualIP controller
 	if err := (&controller.VirtualIPReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		AgentStatusTTL:          agentStatusTTL,
+		AgentStatusRequeueAfter: agentStatusPruneInterval,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error("unable to create controller", "controller", "VirtualIP", "error", err)
 		os.Exit(1)

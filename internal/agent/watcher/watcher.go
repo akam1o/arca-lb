@@ -61,6 +61,10 @@ type Watcher struct {
 	scheme  *runtime.Scheme
 }
 
+// InitialSyncHandler runs after the informer cache has synced and receives the
+// VirtualIPs from that synced cache.
+type InitialSyncHandler func(context.Context, []v1alpha1.VirtualIP) error
+
 // New creates a new CRD watcher.
 func New(cfg Config, handler Handler, logger *slog.Logger) (*Watcher, error) {
 	if cfg.ResyncInterval == 0 {
@@ -95,12 +99,16 @@ func ListCurrent(ctx context.Context, cfg Config) ([]v1alpha1.VirtualIP, error) 
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
+	return listCurrent(ctx, k8sClient, cfg.Namespace)
+}
+
+func listCurrent(ctx context.Context, reader client.Reader, namespace string) ([]v1alpha1.VirtualIP, error) {
 	var list v1alpha1.VirtualIPList
 	var opts []client.ListOption
-	if cfg.Namespace != "" {
-		opts = append(opts, client.InNamespace(cfg.Namespace))
+	if namespace != "" {
+		opts = append(opts, client.InNamespace(namespace))
 	}
-	if err := k8sClient.List(ctx, &list, opts...); err != nil {
+	if err := reader.List(ctx, &list, opts...); err != nil {
 		return nil, fmt.Errorf("failed to list VirtualIPs: %w", err)
 	}
 	return list.Items, nil
@@ -108,6 +116,13 @@ func ListCurrent(ctx context.Context, cfg Config) ([]v1alpha1.VirtualIP, error) 
 
 // Start starts watching VirtualIP CRDs. Blocks until ctx is cancelled.
 func (w *Watcher) Start(ctx context.Context) error {
+	return w.StartWithInitialSync(ctx, nil)
+}
+
+// StartWithInitialSync starts watching VirtualIP CRDs, waits for the informer
+// cache to sync, runs afterSync with the cache-backed current list, then blocks
+// until ctx is cancelled.
+func (w *Watcher) StartWithInitialSync(ctx context.Context, afterSync InitialSyncHandler) error {
 	restCfg, err := w.buildRESTConfig()
 	if err != nil {
 		return fmt.Errorf("failed to build REST config: %w", err)
@@ -161,8 +176,44 @@ func (w *Watcher) Start(ctx context.Context) error {
 
 	w.logger.Info("starting VirtualIP watcher", "namespace", w.config.Namespace)
 
-	// Start cache (blocks until context is cancelled)
-	return c.Start(ctx)
+	cacheCtx, cancelCache := context.WithCancel(ctx)
+	defer cancelCache()
+
+	cacheErrCh := make(chan error, 1)
+	go func() {
+		cacheErrCh <- c.Start(cacheCtx)
+	}()
+
+	if afterSync != nil {
+		if !c.WaitForCacheSync(cacheCtx) {
+			cancelCache()
+			select {
+			case err := <-cacheErrCh:
+				if err != nil {
+					return err
+				}
+			default:
+			}
+			if err := cacheCtx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("VirtualIP watcher cache did not sync")
+		}
+
+		currentVIPs, err := listCurrent(cacheCtx, c, w.config.Namespace)
+		if err != nil {
+			cancelCache()
+			<-cacheErrCh
+			return err
+		}
+		if err := afterSync(cacheCtx, currentVIPs); err != nil {
+			cancelCache()
+			<-cacheErrCh
+			return err
+		}
+	}
+
+	return <-cacheErrCh
 }
 
 // GetClient returns a read-only client for querying VirtualIP resources.

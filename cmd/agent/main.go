@@ -208,11 +208,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	currentVIPs, err := watcher.ListCurrent(ctx, watcherCfg)
-	if err != nil {
-		logger.Warn("failed to list current VirtualIPs for stale dataplane cleanup", "error", err)
-	} else if err := cleanupStaleLastConfigs(ctx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
-		logger.Warn("stale dataplane cleanup completed with errors", "error", err)
+	watcherErrCh := make(chan error, 1)
+	watcherSyncedCh := make(chan struct{})
+	go func() {
+		watcherErrCh <- w.StartWithInitialSync(ctx, func(syncCtx context.Context, currentVIPs []v1alpha1.VirtualIP) error {
+			defer close(watcherSyncedCh)
+			if err := cleanupStaleLastConfigs(syncCtx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
+				logger.Warn("stale dataplane cleanup completed with errors", "error", err)
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-watcherErrCh:
+		if err != nil {
+			logger.Error("watcher exited before initial sync", "error", err)
+			os.Exit(1)
+		}
+	case <-watcherSyncedCh:
 	}
 
 	// Start HTTP server for the container healthcheck and optional metrics.
@@ -222,12 +236,6 @@ func main() {
 		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("agent HTTP server error", "error", err)
 		}
-	}()
-
-	// Start watcher in background
-	watcherErrCh := make(chan error, 1)
-	go func() {
-		watcherErrCh <- w.Start(ctx)
 	}()
 
 	// Wait for signal

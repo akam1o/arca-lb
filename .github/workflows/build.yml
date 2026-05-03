@@ -113,7 +113,7 @@ jobs:
     name: Build Docker Images
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [lint, test, octavia-driver-test, build]
+    needs: [lint, test, octavia-driver-test, build, proto]
     permissions:
       contents: write
       packages: write
@@ -282,7 +282,7 @@ jobs:
     name: Attach Binaries to Release
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [lint, test, octavia-driver-test, build]
+    needs: [lint, test, octavia-driver-test, build, proto]
     permissions:
       contents: write
     steps:

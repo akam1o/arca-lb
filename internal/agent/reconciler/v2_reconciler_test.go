@@ -382,6 +382,47 @@ func TestV2DeletePreservesStateAndDataplaneWhenRouteCleanupFails(t *testing.T) {
 	assertHealthStatePresent(t, st, vipKey, "10.0.0.1")
 }
 
+func TestV2DeleteRetriesRouteCleanupFailure(t *testing.T) {
+	dp := newRecordingDataPlane()
+	router := newRecordingRouter(nil)
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		data, err := st.LoadLastConfig(vipKey)
+		return err == nil && len(data) > 0 && router.IsAnnounced(vip.Spec.Address)
+	}, "initial VIP apply and last config persistence")
+	if err := st.SaveHealthState(vipKey, "10.0.0.1", &store.BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatalf("SaveHealthState: %v", err)
+	}
+
+	router.setWithdrawErr(errors.New("vtysh withdraw failed"))
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return router.withdrawCount() == 1 }, "failed route withdrawal")
+	router.setWithdrawErr(nil)
+
+	waitFor(t, func() bool {
+		return router.withdrawCount() >= 2 &&
+			dp.removeCount() == 1 &&
+			lastConfigAbsent(st, vipKey) &&
+			healthStateAbsent(st, vipKey, "10.0.0.1")
+	}, "delete cleanup retry")
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should be withdrawn after cleanup retry succeeds")
+	}
+	assertLastConfigAbsent(t, st, vipKey)
+	assertHealthStateAbsent(t, st, vipKey, "10.0.0.1")
+}
+
 func TestV2DeletePreservesStateWhenDataplaneCleanupFails(t *testing.T) {
 	dp := newRecordingDataPlane()
 	dp.removeErr = errors.New("vpp remove failed")
@@ -414,6 +455,46 @@ func TestV2DeletePreservesStateWhenDataplaneCleanupFails(t *testing.T) {
 	}
 	assertLastConfigPresent(t, st, vipKey)
 	assertHealthStatePresent(t, st, vipKey, "10.0.0.1")
+}
+
+func TestV2DeleteRetriesDataplaneCleanupFailure(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.setRemoveErr(errors.New("vpp remove failed"))
+	router := newRecordingRouter(nil)
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		data, err := st.LoadLastConfig(vipKey)
+		return err == nil && len(data) > 0 && router.IsAnnounced(vip.Spec.Address)
+	}, "initial VIP apply and last config persistence")
+	if err := st.SaveHealthState(vipKey, "10.0.0.1", &store.BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatalf("SaveHealthState: %v", err)
+	}
+
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return dp.removeCount() == 1 }, "failed dataplane removal")
+	dp.setRemoveErr(nil)
+
+	waitFor(t, func() bool {
+		return dp.removeCount() >= 2 &&
+			lastConfigAbsent(st, vipKey) &&
+			healthStateAbsent(st, vipKey, "10.0.0.1")
+	}, "dataplane cleanup retry")
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should remain withdrawn after dataplane cleanup retry succeeds")
+	}
+	assertLastConfigAbsent(t, st, vipKey)
+	assertHealthStateAbsent(t, st, vipKey, "10.0.0.1")
 }
 
 func TestV2ReconcilerDrainsPreviousAddressBeforeDataplaneUpdateAndRetries(t *testing.T) {
@@ -695,6 +776,40 @@ func assertHealthStatePresent(t *testing.T, st *store.Store, vipKey, backendAddr
 	}
 }
 
+func assertLastConfigAbsent(t *testing.T, st *store.Store, vipKey string) {
+	t.Helper()
+
+	if lastConfigAbsent(st, vipKey) {
+		return
+	}
+	t.Fatalf("last config for %s is still present", vipKey)
+}
+
+func lastConfigAbsent(st *store.Store, vipKey string) bool {
+	data, err := st.LoadLastConfig(vipKey)
+	if err != nil {
+		return false
+	}
+	return len(data) == 0
+}
+
+func assertHealthStateAbsent(t *testing.T, st *store.Store, vipKey, backendAddr string) {
+	t.Helper()
+
+	if healthStateAbsent(st, vipKey, backendAddr) {
+		return
+	}
+	t.Fatalf("health state for %s/%s is still present", vipKey, backendAddr)
+}
+
+func healthStateAbsent(st *store.Store, vipKey, backendAddr string) bool {
+	rec, err := st.LoadHealthState(vipKey, backendAddr)
+	if err != nil {
+		return false
+	}
+	return rec == nil
+}
+
 type recordingDataPlane struct {
 	mu        sync.Mutex
 	applies   int
@@ -788,6 +903,12 @@ func (r *recordingDataPlane) removeCount() int {
 	return r.removals
 }
 
+func (r *recordingDataPlane) setRemoveErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.removeErr = err
+}
+
 func (r *recordingDataPlane) recreateCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -855,6 +976,12 @@ func (r *recordingRouter) withdrawCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.withdraws
+}
+
+func (r *recordingRouter) setWithdrawErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.withdrawErr = err
 }
 
 type recordingStatusUpdater struct {

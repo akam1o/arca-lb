@@ -35,6 +35,8 @@ const (
 	// TuningDriftPolicyRollingRecreate drains the VIP address route, waits for
 	// traffic to drain, then recreates the VIP with the desired tuning.
 	TuningDriftPolicyRollingRecreate = "rolling_recreate"
+
+	defaultDeleteRetryInterval = time.Second
 )
 
 // TuningDriftConfig controls repair of forwarding-compatible retained VIPs
@@ -498,6 +500,8 @@ type vipReconciler struct {
 	stopped     chan struct{}
 	onStopped   func(key string, stopped *vipReconciler)
 
+	deleteRetryInterval time.Duration
+
 	mu      sync.RWMutex
 	current *v1alpha1.VirtualIP
 }
@@ -516,21 +520,22 @@ func newVIPReconciler(
 	onStopped func(key string, stopped *vipReconciler),
 ) *vipReconciler {
 	return &vipReconciler{
-		key:            key,
-		dp:             dp,
-		routes:         routes,
-		store:          st,
-		healthTracker:  ht,
-		statusUpdater:  statusUpdater,
-		rollouts:       rollouts,
-		safetyInterval: safetyInterval,
-		tuningDrift:    normalizeTuningDriftConfig(tuningDrift),
-		logger:         logger.With("vip", key),
-		eventCh:        make(chan vipEvent, 8),
-		reconcileCh:    make(chan struct{}, 1),
-		stopCh:         make(chan struct{}),
-		stopped:        make(chan struct{}),
-		onStopped:      onStopped,
+		key:                 key,
+		dp:                  dp,
+		routes:              routes,
+		store:               st,
+		healthTracker:       ht,
+		statusUpdater:       statusUpdater,
+		rollouts:            rollouts,
+		safetyInterval:      safetyInterval,
+		tuningDrift:         normalizeTuningDriftConfig(tuningDrift),
+		logger:              logger.With("vip", key),
+		eventCh:             make(chan vipEvent, 8),
+		reconcileCh:         make(chan struct{}, 1),
+		stopCh:              make(chan struct{}),
+		stopped:             make(chan struct{}),
+		onStopped:           onStopped,
+		deleteRetryInterval: defaultDeleteRetryInterval,
 	}
 }
 
@@ -582,6 +587,9 @@ func (vr *vipReconciler) run(ctx context.Context) {
 	ticker := time.NewTicker(vr.safetyInterval)
 	defer ticker.Stop()
 
+	var deleteVIP *v1alpha1.VirtualIP
+	var deleteRetry <-chan time.Time
+
 	vr.logger.Info("per-VIP reconciler started")
 
 	for {
@@ -595,15 +603,33 @@ func (vr *vipReconciler) run(ctx context.Context) {
 
 		case ev := <-vr.eventCh:
 			if ev.deleted {
-				vr.handleDelete(ctx, ev.vip)
-				return // exit goroutine after delete
+				deleteVIP = ev.vip
+				if vr.handleDelete(ctx, deleteVIP) {
+					return // exit goroutine after delete
+				}
+				deleteRetry = time.After(vr.deleteRetryInterval)
+				continue
 			}
 
+		case <-deleteRetry:
+			if deleteVIP == nil {
+				deleteRetry = nil
+				continue
+			}
+			if vr.handleDelete(ctx, deleteVIP) {
+				return // exit goroutine after delete
+			}
+			deleteRetry = time.After(vr.deleteRetryInterval)
+
 		case <-vr.reconcileCh:
-			vr.reconcile(ctx)
+			if deleteVIP == nil {
+				vr.reconcile(ctx)
+			}
 
 		case <-ticker.C:
-			vr.reconcile(ctx)
+			if deleteVIP == nil {
+				vr.reconcile(ctx)
+			}
 		}
 	}
 }
@@ -940,7 +966,7 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.VirtualIP) {
+func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.VirtualIP) bool {
 	ctx, span := tracer.Start(ctx, "delete",
 		trace.WithAttributes(
 			attribute.String("vip.key", vr.key),
@@ -978,7 +1004,13 @@ func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.Virtual
 		}
 	}
 
+	if cleanupFailed {
+		vr.logger.Warn("VIP deletion cleanup failed, will retry")
+		return false
+	}
+
 	vr.logger.Info("VIP deletion handled")
+	return true
 }
 
 // GetStatus returns the list of VIP keys being managed.

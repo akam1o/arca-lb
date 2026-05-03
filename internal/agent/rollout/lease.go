@@ -3,6 +3,7 @@ package rollout
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -28,7 +30,12 @@ const (
 	defaultLeaseDuration  = 2 * time.Minute
 	defaultRetryInterval  = time.Second
 	defaultReleaseTimeout = 5 * time.Second
+
+	holderInstanceBytes     = 8
+	maxHolderIdentityLength = 128
 )
+
+var coordinatorInstanceCounter uint64
 
 // Config controls Kubernetes Lease based rollout coordination.
 type Config struct {
@@ -50,11 +57,19 @@ type Coordinator struct {
 	releaseTimeout time.Duration
 	logger         *slog.Logger
 	now            func() time.Time
+
+	localMu    sync.Mutex
+	localLocks map[string]*localLeaseLock
 }
 
 type heldLease struct {
 	mu    sync.Mutex
 	lease *coordinationv1.Lease
+}
+
+type localLeaseLock struct {
+	ch   chan struct{}
+	refs int
 }
 
 // New creates a Kubernetes-backed rollout coordinator.
@@ -99,6 +114,7 @@ func NewWithClient(k8sClient client.Client, cfg Config, logger *slog.Logger) *Co
 	if holder == "" {
 		holder = "unknown"
 	}
+	holder = leaseHolderIdentity(holder, newCoordinatorInstanceID())
 
 	leaseDuration := cfg.LeaseDuration
 	if leaseDuration <= 0 {
@@ -122,6 +138,7 @@ func NewWithClient(k8sClient client.Client, cfg Config, logger *slog.Logger) *Co
 		releaseTimeout: releaseTimeout,
 		logger:         logger.With("component", "rollout-coordinator"),
 		now:            time.Now,
+		localLocks:     make(map[string]*localLeaseLock),
 	}
 }
 
@@ -130,6 +147,12 @@ func (c *Coordinator) RunExclusive(ctx context.Context, key string, fn func(cont
 	if c == nil || c.client == nil {
 		return fn(ctx)
 	}
+
+	unlockLocal, err := c.acquireLocal(ctx, key)
+	if err != nil {
+		return err
+	}
+	defer unlockLocal()
 
 	lease, err := c.acquire(ctx, key)
 	if err != nil {
@@ -161,6 +184,41 @@ func (c *Coordinator) RunExclusive(ctx context.Context, key string, fn func(cont
 		err = releaseErr
 	}
 	return err
+}
+
+func (c *Coordinator) acquireLocal(ctx context.Context, key string) (func(), error) {
+	c.localMu.Lock()
+	if c.localLocks == nil {
+		c.localLocks = make(map[string]*localLeaseLock)
+	}
+	lock := c.localLocks[key]
+	if lock == nil {
+		lock = &localLeaseLock{ch: make(chan struct{}, 1)}
+		c.localLocks[key] = lock
+	}
+	lock.refs++
+	c.localMu.Unlock()
+
+	select {
+	case lock.ch <- struct{}{}:
+		return func() {
+			<-lock.ch
+			c.releaseLocalRef(key, lock)
+		}, nil
+	case <-ctx.Done():
+		c.releaseLocalRef(key, lock)
+		return nil, ctx.Err()
+	}
+}
+
+func (c *Coordinator) releaseLocalRef(key string, lock *localLeaseLock) {
+	c.localMu.Lock()
+	defer c.localMu.Unlock()
+
+	lock.refs--
+	if lock.refs == 0 {
+		delete(c.localLocks, key)
+	}
 }
 
 func (c *Coordinator) acquire(ctx context.Context, key string) (*coordinationv1.Lease, error) {
@@ -395,6 +453,26 @@ func valueOrEmpty(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func newCoordinatorInstanceID() string {
+	seq := atomic.AddUint64(&coordinatorInstanceCounter, 1)
+	var b [holderInstanceBytes]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return fmt.Sprintf("%s-%d", hex.EncodeToString(b[:]), seq)
+	}
+	return fmt.Sprintf("%d-%d-%d", os.Getpid(), time.Now().UnixNano(), seq)
+}
+
+func leaseHolderIdentity(base, instance string) string {
+	suffix := "/" + instance
+	if len(base)+len(suffix) <= maxHolderIdentityLength {
+		return base + suffix
+	}
+	if len(suffix) >= maxHolderIdentityLength {
+		return suffix[len(suffix)-maxHolderIdentityLength:]
+	}
+	return base[:maxHolderIdentityLength-len(suffix)] + suffix
 }
 
 func buildRESTConfig(kubeconfig string) (*rest.Config, error) {

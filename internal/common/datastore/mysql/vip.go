@@ -481,16 +481,21 @@ func (ds *MySQLDataStore) DeleteVIP(ctx context.Context, id string) error {
 
 // incrementRevisionInTx increments revision within a transaction
 func (ds *MySQLDataStore) incrementRevisionInTx(tx *gorm.DB) (int64, error) {
+	var rowID int
 	var currentRevision int64
-	// Use SELECT ... FOR UPDATE to lock the row
-	if err := tx.Raw("SELECT revision FROM system_metadata WHERE id = 1 FOR UPDATE").
-		Scan(&currentRevision).Error; err != nil {
+	// Use SELECT ... FOR UPDATE to lock the first metadata row.
+	if err := tx.Raw("SELECT id, revision FROM system_metadata ORDER BY id LIMIT 1 FOR UPDATE").
+		Row().Scan(&rowID, &currentRevision); err != nil {
 		return 0, fmt.Errorf("failed to get current revision: %w", err)
 	}
 
 	newRevision := currentRevision + 1
-	if err := tx.Exec("UPDATE system_metadata SET revision = ? WHERE id = 1", newRevision).Error; err != nil {
-		return 0, fmt.Errorf("failed to increment revision: %w", err)
+	result := tx.Exec("UPDATE system_metadata SET revision = ? WHERE id = ?", newRevision, rowID)
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to increment revision: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return 0, fmt.Errorf("failed to increment revision: metadata row %d was not updated", rowID)
 	}
 
 	return newRevision, nil

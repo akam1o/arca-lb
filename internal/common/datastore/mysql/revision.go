@@ -42,22 +42,9 @@ func (ds *MySQLDataStore) IncrementRevision(ctx context.Context) (int64, error) 
 
 	// Use atomic UPDATE to increment revision
 	err := ds.db.Transaction(func(tx *gorm.DB) error {
-		// Use SELECT ... FOR UPDATE to lock the first row (not hard-coded id=1)
-		var rowID int
-		var currentRevision int64
-		if err := tx.Raw("SELECT id, revision FROM system_metadata ORDER BY id LIMIT 1 FOR UPDATE").
-			Row().Scan(&rowID, &currentRevision); err != nil {
-			return fmt.Errorf("failed to get current revision: %w", err)
-		}
-
-		newRevision = currentRevision + 1
-
-		// Atomic update using the actual row ID
-		if err := tx.Exec("UPDATE system_metadata SET revision = ? WHERE id = ?", newRevision, rowID).Error; err != nil {
-			return fmt.Errorf("failed to increment revision: %w", err)
-		}
-
-		return nil
+		var err error
+		newRevision, err = ds.incrementRevisionInTx(tx)
+		return err
 	})
 
 	if err != nil {

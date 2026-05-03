@@ -424,6 +424,83 @@ class TestDriverLifecycle(unittest.TestCase):
             draining_ids,
         )
 
+    def test_listener_create_conflict_restores_from_patched_virtualip(self):
+        listener_id = "aaaaaaaa-1111-2222-3333-444444444444"
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        listener = FakeObj({
+            "listener_id": listener_id,
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "vip_address": "203.0.113.10",
+            "project_id": "test-project",
+            "default_pool_id": "pool-1111",
+        })
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            {
+                constants.ANNOTATION_LB_ID: lb_id,
+                constants.ANNOTATION_LISTENER_ID: listener_id,
+            },
+            resource_version="1",
+        )
+        patched_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "encapType": "L3DSR", "dscp": 10},
+            {
+                constants.ANNOTATION_LB_ID: lb_id,
+                constants.ANNOTATION_LISTENER_ID: listener_id,
+                constants.ANNOTATION_PROJECT_ID: "test-project",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+            resource_version="2",
+        )
+        restored_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "encapType": "L3DSR", "dscp": 10,
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            patched_vip["metadata"]["annotations"],
+            resource_version="3",
+        )
+        self.mock_k8s.create_virtualip.side_effect = (
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            )
+        )
+        self.mock_k8s.get_virtualip.return_value = existing_vip
+        self.mock_k8s.update_virtualip.side_effect = [
+            patched_vip,
+            restored_vip,
+        ]
+        self.mock_driver_lib.get_pool.return_value = FakeObj({
+            "pool_id": "pool-1111",
+            "loadbalancer_id": lb_id,
+            "members": [{
+                "member_id": "member-1111",
+                "address": "10.0.1.1",
+                "protocol_port": 80,
+                "weight": 100,
+            }],
+        })
+
+        self.driver.listener_create(listener)
+
+        self.assertEqual(self.mock_k8s.update_virtualip.call_count, 2)
+        create_retry_call = self.mock_k8s.update_virtualip.call_args_list[0]
+        self.assertIs(create_retry_call[1]["current"], existing_vip)
+        self.assertEqual(create_retry_call[1]["resource_version"], "1")
+        restore_call = self.mock_k8s.update_virtualip.call_args_list[1]
+        self.assertIs(restore_call[1]["current"], patched_vip)
+        self.assertEqual(restore_call[1]["resource_version"], "2")
+        spec = restore_call[0][1]
+        self.assertEqual(spec["backends"], [{
+            "address": "10.0.1.1",
+            "weight": 100,
+        }])
+
     def test_listener_create_conflict_rejects_core_change_with_pool_state(self):
         listener_id = "aaaaaaaa-1111-2222-3333-444444444444"
         lb_id = "bbbbbbbb-1111-2222-3333-444444444444"

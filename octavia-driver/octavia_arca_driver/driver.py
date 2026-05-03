@@ -265,20 +265,13 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if pool_id:
             annotations[constants.ANNOTATION_POOL_ID] = pool_id
 
-        created = self._create_or_update_listener_virtualip(
+        created, restore_vip = self._create_or_update_listener_virtualip(
             name, spec, annotations, lb_id, listener_id
         )
         self._remember_loadbalancer_vip(lb_id, vip_address)
         if pool_id:
-            created_vip = {
-                "metadata": {
-                    "name": name,
-                    "annotations": annotations,
-                },
-                "spec": spec,
-            }
             try:
-                self._restore_virtualip_backends([created_vip])
+                self._restore_virtualip_backends([restore_vip])
             except Exception:
                 LOG.exception(
                     "Failed to restore pool %s while creating listener %s; "
@@ -1148,9 +1141,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
     def _create_or_update_listener_virtualip(self, name, spec, annotations,
                                              lb_id, listener_id):
+        desired_vip = self._virtualip_snapshot(name, spec, annotations)
         try:
-            self._k8s.create_virtualip(name, spec, annotations=annotations)
-            return True
+            created_vip = self._k8s.create_virtualip(
+                name, spec, annotations=annotations
+            )
+            if isinstance(created_vip, dict):
+                return True, created_vip
+            return True, desired_vip
         except k8s_client.exceptions.ApiException as exc:
             if exc.status != 409:
                 raise
@@ -1194,8 +1192,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         desired_spec = copy.deepcopy(spec)
         desired_annotations = copy.deepcopy(annotations)
+        patched_vip = None
 
         def mutate(_current_vip, current_spec, current_annotations):
+            nonlocal patched_vip
             if (
                 self._virtualip_has_pool_state(
                     current_spec, current_annotations
@@ -1245,8 +1245,29 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     desired_pool_id
                 )
 
-        self._update_virtualip_with_retry(name, mutate, initial_vip=existing)
-        return False
+            patched_vip = self._virtualip_snapshot(
+                name, current_spec, current_annotations, current=_current_vip
+            )
+
+        updated_vip = self._update_virtualip_with_retry(
+            name, mutate, initial_vip=existing
+        )
+        if isinstance(updated_vip, dict):
+            return False, updated_vip
+        return False, patched_vip or desired_vip
+
+    @staticmethod
+    def _virtualip_snapshot(name, spec, annotations, current=None):
+        if isinstance(current, dict):
+            snapshot = copy.deepcopy(current)
+        else:
+            snapshot = {}
+        metadata = copy.deepcopy(snapshot.get("metadata", {}) or {})
+        metadata["name"] = metadata.get("name") or name
+        metadata["annotations"] = copy.deepcopy(annotations)
+        snapshot["metadata"] = metadata
+        snapshot["spec"] = copy.deepcopy(spec)
+        return snapshot
 
     @staticmethod
     def _virtualip_has_pool_state(spec, annotations):

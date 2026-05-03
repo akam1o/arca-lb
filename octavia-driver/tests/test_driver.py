@@ -1452,6 +1452,45 @@ class TestDriverLifecycle(unittest.TestCase):
         )
         self.assertEqual(second_call[1]["resource_version"], "2")
 
+    def test_member_create_skips_conflict_retry_when_pool_changed(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+            resource_version="1",
+        )
+        latest_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.9.9", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-2222"},
+            resource_version="2",
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+        self.mock_k8s.get_virtualip.return_value = latest_vip
+        self.mock_k8s.update_virtualip.side_effect = [
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            ),
+        ]
+
+        member = FakeObj({
+            "member_id": "member-2222",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.2",
+            "protocol_port": 80,
+            "weight": 100,
+        })
+        self.driver.member_create(member)
+
+        self.assertEqual(self.mock_k8s.update_virtualip.call_count, 1)
+
     def test_member_create_weight_zero_marks_draining(self):
         existing_vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",
@@ -2419,6 +2458,57 @@ class TestDriverLifecycle(unittest.TestCase):
             "provisioning_status": "DELETED",
         }])
 
+    def test_pool_delete_skips_conflict_retry_when_pool_changed(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80,
+             "backends": [{"address": "10.0.1.1", "weight": 100}],
+             "healthCheck": {"type": "tcp", "tcp": {"port": 80}}},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+            resource_version="1",
+        )
+        latest_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80,
+             "backends": [{"address": "10.0.2.2", "weight": 100}],
+             "healthCheck": {"type": "tcp", "tcp": {"port": 80}}},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-2222",
+                constants.ANNOTATION_HM_ID: "hm-2222",
+            },
+            resource_version="2",
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+        self.mock_k8s.get_virtualip.return_value = latest_vip
+        self.mock_k8s.update_virtualip.side_effect = [
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            ),
+        ]
+
+        self.driver.pool_delete(FakeObj({"pool_id": "pool-1111"}))
+
+        self.assertEqual(self.mock_k8s.update_virtualip.call_count, 1)
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "DELETED",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "DELETED",
+        }])
+
     def test_health_monitor_delete_reports_deleted_status(self):
         existing_vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",
@@ -2632,6 +2722,45 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
         self.assertEqual(second_call[1]["resource_version"], "2")
         self.assertIs(second_call[1]["current"], latest_vip)
+
+    def test_health_monitor_update_skips_conflict_retry_when_pool_changed(self):
+        stale_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+            resource_version="1",
+        )
+        latest_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.2.2", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-2222"},
+            resource_version="2",
+        )
+        self.mock_k8s.find_by_pool.return_value = stale_vip
+        self.mock_k8s.get_virtualip.return_value = latest_vip
+        self.mock_k8s.update_virtualip.side_effect = [
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            ),
+        ]
+
+        hm = FakeObj({
+            "healthmonitor_id": "hm-1111",
+            "pool_id": "pool-1111",
+            "type": "HTTP",
+            "delay": 10,
+            "timeout": 5,
+            "max_retries": 3,
+            "max_retries_down": 2,
+            "http_method": "GET",
+            "url_path": "/healthz",
+            "expected_codes": "200",
+        })
+        self.driver.health_monitor_update(FakeObj({}), hm)
+
+        self.assertEqual(self.mock_k8s.update_virtualip.call_count, 1)
 
     def test_health_monitor_update_without_associated_virtualip_raises(self):
         self.mock_k8s.find_by_pool.return_value = None

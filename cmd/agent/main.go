@@ -215,30 +215,14 @@ func main() {
 		logger.Warn("stale dataplane cleanup completed with errors", "error", err)
 	}
 
-	// Start metrics server
-	var metricsServer *http.Server
-	if cfg.Metrics.Enabled {
-		mux := http.NewServeMux()
-		mux.Handle(cfg.Metrics.Path, promhttp.Handler())
-		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte("ok")); err != nil {
-				logger.Error("failed to write health response", "error", err)
-			}
-		})
-		metricsServer = &http.Server{
-			Addr:         cfg.Metrics.Address,
-			Handler:      mux,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 10 * time.Second,
+	// Start HTTP server for the container healthcheck and optional metrics.
+	metricsServer := newAgentHTTPServer(cfg.Metrics, logger)
+	go func() {
+		logger.Info("agent HTTP server starting", "address", cfg.Metrics.Address, "metrics_enabled", cfg.Metrics.Enabled)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("agent HTTP server error", "error", err)
 		}
-		go func() {
-			logger.Info("metrics server starting", "address", cfg.Metrics.Address)
-			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error("metrics server error", "error", err)
-			}
-		}()
-	}
+	}()
 
 	// Start watcher in background
 	watcherErrCh := make(chan error, 1)
@@ -264,15 +248,36 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	if metricsServer != nil {
-		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("failed to shutdown metrics server", "error", err)
-		}
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("failed to shutdown agent HTTP server", "error", err)
 	}
 	reconMgr.Stop()
 	hcEngine.Stop()
 
 	logger.Info("agent shutdown complete")
+}
+
+func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {
+	return &http.Server{
+		Addr:         cfg.Address,
+		Handler:      newAgentHTTPMux(cfg, logger),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+}
+
+func newAgentHTTPMux(cfg agentconfig.MetricsSettings, logger *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	if cfg.Enabled {
+		mux.Handle(cfg.Path, promhttp.Handler())
+	}
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("ok")); err != nil {
+			logger.Error("failed to write health response", "error", err)
+		}
+	})
+	return mux
 }
 
 // vipEventHandler bridges watcher events to the reconciler and health check engine.

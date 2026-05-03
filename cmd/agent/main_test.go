@@ -4,12 +4,15 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	agentconfig "github.com/akam1o/arca-lb/internal/agent/config"
 	"github.com/akam1o/arca-lb/internal/agent/dataplane"
 	"github.com/akam1o/arca-lb/internal/agent/healthcheck"
 	"github.com/akam1o/arca-lb/internal/agent/reconciler"
@@ -18,6 +21,49 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/store"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestAgentHTTPMuxServesHealthWhenMetricsDisabled(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := newAgentHTTPMux(agentconfig.MetricsSettings{
+		Enabled: false,
+		Path:    "/metrics",
+	}, logger)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("/health status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if body := resp.Body.String(); body != "ok" {
+		t.Fatalf("/health body = %q, want ok", body)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("/metrics status = %d, want %d when metrics are disabled", resp.Code, http.StatusNotFound)
+	}
+}
+
+func TestAgentHTTPMuxServesMetricsWhenEnabled(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := newAgentHTTPMux(agentconfig.MetricsSettings{
+		Enabled: true,
+		Path:    "/metrics",
+	}, logger)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("/metrics status = %d, want %d", resp.Code, http.StatusOK)
+	}
+}
 
 func TestVIPEventHandlerPreservesDataplaneWhenHealthCheckUpdateFails(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

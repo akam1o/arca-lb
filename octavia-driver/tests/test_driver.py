@@ -42,7 +42,7 @@ def _make_vip(name, spec, annotations=None, status=None, generation=1):
         "kind": "VirtualIP",
         "metadata": {
             "name": name,
-            "namespace": "arca-system",
+            "namespace": "arca-lb-system",
             "generation": generation,
             "labels": {
                 constants.LABEL_MANAGED_BY: constants.LABEL_MANAGED_BY_VALUE,
@@ -86,7 +86,7 @@ class TestBuildHealthCheck(unittest.TestCase):
     def setUp(self, mock_client_cls, mock_watcher_cls, mock_driver_lib_cls,
               mock_conf):
         mock_conf.driver_arca.kubernetes_config = ""
-        mock_conf.driver_arca.namespace = "arca-system"
+        mock_conf.driver_arca.namespace = "arca-lb-system"
         mock_conf.driver_arca.default_encap_type = "L3DSR"
         mock_conf.driver_arca.default_dscp = 10
         mock_conf.driver_arca.status_sync_interval = 10
@@ -223,7 +223,7 @@ class TestDriverLifecycle(unittest.TestCase):
     def setUp(self, mock_client_cls, mock_watcher_cls, mock_driver_lib_cls,
               mock_conf):
         mock_conf.driver_arca.kubernetes_config = ""
-        mock_conf.driver_arca.namespace = "arca-system"
+        mock_conf.driver_arca.namespace = "arca-lb-system"
         mock_conf.driver_arca.default_encap_type = "L3DSR"
         mock_conf.driver_arca.default_dscp = 10
         mock_conf.driver_arca.status_sync_interval = 10

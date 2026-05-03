@@ -38,7 +38,7 @@ class TestVirtualIPClient(unittest.TestCase):
             },
         })
         client = VirtualIPClient.__new__(VirtualIPClient)
-        client._namespace = "arca-system"
+        client._namespace = "arca-lb-system"
         client._api = api
 
         client.update_virtualip(

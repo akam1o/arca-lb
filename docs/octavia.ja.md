@@ -80,7 +80,7 @@ default_provider_driver = amphora
 kubernetes_config = /etc/octavia/kubeconfig
 
 # VirtualIP リソースが作成される Kubernetes 名前空間。
-namespace = arca-system
+namespace = arca-lb-system
 
 # デフォルトのカプセル化タイプ (GRE4, GRE6, L3DSR, NAT4, NAT6)。
 default_encap_type = L3DSR
@@ -92,6 +92,11 @@ default_dscp = 10
 status_sync_interval = 10
 ```
 
+標準構成では、Octavia が作成する `VirtualIP` リソースと arca-lb
+コンポーネントを同じ `arca-lb-system` namespace に置きます。
+Octavia 管理リソースを意図的に分離したい場合は、`driver_arca.namespace`
+を上書きできます。
+
 ### 3. Kubernetes アクセスの設定
 
 適切な RBAC 権限を持つ kubeconfig を作成します：
@@ -100,19 +105,21 @@ status_sync_interval = 10
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: arca-system
+  name: arca-lb-system
+  labels:
+    app.kubernetes.io/part-of: arca-lb
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: octavia-arca-driver
-  namespace: arca-system
+  namespace: arca-lb-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: octavia-arca-driver
-  namespace: arca-system
+  namespace: arca-lb-system
 rules:
   - apiGroups: ["arca.io"]
     resources: ["virtualips"]
@@ -122,11 +129,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: octavia-arca-driver
-  namespace: arca-system
+  namespace: arca-lb-system
 subjects:
   - kind: ServiceAccount
     name: octavia-arca-driver
-    namespace: arca-system
+    namespace: arca-lb-system
 roleRef:
   kind: Role
   name: octavia-arca-driver
@@ -218,7 +225,7 @@ openstack loadbalancer healthmonitor create \
 ### VirtualIP の確認
 
 ```bash
-kubectl get virtualips -n arca-system
+kubectl get virtualips -n arca-lb-system
 ```
 
 期待される出力：
@@ -283,13 +290,13 @@ openstack loadbalancer create \
 ### VirtualIP が作成されない
 
 1. Octavia API ログで arca ドライバーのエラーを確認
-2. Kubernetes 接続を確認: `kubectl --kubeconfig /etc/octavia/kubeconfig get virtualips -n arca-system`
+2. Kubernetes 接続を確認: `kubectl --kubeconfig /etc/octavia/kubeconfig get virtualips -n arca-lb-system`
 3. サービスアカウントの RBAC 権限を確認
 
 ### VirtualIP が作成されたがプログラムされない
 
-1. arca-lb Agent ログを確認: `kubectl logs -n arca-system -l app.kubernetes.io/name=arca-lb-agent`
-2. CRD ステータスを確認: `kubectl describe virtualip -n arca-system <name>`
+1. arca-lb Agent ログを確認: `kubectl logs -n arca-lb-system -l app.kubernetes.io/name=arca-lb-agent`
+2. CRD ステータスを確認: `kubectl describe virtualip -n arca-lb-system <name>`
 3. VPP ステータスを確認: `vppctl show lb vip verbose`
 
 FRR 経路広報や Octavia `operating_status=ERROR` の切り分けは [Octavia 運用ガイド](./octavia-operations.ja.md) を参照してください。

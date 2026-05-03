@@ -42,7 +42,7 @@ openstack loadbalancer listener list --loadbalancer <lb-id-or-name>
 Kubernetes 側で Octavia driver が作成した `VirtualIP` を確認します。
 
 ```bash
-kubectl get virtualips -n arca-system \
+kubectl get virtualips -n arca-lb-system \
   -l app.kubernetes.io/managed-by=octavia-arca-driver \
   -o custom-columns='NAME:.metadata.name,ADDRESS:.spec.address,PORT:.spec.port,PROTOCOL:.spec.protocol,LB:.metadata.annotations.arca\.io/octavia-loadbalancer-id,LISTENER:.metadata.annotations.arca\.io/octavia-listener-id,HEALTHY:.status.healthyBackends,TOTAL:.status.totalBackends'
 ```
@@ -50,25 +50,27 @@ kubectl get virtualips -n arca-system \
 対象 `VirtualIP` の Condition を確認します。
 
 ```bash
-kubectl describe virtualip -n arca-system <virtualip-name>
+kubectl describe virtualip -n arca-lb-system <virtualip-name>
 
-kubectl get virtualip -n arca-system <virtualip-name> \
+kubectl get virtualip -n arca-lb-system <virtualip-name> \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.observedGeneration}{"\t"}{.message}{"\n"}{end}'
 ```
 
 `RouteAdvertised` だけを確認する場合:
 
 ```bash
-kubectl get virtualip -n arca-system <virtualip-name> \
+kubectl get virtualip -n arca-lb-system <virtualip-name> \
   -o jsonpath='{range .status.conditions[?(@.type=="RouteAdvertised")]}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
 ```
 
 ## route ERROR の切り分け
 
 `RouteAdvertised=Unknown` / `RouteUpdateFailed` の場合は、まず agent ログを確認します。
+以下の例では、Octavia が作成する `VirtualIP` と標準の arca-lb Agent
+DaemonSet の両方が `arca-lb-system` にある単一 namespace 構成を前提にしています。
 
 ```bash
-kubectl logs -n arca-system \
+kubectl logs -n arca-lb-system \
   -l app.kubernetes.io/name=arca-lb-agent \
   --since=30m | grep -E 'failed to reconcile VIP address route|RouteUpdateFailed|vtysh|frr'
 ```
@@ -76,7 +78,7 @@ kubectl logs -n arca-system \
 agent Pod と配置ノードを確認します。FRR はノードローカルに動作する前提のため、失敗しているノードを特定してください。
 
 ```bash
-kubectl get pods -n arca-system \
+kubectl get pods -n arca-lb-system \
   -l app.kubernetes.io/name=arca-lb-agent \
   -o wide
 ```
@@ -86,10 +88,10 @@ kubectl get pods -n arca-system \
 ```bash
 AGENT_POD=<agent-pod-name>
 
-kubectl exec -n arca-system "$AGENT_POD" -- \
+kubectl exec -n arca-lb-system "$AGENT_POD" -- \
   /usr/bin/vtysh -c "show version"
 
-kubectl exec -n arca-system "$AGENT_POD" -- \
+kubectl exec -n arca-lb-system "$AGENT_POD" -- \
   /usr/bin/vtysh -c "show running-config"
 ```
 
@@ -118,14 +120,14 @@ ip route <vip-address>/32 Null0 tag <routeTag>
 3. すぐに再試行したい場合は、対象 `VirtualIP` に無害な annotation を付けて watch event を発生させます。
 
 ```bash
-kubectl annotate virtualip -n arca-system <virtualip-name> \
+kubectl annotate virtualip -n arca-lb-system <virtualip-name> \
   arca.io/reconcile-at="$(date +%s)" --overwrite
 ```
 
 復旧後、Condition と Octavia 状態を確認します。
 
 ```bash
-kubectl get virtualip -n arca-system <virtualip-name> \
+kubectl get virtualip -n arca-lb-system <virtualip-name> \
   -o jsonpath='{range .status.conditions[?(@.type=="RouteAdvertised")]}{.status}{"\t"}{.reason}{"\n"}{end}'
 
 openstack loadbalancer show <lb-id-or-name> \

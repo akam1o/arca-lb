@@ -18,7 +18,7 @@ enabled_provider_drivers = amphora:The Octavia Amphora driver., arca:ArcaLB VPP-
 
 [driver_arca]
 kubernetes_config = /etc/octavia/kubeconfig
-namespace = arca-system
+namespace = arca-lb-system
 ```
 
 Restart Octavia API and verify:

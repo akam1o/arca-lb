@@ -18,7 +18,7 @@ LOG = logging.getLogger(__name__)
 class VirtualIPClient:
     """Client for CRUD operations on VirtualIP custom resources."""
 
-    def __init__(self, kubeconfig_path="", namespace="arca-system"):
+    def __init__(self, kubeconfig_path="", namespace="arca-lb-system"):
         self._namespace = namespace
         if kubeconfig_path:
             k8s_config.load_kube_config(config_file=kubeconfig_path)
@@ -167,7 +167,7 @@ class VirtualIPClient:
 class VirtualIPStatusWatcher:
     """Watches VirtualIP status changes and invokes a callback."""
 
-    def __init__(self, kubeconfig_path="", namespace="arca-system"):
+    def __init__(self, kubeconfig_path="", namespace="arca-lb-system"):
         self._namespace = namespace
         if kubeconfig_path:
             k8s_config.load_kube_config(config_file=kubeconfig_path)

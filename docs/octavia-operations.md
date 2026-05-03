@@ -42,7 +42,7 @@ openstack loadbalancer listener list --loadbalancer <lb-id-or-name>
 Find `VirtualIP` resources created by the Octavia driver.
 
 ```bash
-kubectl get virtualips -n arca-system \
+kubectl get virtualips -n arca-lb-system \
   -l app.kubernetes.io/managed-by=octavia-arca-driver \
   -o custom-columns='NAME:.metadata.name,ADDRESS:.spec.address,PORT:.spec.port,PROTOCOL:.spec.protocol,LB:.metadata.annotations.arca\.io/octavia-loadbalancer-id,LISTENER:.metadata.annotations.arca\.io/octavia-listener-id,HEALTHY:.status.healthyBackends,TOTAL:.status.totalBackends'
 ```
@@ -50,25 +50,28 @@ kubectl get virtualips -n arca-system \
 Inspect the target `VirtualIP` conditions.
 
 ```bash
-kubectl describe virtualip -n arca-system <virtualip-name>
+kubectl describe virtualip -n arca-lb-system <virtualip-name>
 
-kubectl get virtualip -n arca-system <virtualip-name> \
+kubectl get virtualip -n arca-lb-system <virtualip-name> \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\t"}{.observedGeneration}{"\t"}{.message}{"\n"}{end}'
 ```
 
 To inspect only `RouteAdvertised`:
 
 ```bash
-kubectl get virtualip -n arca-system <virtualip-name> \
+kubectl get virtualip -n arca-lb-system <virtualip-name> \
   -o jsonpath='{range .status.conditions[?(@.type=="RouteAdvertised")]}{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}'
 ```
 
 ## Troubleshooting Route ERROR
 
 For `RouteAdvertised=Unknown` / `RouteUpdateFailed`, start with the agent logs.
+The examples assume the standard single namespace setup, where both
+Octavia-created `VirtualIP` resources and the arca-lb agent DaemonSet are in
+`arca-lb-system`.
 
 ```bash
-kubectl logs -n arca-system \
+kubectl logs -n arca-lb-system \
   -l app.kubernetes.io/name=arca-lb-agent \
   --since=30m | grep -E 'failed to reconcile VIP address route|RouteUpdateFailed|vtysh|frr'
 ```
@@ -76,7 +79,7 @@ kubectl logs -n arca-system \
 List agent Pods and their nodes. FRR is expected to run on the node, so identify which node is failing.
 
 ```bash
-kubectl get pods -n arca-system \
+kubectl get pods -n arca-lb-system \
   -l app.kubernetes.io/name=arca-lb-agent \
   -o wide
 ```
@@ -86,10 +89,10 @@ Verify that `vtysh` works from the affected agent Pod.
 ```bash
 AGENT_POD=<agent-pod-name>
 
-kubectl exec -n arca-system "$AGENT_POD" -- \
+kubectl exec -n arca-lb-system "$AGENT_POD" -- \
   /usr/bin/vtysh -c "show version"
 
-kubectl exec -n arca-system "$AGENT_POD" -- \
+kubectl exec -n arca-lb-system "$AGENT_POD" -- \
   /usr/bin/vtysh -c "show running-config"
 ```
 
@@ -118,14 +121,14 @@ The default `routeTag` is `10000`. If you changed it, check `routing.routeTag` i
 3. To retry immediately, add a harmless annotation to the affected `VirtualIP` to trigger a watch event.
 
 ```bash
-kubectl annotate virtualip -n arca-system <virtualip-name> \
+kubectl annotate virtualip -n arca-lb-system <virtualip-name> \
   arca.io/reconcile-at="$(date +%s)" --overwrite
 ```
 
 Verify recovery from both Kubernetes and Octavia.
 
 ```bash
-kubectl get virtualip -n arca-system <virtualip-name> \
+kubectl get virtualip -n arca-lb-system <virtualip-name> \
   -o jsonpath='{range .status.conditions[?(@.type=="RouteAdvertised")]}{.status}{"\t"}{.reason}{"\n"}{end}'
 
 openstack loadbalancer show <lb-id-or-name> \

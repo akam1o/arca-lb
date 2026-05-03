@@ -80,7 +80,7 @@ default_provider_driver = amphora
 kubernetes_config = /etc/octavia/kubeconfig
 
 # Kubernetes namespace where VirtualIP resources are created.
-namespace = arca-system
+namespace = arca-lb-system
 
 # Default encapsulation type (GRE4, GRE6, L3DSR, NAT4, NAT6).
 default_encap_type = L3DSR
@@ -92,6 +92,11 @@ default_dscp = 10
 status_sync_interval = 10
 ```
 
+The standard setup keeps Octavia-created `VirtualIP` resources and arca-lb
+components in the same `arca-lb-system` namespace. You can override
+`driver_arca.namespace` when you intentionally want to isolate Octavia-managed
+resources.
+
 ### 3. Set up Kubernetes access
 
 Create a kubeconfig with appropriate RBAC permissions:
@@ -100,19 +105,21 @@ Create a kubeconfig with appropriate RBAC permissions:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: arca-system
+  name: arca-lb-system
+  labels:
+    app.kubernetes.io/part-of: arca-lb
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: octavia-arca-driver
-  namespace: arca-system
+  namespace: arca-lb-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: octavia-arca-driver
-  namespace: arca-system
+  namespace: arca-lb-system
 rules:
   - apiGroups: ["arca.io"]
     resources: ["virtualips"]
@@ -122,11 +129,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: octavia-arca-driver
-  namespace: arca-system
+  namespace: arca-lb-system
 subjects:
   - kind: ServiceAccount
     name: octavia-arca-driver
-    namespace: arca-system
+    namespace: arca-lb-system
 roleRef:
   kind: Role
   name: octavia-arca-driver
@@ -218,7 +225,7 @@ openstack loadbalancer healthmonitor create \
 ### Verify the VirtualIP was created
 
 ```bash
-kubectl get virtualips -n arca-system
+kubectl get virtualips -n arca-lb-system
 ```
 
 Expected output:
@@ -283,13 +290,13 @@ Available flavor metadata:
 ### VirtualIP not created
 
 1. Check the Octavia API logs for errors from the arca driver
-2. Verify Kubernetes connectivity: `kubectl --kubeconfig /etc/octavia/kubeconfig get virtualips -n arca-system`
+2. Verify Kubernetes connectivity: `kubectl --kubeconfig /etc/octavia/kubeconfig get virtualips -n arca-lb-system`
 3. Check RBAC permissions for the service account
 
 ### VirtualIP created but not programmed
 
-1. Check the arca-lb agent logs: `kubectl logs -n arca-system -l app.kubernetes.io/name=arca-lb-agent`
-2. Verify CRD status: `kubectl describe virtualip -n arca-system <name>`
+1. Check the arca-lb agent logs: `kubectl logs -n arca-lb-system -l app.kubernetes.io/name=arca-lb-agent`
+2. Verify CRD status: `kubectl describe virtualip -n arca-lb-system <name>`
 3. Check VPP status: `vppctl show lb vip verbose`
 
 For FRR route advertisement issues and Octavia `operating_status=ERROR` troubleshooting, see the [Octavia Operations Guide](./octavia-operations.md).

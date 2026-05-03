@@ -67,7 +67,7 @@ driver_opts = [
     ),
     cfg.StrOpt(
         "namespace",
-        default="arca-system",
+        default="arca-lb-system",
         help="Kubernetes namespace for VirtualIP resources.",
     ),
     cfg.StrOpt(

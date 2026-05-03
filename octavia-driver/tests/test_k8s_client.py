@@ -90,6 +90,7 @@ class TestVirtualIPClient(unittest.TestCase):
                 "address": "203.0.113.10",
                 "port": 80,
                 "protocol": "TCP",
+                "dscp": 10,
                 "healthCheck": {
                     "type": "tcp",
                     "tcp": {"port": 80},
@@ -107,6 +108,7 @@ class TestVirtualIPClient(unittest.TestCase):
 
         spec = api.patch_body["spec"]
         self.assertIsNone(spec["healthCheck"])
+        self.assertIsNone(spec["dscp"])
 
     def test_update_virtualip_includes_resource_version_precondition(self):
         api = FakeCustomObjectsApi({

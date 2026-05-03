@@ -1151,6 +1151,26 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         desired_annotations = copy.deepcopy(annotations)
 
         def mutate(_current_vip, current_spec, current_annotations):
+            if (
+                self._virtualip_has_pool_state(
+                    current_spec, current_annotations
+                ) and
+                self._listener_core_fields_changed(
+                    current_spec, desired_spec
+                )
+            ):
+                raise driver_exc.UnsupportedOptionError(
+                    user_fault_string=(
+                        "An existing listener VirtualIP has pool state with "
+                        "different listener settings."
+                    ),
+                    operator_fault_string=(
+                        f"VirtualIP {name} already has pool state; refusing "
+                        "to change listener core fields during listener_create "
+                        f"retry for listener {listener_id}"
+                    ),
+                )
+
             for key in ("address", "port", "protocol", "encapType"):
                 if key in desired_spec:
                     current_spec[key] = copy.deepcopy(desired_spec[key])
@@ -1181,6 +1201,24 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 )
 
         self._update_virtualip_with_retry(name, mutate, initial_vip=existing)
+        return False
+
+    @staticmethod
+    def _virtualip_has_pool_state(spec, annotations):
+        return bool(
+            annotations.get(constants.ANNOTATION_POOL_ID) or
+            annotations.get(constants.ANNOTATION_HM_ID) or
+            annotations.get(constants.ANNOTATION_MEMBER_MAP) or
+            annotations.get(constants.ANNOTATION_DRAINING_MEMBER_IDS) or
+            spec.get("backends") or
+            spec.get("healthCheck")
+        )
+
+    @staticmethod
+    def _listener_core_fields_changed(current_spec, desired_spec):
+        for key in ("address", "port", "protocol", "encapType", "dscp"):
+            if current_spec.get(key) != desired_spec.get(key):
+                return True
         return False
 
     def _update_virtualip_with_retry(self, name, mutate, initial_vip=None):

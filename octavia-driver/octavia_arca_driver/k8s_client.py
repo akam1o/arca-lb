@@ -92,7 +92,7 @@ class VirtualIPClient:
     def _merge_patch_spec(self, spec):
         """Build spec patch with explicit nulls for removed optional fields."""
         desired = dict(spec)
-        for key in ("healthCheck",):
+        for key in ("dscp", "healthCheck"):
             if key not in desired:
                 desired[key] = None
         return desired

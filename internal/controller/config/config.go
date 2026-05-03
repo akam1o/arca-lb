@@ -63,9 +63,13 @@ type MySQLConfig struct {
 
 // GRPCConfig represents the gRPC server configuration
 type GRPCConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
-	TLS  bool   `yaml:"tls"`
+	Host              string `yaml:"host"`
+	Port              int    `yaml:"port"`
+	TLS               bool   `yaml:"tls"`
+	CertFile          string `yaml:"cert_file"`
+	KeyFile           string `yaml:"key_file"`
+	ClientCAFile      string `yaml:"client_ca_file"`
+	RequireClientCert bool   `yaml:"require_client_cert"`
 }
 
 // LogConfig represents logging configuration
@@ -88,6 +92,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Set defaults
 	cfg.setDefaults()
+
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 
 	return &cfg, nil
 }
@@ -132,6 +140,21 @@ func (c *Config) setDefaults() {
 	if c.Log.Format == "" {
 		c.Log.Format = "json"
 	}
+}
+
+func (c *Config) validate() error {
+	if c.GRPC.TLS {
+		if c.GRPC.CertFile == "" {
+			return fmt.Errorf("grpc.cert_file is required when grpc.tls is enabled")
+		}
+		if c.GRPC.KeyFile == "" {
+			return fmt.Errorf("grpc.key_file is required when grpc.tls is enabled")
+		}
+	}
+	if c.GRPC.RequireClientCert && c.GRPC.ClientCAFile == "" {
+		return fmt.Errorf("grpc.client_ca_file is required when grpc.require_client_cert is enabled")
+	}
+	return nil
 }
 
 // ToDataStoreConfig converts to datastore.Config

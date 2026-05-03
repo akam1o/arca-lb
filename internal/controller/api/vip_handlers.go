@@ -141,6 +141,20 @@ func parseHealthCheckDuration(value, field string) (time.Duration, error) {
 	return duration, nil
 }
 
+func effectiveEncapType(encapType models.EncapType) models.EncapType {
+	if encapType == "" {
+		return models.EncapTypeL3DSR
+	}
+	return encapType
+}
+
+func validateDSCPForEncap(encapType models.EncapType, dscp *uint8) error {
+	if effectiveEncapType(encapType) == models.EncapTypeL3DSR && dscp != nil && *dscp == 0 {
+		return badRequestError("dscp must be 1-63 when encap_type is L3DSR (DSCP mode)")
+	}
+	return nil
+}
+
 // createVIP handles POST /api/v1/vips
 func (s *Server) createVIP(c *gin.Context) {
 	var req CreateVIPRequest
@@ -153,8 +167,8 @@ func (s *Server) createVIP(c *gin.Context) {
 		return
 	}
 
-	if req.EncapType == models.EncapTypeL3DSR && req.DSCP != nil && *req.DSCP == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "dscp must be 1-63 when encap_type is L3DSR (DSCP mode)"})
+	if err := validateDSCPForEncap(req.EncapType, req.DSCP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -307,8 +321,8 @@ func (s *Server) updateVIP(c *gin.Context) {
 		vip.DSCP = req.DSCP
 	}
 
-	if vip.EncapType == models.EncapTypeL3DSR && vip.DSCP != nil && *vip.DSCP == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "dscp must be 1-63 when encap_type is L3DSR (DSCP mode)"})
+	if err := validateDSCPForEncap(vip.EncapType, vip.DSCP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 

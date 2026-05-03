@@ -260,6 +260,16 @@ func TestCreateVIP(t *testing.T) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
+		{
+			name: "invalid dscp for default L3DSR",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.100",
+				"port":     80,
+				"protocol": "TCP",
+				"dscp":     0,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -474,6 +484,14 @@ func TestUpdateVIP(t *testing.T) {
 			vipID: "vip-1",
 			requestBody: map[string]interface{}{
 				"port": 70000,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "invalid dscp for default L3DSR",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"dscp": 0,
 			},
 			expectedStatus: http.StatusBadRequest,
 		},

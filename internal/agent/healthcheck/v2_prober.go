@@ -96,7 +96,12 @@ func newHTTPProberFromSpec(cfg *v1alpha1.HTTPHealthCheck, useTLS bool) (*httpPro
 	}
 
 	return &httpProber{
-		client:        &http.Client{Transport: transport},
+		client: &http.Client{
+			Transport: transport,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		port:          cfg.Port,
 		path:          path,
 		method:        method,

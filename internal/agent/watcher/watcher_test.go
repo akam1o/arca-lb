@@ -30,9 +30,63 @@ func newTestLogger() *slog.Logger {
 func newWatcherTestVIP() *v1alpha1.VirtualIP {
 	return &v1alpha1.VirtualIP{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "web",
-			Namespace: "default",
+			Name:       "web",
+			Namespace:  "default",
+			Generation: 2,
 		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+		},
+	}
+}
+
+func TestEventHandlerOnUpdateIgnoresStatusOnlyUpdate(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	oldVIP := newWatcherTestVIP()
+	newVIP := oldVIP.DeepCopy()
+	newVIP.Status = v1alpha1.VirtualIPStatus{
+		HealthyBackends: 1,
+		TotalBackends:   1,
+	}
+
+	eh.OnUpdate(oldVIP, newVIP)
+
+	if len(handler.updated) != 0 {
+		t.Fatalf("expected no update for status-only change, got %d", len(handler.updated))
+	}
+}
+
+func TestEventHandlerOnUpdateHandlesSpecChange(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	oldVIP := newWatcherTestVIP()
+	newVIP := oldVIP.DeepCopy()
+	newVIP.Spec.Port = 443
+
+	eh.OnUpdate(oldVIP, newVIP)
+
+	if len(handler.updated) != 1 {
+		t.Fatalf("expected 1 updated VIP, got %d", len(handler.updated))
+	}
+	if handler.updated[0] != newVIP {
+		t.Fatalf("updated VIP = %#v, want new VIP", handler.updated[0])
+	}
+}
+
+func TestEventHandlerOnUpdateHandlesGenerationChange(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	oldVIP := newWatcherTestVIP()
+	newVIP := oldVIP.DeepCopy()
+	newVIP.Generation = oldVIP.Generation + 1
+
+	eh.OnUpdate(oldVIP, newVIP)
+
+	if len(handler.updated) != 1 {
+		t.Fatalf("expected 1 updated VIP, got %d", len(handler.updated))
 	}
 }
 

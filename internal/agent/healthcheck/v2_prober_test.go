@@ -35,6 +35,54 @@ func TestBuildHTTPProbeURLIPv6(t *testing.T) {
 	}
 }
 
+func TestHTTPProberDoesNotFollowRedirects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redirect":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		case "/ok":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	host, portStr, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		t.Fatalf("net.SplitHostPort: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("strconv.Atoi: %v", err)
+	}
+
+	prober, err := newHTTPProberFromSpec(&v1alpha1.HTTPHealthCheck{
+		Port:          port,
+		Path:          "/redirect",
+		ExpectedCodes: []int{http.StatusFound},
+	}, false)
+	if err != nil {
+		t.Fatalf("newHTTPProberFromSpec: %v", err)
+	}
+	defer func() { _ = prober.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	result := prober.Probe(ctx, host)
+	if !result.Success {
+		t.Fatalf("redirect probe failed: status=%d error=%v", result.StatusCode, result.Error)
+	}
+	if result.StatusCode != http.StatusFound {
+		t.Fatalf("status code = %d, want %d", result.StatusCode, http.StatusFound)
+	}
+}
+
 func TestTCPProbeAddressIPv6(t *testing.T) {
 	if got := tcpProbeAddress("2001:db8::1", 8080); got != "[2001:db8::1]:8080" {
 		t.Fatalf("tcpProbeAddress = %q, want [2001:db8::1]:8080", got)

@@ -83,7 +83,7 @@ func TestServerAcceptsTLSConnectionsWhenEnabled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	conn, err := googlegrpc.DialContext(ctx, fmt.Sprintf("127.0.0.1:%d", port), // nolint:staticcheck // DialContext is adequate for this server compatibility test.
-		googlegrpc.WithBlock(),
+		googlegrpc.WithBlock(), // nolint:staticcheck // WithBlock keeps this grpc 1.x DialContext test bounded by ctx.
 		googlegrpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
 			RootCAs:    roots,
 			ServerName: "localhost",
@@ -115,7 +115,7 @@ func TestServerStopForcesStopWhenWatchConfigStreamIsActive(t *testing.T) {
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer dialCancel()
 	conn, err := googlegrpc.DialContext(dialCtx, fmt.Sprintf("127.0.0.1:%d", port), // nolint:staticcheck // DialContext is adequate for this server shutdown test.
-		googlegrpc.WithBlock(),
+		googlegrpc.WithBlock(), // nolint:staticcheck // WithBlock keeps this grpc 1.x DialContext test bounded by ctx.
 		googlegrpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {

@@ -264,13 +264,18 @@ type eventHandler struct {
 type initialSyncEventGate struct {
 	handler k8scache.ResourceEventHandler
 
-	mu       sync.Mutex
-	released bool
-	pending  []func()
+	mu             sync.Mutex
+	released       bool
+	pendingOrder   []string
+	pendingByKey   map[string]pendingSyncEvent
+	pendingUnkeyed []pendingSyncEvent
 }
 
 func newInitialSyncEventGate(handler k8scache.ResourceEventHandler) *initialSyncEventGate {
-	return &initialSyncEventGate{handler: handler}
+	return &initialSyncEventGate{
+		handler:      handler,
+		pendingByKey: make(map[string]pendingSyncEvent),
+	}
 }
 
 func (h *initialSyncEventGate) Release() {
@@ -283,39 +288,139 @@ func (h *initialSyncEventGate) Release() {
 	h.released = true
 	// Hold the lock while replaying so post-sync events cannot overtake
 	// buffered initial-list events.
-	for _, deliver := range h.pending {
-		deliver()
+	for _, key := range h.pendingOrder {
+		event, ok := h.pendingByKey[key]
+		if !ok {
+			continue
+		}
+		event.deliver(h.handler)
+		delete(h.pendingByKey, key)
 	}
-	h.pending = nil
+	for _, event := range h.pendingUnkeyed {
+		event.deliver(h.handler)
+	}
+	h.pendingOrder = nil
+	h.pendingByKey = nil
+	h.pendingUnkeyed = nil
 }
 
-func (h *initialSyncEventGate) deliver(deliver func()) {
+func (h *initialSyncEventGate) enqueue(event pendingSyncEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.released {
-		deliver()
+		event.deliver(h.handler)
 		return
 	}
-	h.pending = append(h.pending, deliver)
+	if event.key == "" {
+		h.pendingUnkeyed = append(h.pendingUnkeyed, event)
+		return
+	}
+	if _, ok := h.pendingByKey[event.key]; !ok {
+		h.pendingOrder = append(h.pendingOrder, event.key)
+	}
+	h.pendingByKey[event.key] = coalescePendingEvent(h.pendingByKey[event.key], event)
 }
 
 func (h *initialSyncEventGate) OnAdd(obj interface{}, isInInitialList bool) {
-	h.deliver(func() {
-		h.handler.OnAdd(obj, isInInitialList)
-	})
+	h.enqueue(newPendingAdd(obj, isInInitialList))
 }
 
 func (h *initialSyncEventGate) OnUpdate(oldObj, newObj interface{}) {
-	h.deliver(func() {
-		h.handler.OnUpdate(oldObj, newObj)
-	})
+	h.enqueue(newPendingUpdate(oldObj, newObj))
 }
 
 func (h *initialSyncEventGate) OnDelete(obj interface{}) {
-	h.deliver(func() {
-		h.handler.OnDelete(obj)
-	})
+	h.enqueue(newPendingDelete(obj))
+}
+
+type pendingEventType int
+
+const (
+	pendingEventAdd pendingEventType = iota
+	pendingEventUpdate
+	pendingEventDelete
+)
+
+type pendingSyncEvent struct {
+	key             string
+	eventType       pendingEventType
+	obj             interface{}
+	oldObj          interface{}
+	isInInitialList bool
+}
+
+func newPendingAdd(obj interface{}, isInInitialList bool) pendingSyncEvent {
+	key, _ := virtualIPEventKey(obj)
+	return pendingSyncEvent{
+		key:             key,
+		eventType:       pendingEventAdd,
+		obj:             obj,
+		isInInitialList: isInInitialList,
+	}
+}
+
+func newPendingUpdate(oldObj, newObj interface{}) pendingSyncEvent {
+	key, _ := virtualIPEventKey(newObj)
+	return pendingSyncEvent{
+		key:       key,
+		eventType: pendingEventUpdate,
+		obj:       newObj,
+		oldObj:    oldObj,
+	}
+}
+
+func newPendingDelete(obj interface{}) pendingSyncEvent {
+	key, _ := virtualIPEventKey(obj)
+	return pendingSyncEvent{
+		key:       key,
+		eventType: pendingEventDelete,
+		obj:       obj,
+	}
+}
+
+func coalescePendingEvent(existing, next pendingSyncEvent) pendingSyncEvent {
+	if existing.key == "" {
+		return next
+	}
+	if existing.eventType == pendingEventAdd && next.eventType == pendingEventUpdate {
+		existing.obj = next.obj
+		return existing
+	}
+	if existing.eventType == pendingEventUpdate && next.eventType == pendingEventUpdate {
+		existing.obj = next.obj
+		return existing
+	}
+	return next
+}
+
+func (e pendingSyncEvent) deliver(handler k8scache.ResourceEventHandler) {
+	switch e.eventType {
+	case pendingEventAdd:
+		handler.OnAdd(e.obj, e.isInInitialList)
+	case pendingEventUpdate:
+		handler.OnUpdate(e.oldObj, e.obj)
+	case pendingEventDelete:
+		handler.OnDelete(e.obj)
+	}
+}
+
+func virtualIPEventKey(obj interface{}) (string, bool) {
+	vip, ok := obj.(*v1alpha1.VirtualIP)
+	if !ok {
+		tombstone, ok := obj.(k8scache.DeletedFinalStateUnknown)
+		if !ok {
+			return "", false
+		}
+		vip, ok = tombstone.Obj.(*v1alpha1.VirtualIP)
+		if !ok {
+			return "", false
+		}
+	}
+	if vip == nil || vip.Namespace == "" || vip.Name == "" {
+		return "", false
+	}
+	return vip.Namespace + "/" + vip.Name, true
 }
 
 func (h *eventHandler) OnAdd(obj interface{}, _ bool) {

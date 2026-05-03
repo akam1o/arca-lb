@@ -90,7 +90,7 @@ func TestEventHandlerOnUpdateHandlesGenerationChange(t *testing.T) {
 	}
 }
 
-func TestInitialSyncEventGateBuffersUntilRelease(t *testing.T) {
+func TestInitialSyncEventGateCoalescesAddUpdateUntilRelease(t *testing.T) {
 	handler := &recordingHandler{}
 	eh := &eventHandler{handler: handler, logger: newTestLogger()}
 	gate := newInitialSyncEventGate(eh)
@@ -107,14 +107,52 @@ func TestInitialSyncEventGateBuffersUntilRelease(t *testing.T) {
 
 	gate.Release()
 
-	if len(handler.updated) != 2 {
-		t.Fatalf("expected 2 updates after release, got %d", len(handler.updated))
+	if len(handler.updated) != 1 {
+		t.Fatalf("expected 1 update after release, got %d", len(handler.updated))
 	}
-	if handler.updated[0] != addedVIP {
-		t.Fatalf("first released VIP = %#v, want added VIP", handler.updated[0])
+	if handler.updated[0] != updatedVIP {
+		t.Fatalf("released VIP = %#v, want latest updated VIP", handler.updated[0])
 	}
-	if handler.updated[1] != updatedVIP {
-		t.Fatalf("second released VIP = %#v, want updated VIP", handler.updated[1])
+}
+
+func TestInitialSyncEventGateDeliversAddAfterStatusOnlyUpdate(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	gate := newInitialSyncEventGate(eh)
+	addedVIP := newWatcherTestVIP()
+	statusOnlyVIP := addedVIP.DeepCopy()
+	statusOnlyVIP.Status.HealthyBackends = 1
+
+	gate.OnAdd(addedVIP, true)
+	gate.OnUpdate(addedVIP, statusOnlyVIP)
+	gate.Release()
+
+	if len(handler.updated) != 1 {
+		t.Fatalf("expected 1 update after release, got %d", len(handler.updated))
+	}
+	if handler.updated[0] != statusOnlyVIP {
+		t.Fatalf("released VIP = %#v, want status-only updated VIP", handler.updated[0])
+	}
+}
+
+func TestInitialSyncEventGateCoalescesAddDeleteUntilRelease(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	gate := newInitialSyncEventGate(eh)
+	vip := newWatcherTestVIP()
+
+	gate.OnAdd(vip, true)
+	gate.OnDelete(vip)
+	gate.Release()
+
+	if len(handler.updated) != 0 {
+		t.Fatalf("expected no updates after add/delete coalesce, got %d", len(handler.updated))
+	}
+	if len(handler.deleted) != 1 {
+		t.Fatalf("expected 1 delete after release, got %d", len(handler.deleted))
+	}
+	if handler.deleted[0] != vip {
+		t.Fatalf("deleted VIP = %#v, want original VIP", handler.deleted[0])
 	}
 }
 

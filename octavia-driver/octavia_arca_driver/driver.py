@@ -623,7 +623,11 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 )
                 LOG.info("Deferred member update %s for listener-less pool %s",
                          address, pool_id)
-            return
+                return
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Pool not associated with a VirtualIP.",
+                operator_fault_string=f"No VirtualIP for pool {pool_id}",
+            )
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
@@ -1642,7 +1646,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if isinstance(value, dict):
             return value
         if hasattr(value, "to_dict"):
-            data = value.to_dict()
+            try:
+                data = value.to_dict(recurse=True)
+            except TypeError:
+                data = value.to_dict()
             if isinstance(data, dict):
                 return data
         return {}

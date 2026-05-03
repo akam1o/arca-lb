@@ -6,7 +6,7 @@ This document explains how to set up the development environment for arca-lb.
 
 ### Required
 
-- **Go**: 1.24+
+- **Go**: 1.25+
 - **Git**: 2.0+
 - **Make**: 3.0+
 - **Kubernetes**: 1.28+ (for integration testing)

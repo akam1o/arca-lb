@@ -18,7 +18,7 @@ This document explains how to install arca-lb.
 
 ### Build tools
 
-- **Go**: 1.24+ (for building from source)
+- **Go**: 1.25+ (for building from source)
 - **Docker**: 20.10+ (optional, for container images)
 
 ## Installation Methods

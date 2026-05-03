@@ -193,13 +193,13 @@ Agent は各ロードバランサーノードに DaemonSet として配置され
 
 ### Operator
 
-- **言語**: Go 1.24+
+- **言語**: Go 1.25+
 - **フレームワーク**: controller-runtime (sigs.k8s.io/controller-runtime)
 - **バリデーション**: CRD OpenAPI/CEL バリデーションと任意の Admission Webhook 実装
 
 ### Agent
 
-- **言語**: Go 1.24+
+- **言語**: Go 1.25+
 - **K8s 連携**: client-go Informers
 - **VPP 連携**: go.fd.io/govpp v0.13.0
 - **FRR 連携**: vtysh コマンド経由

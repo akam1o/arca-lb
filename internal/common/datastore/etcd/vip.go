@@ -30,6 +30,7 @@ func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
 	if vip.LBMethod == "" {
 		vip.LBMethod = models.LBMethodMaglev
 	}
+	prepareHealthCheckForVIP(vip, nil, now)
 
 	// Serialize VIP to JSON
 	data, err := json.Marshal(vip)
@@ -50,6 +51,30 @@ func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
 	}
 
 	return nil
+}
+
+func prepareHealthCheckForVIP(vip, existing *models.VIP, now time.Time) {
+	if vip.HealthCheck == nil {
+		return
+	}
+
+	if vip.HealthCheck.ID == "" {
+		if existing != nil && existing.HealthCheck != nil && existing.HealthCheck.ID != "" {
+			vip.HealthCheck.ID = existing.HealthCheck.ID
+		} else {
+			vip.HealthCheck.ID = uuid.New().String()
+		}
+	}
+	vip.HealthCheck.VIPID = vip.ID
+
+	if vip.HealthCheck.CreatedAt.IsZero() {
+		if existing != nil && existing.HealthCheck != nil && !existing.HealthCheck.CreatedAt.IsZero() {
+			vip.HealthCheck.CreatedAt = existing.HealthCheck.CreatedAt
+		} else {
+			vip.HealthCheck.CreatedAt = now
+		}
+	}
+	vip.HealthCheck.UpdatedAt = now
 }
 
 // GetVIP retrieves a VIP by ID from etcd
@@ -106,7 +131,9 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 	// Preserve CreatedAt
 	vip.CreatedAt = existing.CreatedAt
-	vip.UpdatedAt = time.Now()
+	now := time.Now()
+	vip.UpdatedAt = now
+	prepareHealthCheckForVIP(vip, existing, now)
 
 	// Serialize VIP to JSON
 	data, err := json.Marshal(vip)
@@ -114,11 +141,18 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 		return fmt.Errorf("failed to marshal VIP: %w", err)
 	}
 
-	// Update in etcd
+	// Update in etcd only if the VIP still exists.
 	key := ds.vipKey(vip.ID)
-	_, err = ds.client.Put(ctx, key, string(data))
+	txnResp, err := ds.client.Txn(ctx).If(
+		clientv3.Compare(clientv3.Version(key), ">", 0),
+	).Then(
+		clientv3.OpPut(key, string(data)),
+	).Commit()
 	if err != nil {
 		return fmt.Errorf("failed to update VIP in etcd: %w", err)
+	}
+	if !txnResp.Succeeded {
+		return datastore.ErrNotFound
 	}
 
 	// Increment revision
@@ -134,17 +168,9 @@ func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
 	vipKey := ds.vipKey(id)
 	backendPrefix := ds.backendPrefix(id)
 
-	indexKeys, err := ds.backendIndexKeysForVIP(ctx, id)
-	if err != nil {
-		return err
-	}
-
 	ops := []clientv3.Op{
 		clientv3.OpDelete(vipKey),
 		clientv3.OpDelete(backendPrefix, clientv3.WithPrefix()),
-	}
-	for _, indexKey := range indexKeys {
-		ops = append(ops, clientv3.OpDelete(indexKey))
 	}
 
 	txnResp, err := ds.client.Txn(ctx).If(

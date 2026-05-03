@@ -12,6 +12,8 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+const backendIndexDeleteBatchSize = 64
+
 // AddBackend adds a new backend to etcd
 func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend) error {
 	// Generate UUID if not set
@@ -84,13 +86,20 @@ func (ds *EtcdDataStore) deleteBackendIndexesForVIP(ctx context.Context, vipID s
 		return nil
 	}
 
-	ops := make([]clientv3.Op, 0, len(indexKeys))
-	for _, key := range indexKeys {
-		ops = append(ops, clientv3.OpDelete(key))
-	}
+	for start := 0; start < len(indexKeys); start += backendIndexDeleteBatchSize {
+		end := start + backendIndexDeleteBatchSize
+		if end > len(indexKeys) {
+			end = len(indexKeys)
+		}
 
-	if _, err := ds.client.Txn(ctx).Then(ops...).Commit(); err != nil {
-		return fmt.Errorf("failed to delete backend indexes from etcd: %w", err)
+		ops := make([]clientv3.Op, 0, end-start)
+		for _, key := range indexKeys[start:end] {
+			ops = append(ops, clientv3.OpDelete(key))
+		}
+
+		if _, err := ds.client.Txn(ctx).Then(ops...).Commit(); err != nil {
+			return fmt.Errorf("failed to delete backend indexes from etcd: %w", err)
+		}
 	}
 
 	return nil

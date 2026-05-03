@@ -14,25 +14,23 @@ import (
 
 // EtcdTransaction implements datastore.Transaction using etcd STM
 type EtcdTransaction struct {
-	ds              *EtcdDataStore
-	ctx             context.Context
-	ops             []clientv3.Op
-	cmps            []clientv3.Cmp
-	createdVIPIDs   map[string]struct{}
-	deletedVIPIDs   map[string]struct{}
-	backendIDsByVIP map[string][]string
+	ds            *EtcdDataStore
+	ctx           context.Context
+	ops           []clientv3.Op
+	cmps          []clientv3.Cmp
+	createdVIPIDs map[string]struct{}
+	deletedVIPIDs map[string]struct{}
 }
 
 // BeginTx starts a new transaction
 func (ds *EtcdDataStore) BeginTx(ctx context.Context) (datastore.Transaction, error) {
 	return &EtcdTransaction{
-		ds:              ds,
-		ctx:             ctx,
-		ops:             make([]clientv3.Op, 0),
-		cmps:            make([]clientv3.Cmp, 0),
-		createdVIPIDs:   make(map[string]struct{}),
-		deletedVIPIDs:   make(map[string]struct{}),
-		backendIDsByVIP: make(map[string][]string),
+		ds:            ds,
+		ctx:           ctx,
+		ops:           make([]clientv3.Op, 0),
+		cmps:          make([]clientv3.Cmp, 0),
+		createdVIPIDs: make(map[string]struct{}),
+		deletedVIPIDs: make(map[string]struct{}),
 	}, nil
 }
 
@@ -54,6 +52,7 @@ func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error
 	if vip.LBMethod == "" {
 		vip.LBMethod = models.LBMethodMaglev
 	}
+	prepareHealthCheckForVIP(vip, nil, now)
 
 	// Serialize VIP to JSON
 	data, err := json.Marshal(vip)
@@ -107,7 +106,6 @@ func (tx *EtcdTransaction) AddBackend(ctx context.Context, backend *models.Backe
 		clientv3.OpPut(key, string(data)),
 		clientv3.OpPut(indexKey, backend.VIPID),
 	)
-	tx.backendIDsByVIP[backend.VIPID] = append(tx.backendIDsByVIP[backend.VIPID], backend.ID)
 
 	return nil
 }
@@ -122,6 +120,7 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 	}
 
 	key := tx.ds.vipKey(vip.ID)
+	now := time.Now()
 	if _, created := tx.createdVIPIDs[vip.ID]; !created {
 		existing, err := tx.ds.GetVIP(ctx, vip.ID)
 		if err != nil {
@@ -129,10 +128,14 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 		}
 		vip.CreatedAt = existing.CreatedAt
 		tx.cmps = append(tx.cmps, clientv3.Compare(clientv3.Version(key), ">", 0))
+		prepareHealthCheckForVIP(vip, existing, now)
 	} else if vip.CreatedAt.IsZero() {
-		vip.CreatedAt = time.Now()
+		vip.CreatedAt = now
+		prepareHealthCheckForVIP(vip, nil, now)
+	} else {
+		prepareHealthCheckForVIP(vip, nil, now)
 	}
-	vip.UpdatedAt = time.Now()
+	vip.UpdatedAt = now
 
 	// Serialize VIP to JSON
 	data, err := json.Marshal(vip)
@@ -156,24 +159,15 @@ func (tx *EtcdTransaction) DeleteVIP(ctx context.Context, id string) error {
 		tx.cmps = append(tx.cmps, clientv3.Compare(clientv3.Version(vipKey), ">", 0))
 	}
 
-	indexKeys, err := tx.ds.backendIndexKeysForVIP(ctx, id)
-	if err != nil {
-		return err
-	}
-
-	// Add delete VIP, associated backends, and reverse indexes operations.
+	// Add delete VIP and associated backends operations. Reverse indexes are
+	// cleaned up in batches after commit so large VIPs do not exceed etcd's
+	// transaction operation limit.
 	backendPrefix := tx.ds.backendPrefix(id)
 	tx.ops = append(
 		tx.ops,
 		clientv3.OpDelete(vipKey),
 		clientv3.OpDelete(backendPrefix, clientv3.WithPrefix()),
 	)
-	for _, indexKey := range indexKeys {
-		tx.ops = append(tx.ops, clientv3.OpDelete(indexKey))
-	}
-	for _, backendID := range tx.backendIDsByVIP[id] {
-		tx.ops = append(tx.ops, clientv3.OpDelete(tx.ds.backendIndexKey(backendID)))
-	}
 	tx.deletedVIPIDs[id] = struct{}{}
 
 	return nil

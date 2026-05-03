@@ -478,8 +478,17 @@ func testGetConfig(t *testing.T, factory DataStoreFactory) {
 	err := ds.CreateVIP(ctx, vip)
 	require.NoError(t, err)
 
+	createdVIP, err := ds.GetVIP(ctx, vip.ID)
+	require.NoError(t, err)
+	require.NotNil(t, createdVIP.HealthCheck)
+	assert.NotEmpty(t, createdVIP.HealthCheck.ID)
+	assert.Equal(t, vip.ID, createdVIP.HealthCheck.VIPID)
+	assert.False(t, createdVIP.HealthCheck.CreatedAt.IsZero())
+	assert.False(t, createdVIP.HealthCheck.UpdatedAt.IsZero())
+
 	// Set VIPID in health check
 	vip.HealthCheck.VIPID = vip.ID
+	vip.HealthCheck.ID = createdVIP.HealthCheck.ID
 	err = ds.UpdateVIP(ctx, vip)
 	require.NoError(t, err)
 
@@ -522,6 +531,8 @@ func testGetConfig(t *testing.T, factory DataStoreFactory) {
 
 	// Verify health check
 	require.NotNil(t, foundVIP.HealthCheck)
+	assert.NotEmpty(t, foundVIP.HealthCheck.ID)
+	assert.Equal(t, vip.ID, foundVIP.HealthCheck.VIPID)
 	assert.Equal(t, models.HCTypeHTTP, foundVIP.HealthCheck.Type)
 	assert.Equal(t, 10, foundVIP.HealthCheck.IntervalSec)
 

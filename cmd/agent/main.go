@@ -364,8 +364,12 @@ func cleanupStaleLastConfigs(
 	}
 
 	currentByKey := make(map[string]*v1alpha1.VirtualIP, len(currentVIPs))
+	currentAddresses := make(map[string]struct{}, len(currentVIPs))
 	for i := range currentVIPs {
 		currentByKey[healthcheck.KeyForVIP(&currentVIPs[i])] = &currentVIPs[i]
+		if currentVIPs[i].Spec.Address != "" {
+			currentAddresses[currentVIPs[i].Spec.Address] = struct{}{}
+		}
 	}
 
 	var firstErr error
@@ -382,12 +386,14 @@ func cleanupStaleLastConfigs(
 			continue
 		}
 
+		_, addressInUse := currentAddresses[vip.Spec.Address]
+		withdrawRoute := !addressInUse
 		cleanup := func(ctx context.Context) error {
-			return cleanupRetainedVIP(ctx, st, dp, router, key, vip, logger)
+			return cleanupRetainedVIP(ctx, st, dp, router, key, vip, withdrawRoute, logger)
 		}
 		var cleanupErr error
 		if rollouts != nil {
-			cleanupErr = rollouts.RunExclusive(ctx, rolloutKeyFromNamespacedKey(key), cleanup)
+			cleanupErr = rollouts.RunExclusive(ctx, rolloutKeyForCleanup(key, vip), cleanup)
 		} else {
 			cleanupErr = cleanup(ctx)
 		}
@@ -409,10 +415,11 @@ func cleanupRetainedVIP(
 	router routing.Router,
 	key string,
 	vip *v1alpha1.VirtualIP,
+	withdrawRoute bool,
 	logger *slog.Logger,
 ) error {
-	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "address", vip.Spec.Address)
-	if router != nil {
+	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "address", vip.Spec.Address, "withdraw_route", withdrawRoute)
+	if withdrawRoute && router != nil {
 		if err := router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
 			return fmt.Errorf("failed to withdraw stale retained VIP route: %w", err)
 		}
@@ -429,7 +436,10 @@ func cleanupRetainedVIP(
 	return nil
 }
 
-func rolloutKeyFromNamespacedKey(key string) string {
+func rolloutKeyForCleanup(key string, vip *v1alpha1.VirtualIP) string {
+	if vip != nil && vip.Spec.Address != "" {
+		return "vip-address/" + vip.Spec.Address
+	}
 	return "virtualip/" + key
 }
 

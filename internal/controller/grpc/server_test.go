@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -17,10 +18,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akam1o/arca-lb/internal/common/datastore"
+	"github.com/akam1o/arca-lb/internal/common/models"
 	controllerconfig "github.com/akam1o/arca-lb/internal/controller/config"
+	"github.com/akam1o/arca-lb/internal/testutil"
+	pb "github.com/akam1o/arca-lb/pkg/grpc"
 	"github.com/sirupsen/logrus"
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func TestServerStartReturnsNilAfterGracefulStop(t *testing.T) {
@@ -28,7 +34,11 @@ func TestServerStartReturnsNilAfterGracefulStop(t *testing.T) {
 	server := newTestServer(port, controllerconfig.GRPCConfig{})
 	errCh := startServer(t, server, port)
 
-	server.Stop()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := server.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
 
 	select {
 	case err := <-errCh:
@@ -50,7 +60,11 @@ func TestServerAcceptsTLSConnectionsWhenEnabled(t *testing.T) {
 	})
 	errCh := startServer(t, server, port)
 	defer func() {
-		server.Stop()
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := server.Stop(stopCtx); err != nil {
+			t.Fatalf("Stop returned error after TLS test: %v", err)
+		}
 		select {
 		case err := <-errCh:
 			if err != nil {
@@ -84,7 +98,69 @@ func TestServerAcceptsTLSConnectionsWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestServerStopForcesStopWhenWatchConfigStreamIsActive(t *testing.T) {
+	port := freeTCPPort(t)
+
+	mockDS := testutil.NewMockDataStore()
+	mockDS.SetConfig(&models.Config{
+		Revision: 1,
+		VIPs:     []models.VIPConfig{},
+	})
+	watchCh := make(chan datastore.WatchEvent)
+	mockDS.SetWatchChannel(watchCh)
+
+	server := newTestServerWithDatastore(port, controllerconfig.GRPCConfig{}, mockDS)
+	errCh := startServer(t, server, port)
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dialCancel()
+	conn, err := googlegrpc.DialContext(dialCtx, fmt.Sprintf("127.0.0.1:%d", port), // nolint:staticcheck // DialContext is adequate for this server shutdown test.
+		googlegrpc.WithBlock(),
+		googlegrpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Fatalf("close connection: %v", err)
+		}
+	}()
+
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	stream, err := pb.NewConfigSyncClient(conn).WatchConfig(streamCtx, &pb.WatchConfigRequest{
+		AgentId:         "agent-1",
+		CurrentRevision: 0,
+	})
+	if err != nil {
+		t.Fatalf("WatchConfig: %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("receive initial config: %v", err)
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer stopCancel()
+	if err := server.Stop(stopCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop error = %v, want context deadline exceeded", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned error after forced stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for gRPC server to stop after forced stop")
+	}
+}
+
 func newTestServer(port int, grpcCfg controllerconfig.GRPCConfig) *Server {
+	return newTestServerWithDatastore(port, grpcCfg, nil)
+}
+
+func newTestServerWithDatastore(port int, grpcCfg controllerconfig.GRPCConfig, ds datastore.DataStore) *Server {
 	if grpcCfg.Host == "" {
 		grpcCfg.Host = "127.0.0.1"
 	}
@@ -95,7 +171,7 @@ func newTestServer(port int, grpcCfg controllerconfig.GRPCConfig) *Server {
 
 	return NewServer(&controllerconfig.Config{
 		GRPC: grpcCfg,
-	}, nil, logger)
+	}, ds, logger)
 }
 
 func startServer(t *testing.T, server *Server, port int) <-chan error {

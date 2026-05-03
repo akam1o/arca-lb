@@ -17,8 +17,9 @@ import (
 )
 
 var (
-	configPath = flag.String("config", "deploy/config/controller.yaml", "Path to configuration file")
-	version    = "dev" // Set by build flags
+	configPath          = flag.String("config", "deploy/config/controller.yaml", "Path to configuration file")
+	version             = "dev" // Set by build flags
+	grpcShutdownTimeout = 5 * time.Second
 )
 
 func main() {
@@ -87,7 +88,11 @@ func main() {
 	defer cancel()
 
 	// Stop gRPC server
-	grpcSrv.Stop()
+	grpcShutdownCtx, grpcShutdownCancel := context.WithTimeout(shutdownCtx, grpcShutdownTimeout)
+	if err := grpcSrv.Stop(grpcShutdownCtx); err != nil {
+		logger.WithError(err).Warn("Failed to shutdown gRPC server gracefully")
+	}
+	grpcShutdownCancel()
 
 	// Shutdown REST API server
 	if err := apiServer.Shutdown(shutdownCtx); err != nil {

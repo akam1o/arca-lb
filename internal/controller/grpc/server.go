@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -122,10 +123,31 @@ func (s *Server) loadTLSConfig() (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-// Stop gracefully stops the gRPC server
-func (s *Server) Stop() {
+// Stop gracefully stops the gRPC server, falling back to a forceful stop when
+// active RPCs do not drain before ctx expires.
+func (s *Server) Stop(ctx context.Context) error {
 	s.logger.Info("Stopping gRPC server")
-	if s.grpcServer != nil {
+	if s.grpcServer == nil {
+		return nil
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	stopped := make(chan struct{})
+	go func() {
 		s.grpcServer.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		return nil
+	case <-ctx.Done():
+		s.logger.WithError(ctx.Err()).Warn("Timed out waiting for graceful gRPC shutdown; forcing stop")
+		s.grpcServer.Stop()
+		<-stopped
+		return ctx.Err()
 	}
 }

@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	"go.fd.io/govpp/binapi/ip_types"
 	"go.fd.io/govpp/binapi/lb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -29,6 +31,31 @@ func newTestVIP(name, addr string, port int) *v1alpha1.VirtualIP {
 				{Address: "10.0.1.2", Weight: 100},
 			},
 		},
+	}
+}
+
+func testVPPConfig() VPPConfig {
+	return VPPConfig{
+		EncapType:                 "L3DSR",
+		DSCP:                      10,
+		ServiceType:               "CLUSTERIP",
+		NewFlowsTableLength:       65537,
+		StateVerificationInterval: 30 * time.Second,
+	}
+}
+
+func vppDetailForTest(t *testing.T, vpp *VPP, vip *v1alpha1.VirtualIP) *lb.LbVipDetails {
+	t.Helper()
+	attrs, err := vpp.effectiveVIPAttributes(vip)
+	if err != nil {
+		t.Fatalf("effectiveVIPAttributes: %v", err)
+	}
+	return &lb.LbVipDetails{
+		Encap:           encapToAPI(attrs.encapType),
+		Dscp:            ip_types.IPDscp(attrs.dscp),
+		SrvType:         serviceTypeToAPI(attrs.serviceType),
+		TargetPort:      uint16(attrs.port),
+		FlowTableLength: uint16(attrs.newFlowsTableLength),
 	}
 }
 
@@ -244,6 +271,161 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 	}
 	if entry.vip.Spec.DSCP == nil || *entry.vip.Spec.DSCP != existingDSCP {
 		t.Fatalf("existing VIP was changed: dscp=%v", entry.vip.Spec.DSCP)
+	}
+}
+
+func TestVPPApplyVIPSkipsStateVerificationBeforeInterval(t *testing.T) {
+	now := time.Unix(100, 0)
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		lookupVIPFn: func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+			t.Fatal("lookupVIP should not be called before verification interval")
+			return nil, false, nil
+		},
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			t.Fatal("addVIP should not be called before verification interval")
+			return nil
+		},
+		addBackendFn: func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error {
+			t.Fatal("addBackend should not be called when cached backends match")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	lastVerified := now.Add(-10 * time.Second)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+			"10.0.1.2": vip.Spec.Backends[1],
+		},
+		lastVerified: lastVerified,
+	}
+
+	if err := vpp.ApplyVIP(context.Background(), vip, vip.Spec.Backends); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if got := vpp.vips[key].lastVerified; !got.Equal(lastVerified) {
+		t.Fatalf("lastVerified = %v, want unchanged %v", got, lastVerified)
+	}
+}
+
+func TestVPPApplyVIPRecreatesMissingCachedVIPAfterVerificationInterval(t *testing.T) {
+	now := time.Unix(100, 0)
+	lookupCalls := 0
+	addVIPCalls := 0
+	var added []string
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		lookupVIPFn: func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+			lookupCalls++
+			return nil, false, nil
+		},
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			addVIPCalls++
+			return nil
+		},
+		addBackendFn: func(_ context.Context, _ *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
+			added = append(added, be.Address)
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+			"10.0.1.2": vip.Spec.Backends[1],
+		},
+		lastVerified: now.Add(-31 * time.Second),
+	}
+
+	if err := vpp.ApplyVIP(context.Background(), vip, vip.Spec.Backends); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookupCalls)
+	}
+	if addVIPCalls != 1 {
+		t.Fatalf("add VIP calls = %d, want 1", addVIPCalls)
+	}
+	if len(added) != 2 {
+		t.Fatalf("added backends = %v, want two backends", added)
+	}
+	if got := vpp.vips[key].lastVerified; !got.Equal(now) {
+		t.Fatalf("lastVerified = %v, want %v", got, now)
+	}
+}
+
+func TestVPPApplyVIPRefreshesCachedBackendsFromVPP(t *testing.T) {
+	now := time.Unix(100, 0)
+	var added []string
+	dumpCalls := 0
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		dumpBackendsFn: func(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec) (map[string]v1alpha1.BackendSpec, error) {
+			dumpCalls++
+			return map[string]v1alpha1.BackendSpec{
+				"10.0.1.1": {Address: "10.0.1.1", Weight: 100},
+			}, nil
+		},
+		addBackendFn: func(_ context.Context, _ *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
+			added = append(added, be.Address)
+			return nil
+		},
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			t.Fatal("addVIP should not be called when VPP VIP exists")
+			return nil
+		},
+	}
+	vpp.lookupVIPFn = func(_ context.Context, vip *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		return vppDetailForTest(t, vpp, vip), true, nil
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+			"10.0.1.2": vip.Spec.Backends[1],
+		},
+		lastVerified: now.Add(-31 * time.Second),
+	}
+
+	if err := vpp.ApplyVIP(context.Background(), vip, vip.Spec.Backends); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if dumpCalls != 1 {
+		t.Fatalf("dump calls = %d, want 1", dumpCalls)
+	}
+	if len(added) != 1 || added[0] != "10.0.1.2" {
+		t.Fatalf("added backends = %v, want [10.0.1.2]", added)
+	}
+	if got := len(vpp.vips[key].backends); got != 2 {
+		t.Fatalf("cached backend count = %d, want 2 after reconcile", got)
+	}
+	if got := vpp.vips[key].lastVerified; !got.Equal(now) {
+		t.Fatalf("lastVerified = %v, want %v", got, now)
 	}
 }
 

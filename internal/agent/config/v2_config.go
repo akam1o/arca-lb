@@ -309,6 +309,13 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 		}
 	}
 
+	if value, ok := vpp["state_verification_interval"]; ok {
+		interval, ok := v2DurationSetting(value)
+		if !ok || interval <= 0 {
+			return fmt.Errorf("dataplane.vpp.state_verification_interval must be a positive duration")
+		}
+	}
+
 	return nil
 }
 
@@ -336,6 +343,26 @@ func validV2VPPTuningDriftPolicy(value string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func v2DurationSetting(value interface{}) (time.Duration, bool) {
+	if seconds, ok := v2IntegerSetting(value); ok {
+		return time.Duration(seconds) * time.Second, true
+	}
+	switch v := value.(type) {
+	case time.Duration:
+		return v, true
+	case string:
+		if v == "" {
+			return 0, false
+		}
+		d, err := time.ParseDuration(v)
+		return d, err == nil
+	case float64:
+		return time.Duration(v * float64(time.Second)), true
+	default:
+		return 0, false
 	}
 }
 

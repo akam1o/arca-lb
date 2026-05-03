@@ -287,6 +287,16 @@ func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 			vppYAML: "retained_vip_tuning_drift_policy: rolling-recreate\n",
 			wantErr: "dataplane.vpp.retained_vip_tuning_drift_policy",
 		},
+		{
+			name:    "invalid state verification interval",
+			vppYAML: "state_verification_interval: eventually\n",
+			wantErr: "dataplane.vpp.state_verification_interval",
+		},
+		{
+			name:    "zero state verification interval",
+			vppYAML: "state_verification_interval: 0s\n",
+			wantErr: "dataplane.vpp.state_verification_interval",
+		},
 	}
 
 	for _, tt := range tests {

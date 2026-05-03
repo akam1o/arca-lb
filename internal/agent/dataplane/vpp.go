@@ -68,6 +68,7 @@ type VPP struct {
 
 	addBackendFn    func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error
 	removeBackendFn func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error
+	deleteVIPFn     func(context.Context, *v1alpha1.VirtualIP) error
 
 	mu   sync.RWMutex
 	vips map[string]*vipEntry // key: namespace/name
@@ -172,7 +173,10 @@ func (v *VPP) RemoveVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 	defer v.mu.Unlock()
 
 	key := v.vipKey(vip)
-	if _, ok := v.vips[key]; !ok {
+	deleteTarget := vip
+	if entry, ok := v.vips[key]; ok {
+		deleteTarget = entry.vip
+	} else {
 		exists, err := v.vipExistsLocked(ctx, vip)
 		if err != nil {
 			return fmt.Errorf("failed to inspect VIP before remove: %w", err)
@@ -183,7 +187,7 @@ func (v *VPP) RemoveVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 		}
 	}
 
-	if err := v.deleteVIPLocked(ctx, vip); err != nil {
+	if err := v.deleteVIP(ctx, deleteTarget); err != nil {
 		return err
 	}
 
@@ -351,6 +355,13 @@ func (v *VPP) removeBackend(ctx context.Context, vip *v1alpha1.VirtualIP, backen
 		return v.removeBackendFn(ctx, vip, backend)
 	}
 	return v.removeBackendLocked(ctx, vip, backend)
+}
+
+func (v *VPP) deleteVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
+	if v.deleteVIPFn != nil {
+		return v.deleteVIPFn(ctx, vip)
+	}
+	return v.deleteVIPLocked(ctx, vip)
 }
 
 func (v *VPP) AddBackend(ctx context.Context, vip *v1alpha1.VirtualIP, backend v1alpha1.BackendSpec) error {

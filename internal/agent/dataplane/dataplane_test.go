@@ -247,6 +247,51 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 	}
 }
 
+func TestVPPRemoveVIPUsesTrackedAppliedSpec(t *testing.T) {
+	var deleted *v1alpha1.VirtualIP
+	vpp := &VPP{
+		vips: make(map[string]*vipEntry),
+		deleteVIPFn: func(_ context.Context, vip *v1alpha1.VirtualIP) error {
+			deleted = vip.DeepCopy()
+			return nil
+		},
+	}
+
+	applied := newTestVIP("test-vip", "203.0.113.1", 80)
+	applied.Spec.EncapType = v1alpha1.EncapTypeL3DSR
+	appliedDSCP := uint8(10)
+	applied.Spec.DSCP = &appliedDSCP
+	key := vpp.vipKey(applied)
+	vpp.vips[key] = &vipEntry{
+		vip:      applied.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{},
+	}
+
+	deleteEvent := applied.DeepCopy()
+	deleteEvent.Spec.Port = 443
+	deleteEvent.Spec.EncapType = v1alpha1.EncapTypeNAT4
+	deleteEvent.Spec.DSCP = nil
+
+	if err := vpp.RemoveVIP(context.Background(), deleteEvent); err != nil {
+		t.Fatalf("RemoveVIP: %v", err)
+	}
+	if deleted == nil {
+		t.Fatal("deleteVIP was not called")
+	}
+	if deleted.Spec.Port != applied.Spec.Port {
+		t.Fatalf("deleted port = %d, want applied port %d", deleted.Spec.Port, applied.Spec.Port)
+	}
+	if deleted.Spec.EncapType != applied.Spec.EncapType {
+		t.Fatalf("deleted encapType = %s, want applied encapType %s", deleted.Spec.EncapType, applied.Spec.EncapType)
+	}
+	if deleted.Spec.DSCP == nil || *deleted.Spec.DSCP != appliedDSCP {
+		t.Fatalf("deleted DSCP = %v, want applied DSCP %d", deleted.Spec.DSCP, appliedDSCP)
+	}
+	if _, ok := vpp.vips[key]; ok {
+		t.Fatal("tracked VIP entry was not removed")
+	}
+}
+
 func TestVPPDetectsFlowTableLengthTuningDrift(t *testing.T) {
 	vpp := &VPP{
 		config: VPPConfig{

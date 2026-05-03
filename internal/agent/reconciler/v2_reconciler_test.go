@@ -573,6 +573,67 @@ func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T
 	}
 }
 
+func TestV2ReconcilerReportsTuningDriftRepairFailure(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.drifts = []dataplane.VIPTuningDrift{{
+		Field:   "new_flows_table_length",
+		Current: "1024",
+		Desired: "2048",
+	}}
+	router := newRecordingRouter(nil)
+	statusUpdater := &recordingStatusUpdater{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyPreserve,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return router.IsAnnounced(vip.Spec.Address) && statusUpdater.updateCount() == 1
+	}, "initial VIP route announcement")
+
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+	dp.setRecreateErr(errors.New("recreate failed"))
+	if err := mgr.Reconcile("default/web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		return dp.recreateCount() == 1 && statusUpdater.updateCount() == 2
+	}, "status update after tuning drift repair failure")
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should remain withdrawn after failed VIP recreate")
+	}
+
+	conditions := statusUpdater.lastConditions()
+	serving := findTestCondition(conditions, agentstatus.ConditionServing)
+	if serving == nil {
+		t.Fatal("Serving condition missing")
+	}
+	if serving.Status != metav1.ConditionUnknown || serving.Reason != "DataPlaneApplyFailed" {
+		t.Fatalf("Serving condition = %+v, want Unknown DataPlaneApplyFailed", serving)
+	}
+	route := findTestCondition(conditions, agentstatus.ConditionRouteAdvertised)
+	if route == nil {
+		t.Fatal("RouteAdvertised condition missing")
+	}
+	if route.Status != metav1.ConditionFalse || route.Reason != "NotAdvertised" {
+		t.Fatalf("RouteAdvertised condition = %+v, want False NotAdvertised", route)
+	}
+}
+
 func TestRouteCoordinatorSuppressesAnnouncementsDuringAddressDrain(t *testing.T) {
 	events := &eventRecorder{}
 	router := newRecordingRouter(events)
@@ -1148,6 +1209,7 @@ type recordingDataPlane struct {
 	applyErr      error
 	removeErr     error
 	recreates     int
+	recreateErr   error
 	drifts        []dataplane.VIPTuningDrift
 	events        *eventRecorder
 	recordApplies bool
@@ -1212,9 +1274,18 @@ func (r *recordingDataPlane) RecreateVIP(_ context.Context, vip *v1alpha1.Virtua
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.recreates++
+	if r.recreateErr != nil {
+		return r.recreateErr
+	}
 	r.drifts = nil
 	r.events.record("recreate:" + vip.Namespace + "/" + vip.Name)
 	return nil
+}
+
+func (r *recordingDataPlane) setRecreateErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recreateErr = err
 }
 
 func (r *recordingDataPlane) NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool, error) {

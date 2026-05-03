@@ -972,13 +972,31 @@ func (vr *vipReconciler) reconcileApplied(
 	vr.setLastAppliedVIP(vip)
 
 	if drifts := dataplaneTuningDrifts(vr.dp, vr.key); len(drifts) > 0 {
-		if err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, rolloutHeld); err != nil {
+		repairResult, err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, rolloutHeld)
+		if err != nil {
 			vr.logger.Error("failed to repair retained VIP tuning drift", "error", err, "drifts", drifts)
 			span.RecordError(err)
+			if repairResult.routeStateKnown {
+				routeAdvertised = repairResult.routeAdvertised
+				routeErr = repairResult.routeErr
+			}
 			if drainHeld {
-				if _, routeErr := vr.releaseUpdateDrain(ctx, vip, false); routeErr != nil {
+				routeAdvertised, routeErr = vr.releaseUpdateDrain(ctx, vip, false)
+				if routeErr != nil {
 					vr.logger.Error("failed to release VIP address drain after tuning drift repair failure", "error", routeErr)
 					span.RecordError(routeErr)
+				}
+			}
+			if routeErr != nil {
+				span.RecordError(routeErr)
+			}
+			if vr.statusUpdater != nil {
+				if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+					dataplaneApplyFailedCondition(err),
+					routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+				); statusErr != nil {
+					vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+					span.RecordError(statusErr)
 				}
 			}
 			return
@@ -1183,6 +1201,12 @@ func dataplaneTuningDrifts(dp dataplane.DataPlane, vipKey string) []dataplane.VI
 	return reporter.TuningDrifts(vipKey)
 }
 
+type tuningDriftRepairResult struct {
+	routeAdvertised bool
+	routeErr        error
+	routeStateKnown bool
+}
+
 func (vr *vipReconciler) repairTuningDrift(
 	ctx context.Context,
 	vip *v1alpha1.VirtualIP,
@@ -1190,55 +1214,77 @@ func (vr *vipReconciler) repairTuningDrift(
 	hasHealthy bool,
 	drifts []dataplane.VIPTuningDrift,
 	rolloutHeld bool,
-) error {
+) (tuningDriftRepairResult, error) {
 	cfg := normalizeTuningDriftConfig(vr.tuningDrift)
 	if cfg.Policy == TuningDriftPolicyPreserve {
 		vr.logger.Warn("retained VIP tuning drift preserved", "drifts", drifts)
-		return nil
+		return tuningDriftRepairResult{}, nil
 	}
 
 	if vr.rollouts != nil && !rolloutHeld {
-		return runExclusiveRollouts(ctx, vr.rollouts, rolloutKeysForAddresses(vip.Spec.Address), func(ctx context.Context) error {
+		var result tuningDriftRepairResult
+		err := runExclusiveRollouts(ctx, vr.rollouts, rolloutKeysForAddresses(vip.Spec.Address), func(ctx context.Context) error {
 			if !vr.isCurrent(vip) {
 				vr.logger.Debug("skipping stale retained VIP tuning drift repair", "generation", vip.Generation)
 				return nil
 			}
-			return vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, true)
+			var err error
+			result, err = vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, true)
+			return err
 		})
+		return result, err
 	}
 
 	recreator, ok := vr.dp.(dataplane.VIPRecreator)
 	if !ok {
-		return fmt.Errorf("dataplane does not support VIP recreation")
+		return tuningDriftRepairResult{}, fmt.Errorf("dataplane does not support VIP recreation")
 	}
 
 	vr.logger.Info("repairing retained VIP tuning drift", "policy", cfg.Policy, "drain", cfg.DrainDuration, "drifts", drifts)
 	drained, err := vr.routes.BeginDrain(ctx, vr.key, vip.Spec.Address)
 	if err != nil {
-		return fmt.Errorf("failed to drain route before VIP recreate: %w", err)
+		return tuningDriftRepairResult{
+			routeErr:        err,
+			routeStateKnown: true,
+		}, fmt.Errorf("failed to drain route before VIP recreate: %w", err)
 	}
 	if !drained {
 		vr.logger.Warn("skipping retained VIP tuning drift repair until VIP address can drain", "address", vip.Spec.Address, "drifts", drifts)
-		return nil
+		return tuningDriftRepairResult{}, nil
 	}
-	releaseDrain := func(retErr error) error {
-		if _, releaseErr := vr.routes.FinishDrain(ctx, vr.key, vip.Spec.Address); releaseErr != nil {
-			if retErr != nil {
-				return fmt.Errorf("%w; additionally failed to release route drain: %v", retErr, releaseErr)
-			}
-			return fmt.Errorf("failed to release route drain after VIP recreate: %w", releaseErr)
+	releaseDrain := func(serving bool, retErr error) (tuningDriftRepairResult, error) {
+		advertised, releaseErr := vr.releaseUpdateDrain(ctx, vip, serving)
+		result := tuningDriftRepairResult{
+			routeAdvertised: advertised,
+			routeErr:        releaseErr,
+			routeStateKnown: true,
 		}
-		return retErr
+		if releaseErr != nil {
+			if retErr != nil {
+				return result, fmt.Errorf("%w; additionally failed to release route drain: %v", retErr, releaseErr)
+			}
+			return result, fmt.Errorf("failed to release route drain after VIP recreate: %w", releaseErr)
+		}
+		return result, retErr
 	}
 	if hasHealthy {
 		if err := sleepContext(ctx, cfg.DrainDuration); err != nil {
-			return releaseDrain(err)
+			return releaseDrain(hasHealthy, err)
 		}
 	}
 	if err := recreator.RecreateVIP(ctx, vip, healthyBackends); err != nil {
-		return releaseDrain(fmt.Errorf("failed to recreate VIP: %w", err))
+		return releaseDrain(false, fmt.Errorf("failed to recreate VIP: %w", err))
 	}
-	return releaseDrain(nil)
+	advertised, releaseErr := vr.routes.FinishDrain(ctx, vr.key, vip.Spec.Address)
+	result := tuningDriftRepairResult{
+		routeAdvertised: advertised,
+		routeErr:        releaseErr,
+		routeStateKnown: true,
+	}
+	if releaseErr != nil {
+		return result, fmt.Errorf("failed to release route drain after VIP recreate: %w", releaseErr)
+	}
+	return result, nil
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

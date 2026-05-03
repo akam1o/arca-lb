@@ -222,10 +222,10 @@ func main() {
 	watcherSyncedCh := make(chan struct{})
 	go func() {
 		watcherErrCh <- w.StartWithInitialSync(ctx, func(syncCtx context.Context, currentVIPs []v1alpha1.VirtualIP) error {
-			defer close(watcherSyncedCh)
 			if err := cleanupStaleLastConfigs(syncCtx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
-				logger.Warn("stale dataplane cleanup completed with errors", "error", err)
+				return fmt.Errorf("stale dataplane cleanup failed: %w", err)
 			}
+			close(watcherSyncedCh)
 			return nil
 		})
 	}()

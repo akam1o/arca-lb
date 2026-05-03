@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -283,6 +284,38 @@ func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
 	}
 	if router.IsAnnounced("203.0.113.20") {
 		t.Fatal("stale route should be withdrawn")
+	}
+}
+
+func TestCleanupStaleLastConfigsReturnsErrorWhenCleanupFails(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	staleSpec := []byte(`{"address":"203.0.113.20","port":443,"protocol":"TCP","backends":[{"address":"10.0.0.2","weight":100}]}`)
+	if err := st.SaveLastConfig("team-b/api", staleSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := &failingRouter{withdrawErr: errors.New("withdraw failed")}
+
+	err = cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, nil, logger)
+	if err == nil {
+		t.Fatal("cleanupStaleLastConfigs error = nil, want cleanup failure")
+	}
+	if removed := dp.removedVIPs(); len(removed) != 0 {
+		t.Fatalf("removed VIP count = %d, want 0 when route cleanup fails", len(removed))
+	}
+	stale, err := st.LoadLastConfig("team-b/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stale) != string(staleSpec) {
+		t.Fatalf("stale config = %q, want retained %q", stale, staleSpec)
 	}
 }
 
@@ -610,6 +643,26 @@ func (r *recordingDataPlane) removedVIPs() []v1alpha1.VirtualIP {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]v1alpha1.VirtualIP(nil), r.removed...)
+}
+
+type failingRouter struct {
+	withdrawErr error
+}
+
+func (r *failingRouter) AnnounceVIP(context.Context, string) error {
+	return nil
+}
+
+func (r *failingRouter) WithdrawVIP(context.Context, string) error {
+	return r.withdrawErr
+}
+
+func (r *failingRouter) IsAnnounced(string) bool {
+	return false
+}
+
+func (r *failingRouter) Close() error {
+	return nil
 }
 
 type recordingHealthCheckConditionUpdater struct {

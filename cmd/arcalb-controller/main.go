@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
-	_ "github.com/akam1o/arca-lb/internal/common/datastore/etcd" // Register etcd datastore
+	_ "github.com/akam1o/arca-lb/internal/common/datastore/etcd"  // Register etcd datastore
+	_ "github.com/akam1o/arca-lb/internal/common/datastore/mysql" // Register mysql datastore
 	"github.com/akam1o/arca-lb/internal/controller/api"
 	"github.com/akam1o/arca-lb/internal/controller/config"
 	grpcserver "github.com/akam1o/arca-lb/internal/controller/grpc"

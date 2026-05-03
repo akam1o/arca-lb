@@ -66,7 +66,7 @@ func TestAgentHTTPMuxServesMetricsWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestVIPEventHandlerPreservesDataplaneWhenHealthCheckUpdateFails(t *testing.T) {
+func TestVIPEventHandlerWithdrawsRouteWhenHealthCheckUpdateFails(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -117,15 +117,9 @@ func TestVIPEventHandlerPreservesDataplaneWhenHealthCheckUpdateFails(t *testing.
 
 	handler.OnVIPUpdate(vip)
 
-	if got := dp.applyCount(); got != 1 {
-		t.Fatalf("dataplane ApplyVIP calls = %d, want 1 after invalid health check update", got)
-	}
-	if got := dp.backendCount(); got != 1 {
-		t.Fatalf("dataplane backends = %d, want existing backend to remain", got)
-	}
-	if !router.IsAnnounced(vip.Spec.Address) {
-		t.Fatal("route was withdrawn after invalid health check update")
-	}
+	waitForCondition(t, func() bool {
+		return dp.applyCount() == 2 && dp.backendCount() == 0 && !router.IsAnnounced(vip.Spec.Address)
+	}, "invalid health check update to withdraw route")
 
 	condition := statusUpdater.lastCondition()
 	if condition.Type != agentstatus.ConditionHealthCheckReady {

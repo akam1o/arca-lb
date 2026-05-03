@@ -90,6 +90,47 @@ func TestEventHandlerOnUpdateHandlesGenerationChange(t *testing.T) {
 	}
 }
 
+func TestEventHandlerOnUpdateHandlesDeletionTimestamp(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	oldVIP := newWatcherTestVIP()
+	newVIP := oldVIP.DeepCopy()
+	now := metav1.Now()
+	newVIP.DeletionTimestamp = &now
+
+	eh.OnUpdate(oldVIP, newVIP)
+
+	if len(handler.updated) != 0 {
+		t.Fatalf("expected no updated VIPs, got %d", len(handler.updated))
+	}
+	if len(handler.deleted) != 1 {
+		t.Fatalf("expected 1 deleted VIP, got %d", len(handler.deleted))
+	}
+	if handler.deleted[0] != newVIP {
+		t.Fatalf("deleted VIP = %#v, want terminating VIP", handler.deleted[0])
+	}
+}
+
+func TestEventHandlerOnAddHandlesDeletionTimestamp(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	vip := newWatcherTestVIP()
+	now := metav1.Now()
+	vip.DeletionTimestamp = &now
+
+	eh.OnAdd(vip, true)
+
+	if len(handler.updated) != 0 {
+		t.Fatalf("expected no updated VIPs, got %d", len(handler.updated))
+	}
+	if len(handler.deleted) != 1 {
+		t.Fatalf("expected 1 deleted VIP, got %d", len(handler.deleted))
+	}
+	if handler.deleted[0] != vip {
+		t.Fatalf("deleted VIP = %#v, want terminating VIP", handler.deleted[0])
+	}
+}
+
 func TestInitialSyncEventGateCoalescesAddUpdateUntilRelease(t *testing.T) {
 	handler := &recordingHandler{}
 	eh := &eventHandler{handler: handler, logger: newTestLogger()}

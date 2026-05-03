@@ -163,6 +163,129 @@ func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 	}
 }
 
+func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	router := newRecordingRouter(events)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	web443 := newV2TestVIP("default", "web-443", "uid-443")
+	web443.Spec.Port = 443
+	mgr.OnVIPUpdate(web443)
+	waitFor(t, func() bool { return router.announceCount() == 1 }, "shared VIP route announcement")
+
+	web80 := newV2TestVIP("default", "web-80", "uid-80")
+	web80.Spec.Port = 80
+	mgr.OnVIPUpdate(web80)
+	waitFor(t, func() bool { return dp.applyCount() == 2 }, "shared VIP listener apply")
+
+	dp.setDrifts([]dataplane.VIPTuningDrift{{
+		Field:   "new_flows_table_length",
+		Current: "1024",
+		Desired: "2048",
+	}})
+	if err := mgr.Reconcile("default/web-80"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	waitFor(t, func() bool { return dp.applyCount() == 3 }, "tuning drift reconcile")
+
+	if got := dp.recreateCount(); got != 0 {
+		t.Fatalf("recreate count = %d, want 0 while sibling keeps shared address serving", got)
+	}
+	if got := router.withdrawCount(); got != 0 {
+		t.Fatalf("withdraw count = %d, want 0 while sibling keeps shared address serving", got)
+	}
+	if !router.IsAnnounced(web80.Spec.Address) {
+		t.Fatal("shared VIP address route should remain advertised")
+	}
+	if drifts := dp.TuningDrifts("default/web-80"); len(drifts) == 0 {
+		t.Fatal("tuning drift should remain pending when rolling recreate is skipped")
+	}
+
+	got := events.snapshot()
+	want := []string{"announce:203.0.113.10"}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestRouteCoordinatorSuppressesAnnouncementsDuringAddressDrain(t *testing.T) {
+	events := &eventRecorder{}
+	router := newRecordingRouter(events)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	routes := newRouteCoordinator(router, logger)
+	ctx := context.Background()
+
+	advertised, err := routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing: %v", err)
+	}
+	if !advertised {
+		t.Fatal("initial serving VIP should advertise the address route")
+	}
+
+	drained, err := routes.BeginDrain(ctx, "default/web-80", "203.0.113.10")
+	if err != nil {
+		t.Fatalf("BeginDrain: %v", err)
+	}
+	if !drained {
+		t.Fatal("address should drain when no sibling is serving")
+	}
+	if router.IsAnnounced("203.0.113.10") {
+		t.Fatal("address route should be withdrawn during drain")
+	}
+
+	advertised, err = routes.SetServing(ctx, "default/web-443", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing sibling: %v", err)
+	}
+	if advertised {
+		t.Fatal("serving sibling should not re-advertise while address drain is held")
+	}
+	if router.IsAnnounced("203.0.113.10") {
+		t.Fatal("address route should stay withdrawn while drain is held")
+	}
+
+	advertised, err = routes.FinishDrain(ctx, "default/web-80", "203.0.113.10")
+	if err != nil {
+		t.Fatalf("FinishDrain: %v", err)
+	}
+	if !advertised {
+		t.Fatal("serving sibling should advertise after address drain is released")
+	}
+
+	got := events.snapshot()
+	want := []string{
+		"announce:203.0.113.10",
+		"withdraw:203.0.113.10",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+}
+
 func TestV2ManagerKeepsSharedAddressAdvertisedForHealthySibling(t *testing.T) {
 	dp := newRecordingDataPlane()
 	router := newRecordingRouter(nil)
@@ -482,6 +605,12 @@ func (r *recordingDataPlane) TuningDrifts(_ string) []dataplane.VIPTuningDrift {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]dataplane.VIPTuningDrift(nil), r.drifts...)
+}
+
+func (r *recordingDataPlane) setDrifts(drifts []dataplane.VIPTuningDrift) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.drifts = append([]dataplane.VIPTuningDrift(nil), drifts...)
 }
 
 func (r *recordingDataPlane) RecreateVIP(_ context.Context, vip *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec) error {

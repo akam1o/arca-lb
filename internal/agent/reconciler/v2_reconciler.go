@@ -31,7 +31,7 @@ const (
 	// tuning-only attributes differ from the desired configuration.
 	TuningDriftPolicyPreserve = "preserve"
 
-	// TuningDriftPolicyRollingRecreate withdraws the local route, waits for
+	// TuningDriftPolicyRollingRecreate drains the VIP address route, waits for
 	// traffic to drain, then recreates the VIP with the desired tuning.
 	TuningDriftPolicyRollingRecreate = "rolling_recreate"
 )
@@ -163,6 +163,7 @@ type routeAddressState struct {
 	serving    map[string]bool // key: namespace/name
 	advertised bool
 	reconciled bool
+	drainOwner string
 }
 
 func newRouteCoordinator(router routing.Router, logger *slog.Logger) *routeCoordinator {
@@ -201,6 +202,72 @@ func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address strin
 	}
 	state.serving[vipKey] = serving
 
+	return c.reconcileLocked(ctx, address, state)
+}
+
+// BeginDrain withdraws an address route only when no sibling VIP on that
+// address is serving. While held, later SetServing calls cannot re-announce it.
+func (c *routeCoordinator) BeginDrain(ctx context.Context, vipKey, address string) (bool, error) {
+	if c == nil || c.router == nil || address == "" {
+		return true, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if previousAddress := c.vipAddresses[vipKey]; previousAddress != "" && previousAddress != address {
+		if err := c.removeVIPLocked(ctx, vipKey, previousAddress); err != nil {
+			return false, fmt.Errorf("failed to withdraw previous VIP address %s for %s: %w", previousAddress, vipKey, err)
+		}
+		delete(c.vipAddresses, vipKey)
+	}
+
+	state := c.addresses[address]
+	if state == nil {
+		state = &routeAddressState{
+			serving: make(map[string]bool),
+		}
+		c.addresses[address] = state
+	}
+
+	if state.drainOwner != "" && state.drainOwner != vipKey {
+		return false, nil
+	}
+	for peerKey, serving := range state.serving {
+		if peerKey != vipKey && serving {
+			return false, nil
+		}
+	}
+
+	c.vipAddresses[vipKey] = address
+	state.drainOwner = vipKey
+	state.serving[vipKey] = false
+	advertised, err := c.reconcileLocked(ctx, address, state)
+	if err != nil {
+		state.drainOwner = ""
+		return false, err
+	}
+	return !advertised, nil
+}
+
+// FinishDrain releases a drain held by BeginDrain and reconciles the route.
+func (c *routeCoordinator) FinishDrain(ctx context.Context, vipKey, address string) (bool, error) {
+	if c == nil || c.router == nil || address == "" {
+		return false, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state := c.addresses[address]
+	if state == nil {
+		return false, nil
+	}
+	if state.drainOwner != vipKey {
+		return state.advertised, nil
+	}
+
+	state.drainOwner = ""
 	return c.reconcileLocked(ctx, address, state)
 }
 
@@ -278,10 +345,12 @@ func (c *routeCoordinator) removeVIPLocked(ctx context.Context, vipKey, address 
 
 func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, state *routeAddressState) (bool, error) {
 	shouldAdvertise := false
-	for _, serving := range state.serving {
-		if serving {
-			shouldAdvertise = true
-			break
+	if state.drainOwner == "" {
+		for _, serving := range state.serving {
+			if serving {
+				shouldAdvertise = true
+				break
+			}
 		}
 	}
 
@@ -763,18 +832,32 @@ func (vr *vipReconciler) repairTuningDrift(
 	}
 
 	vr.logger.Info("repairing retained VIP tuning drift", "policy", cfg.Policy, "drain", cfg.DrainDuration, "drifts", drifts)
-	if _, err := vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, false); err != nil {
+	drained, err := vr.routes.BeginDrain(ctx, vr.key, vip.Spec.Address)
+	if err != nil {
 		return fmt.Errorf("failed to drain route before VIP recreate: %w", err)
+	}
+	if !drained {
+		vr.logger.Warn("skipping retained VIP tuning drift repair until VIP address can drain", "address", vip.Spec.Address, "drifts", drifts)
+		return nil
+	}
+	releaseDrain := func(retErr error) error {
+		if _, releaseErr := vr.routes.FinishDrain(ctx, vr.key, vip.Spec.Address); releaseErr != nil {
+			if retErr != nil {
+				return fmt.Errorf("%w; additionally failed to release route drain: %v", retErr, releaseErr)
+			}
+			return fmt.Errorf("failed to release route drain after VIP recreate: %w", releaseErr)
+		}
+		return retErr
 	}
 	if hasHealthy {
 		if err := sleepContext(ctx, cfg.DrainDuration); err != nil {
-			return err
+			return releaseDrain(err)
 		}
 	}
 	if err := recreator.RecreateVIP(ctx, vip, healthyBackends); err != nil {
-		return fmt.Errorf("failed to recreate VIP: %w", err)
+		return releaseDrain(fmt.Errorf("failed to recreate VIP: %w", err))
 	}
-	return nil
+	return releaseDrain(nil)
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

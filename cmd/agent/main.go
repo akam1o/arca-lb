@@ -24,11 +24,13 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/dataplane"
 	"github.com/akam1o/arca-lb/internal/agent/healthcheck"
 	"github.com/akam1o/arca-lb/internal/agent/reconciler"
+	agentrollout "github.com/akam1o/arca-lb/internal/agent/rollout"
 	"github.com/akam1o/arca-lb/internal/agent/routing"
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
 	"github.com/akam1o/arca-lb/internal/agent/store"
 	"github.com/akam1o/arca-lb/internal/agent/watcher"
 	otelsetup "github.com/akam1o/arca-lb/internal/pkg/otel"
+	vipvalidation "github.com/akam1o/arca-lb/internal/virtualip/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -127,10 +129,30 @@ func main() {
 
 	statusUpdater, err := agentstatus.NewUpdater(agentstatus.Config{
 		Kubeconfig: cfg.Kubernetes.Kubeconfig,
+		AgentID:    cfg.Agent.ID,
 	}, logger)
 	if err != nil {
 		logger.Error("failed to create status updater", "error", err)
 		os.Exit(1)
+	}
+
+	var rolloutCoordinator reconciler.RolloutCoordinator
+	if cfg.Rollout.Enabled {
+		rolloutCoordinator, err = agentrollout.New(agentrollout.Config{
+			Kubeconfig:     cfg.Kubernetes.Kubeconfig,
+			Namespace:      cfg.Rollout.LeaseNamespace,
+			HolderIdentity: cfg.Agent.ID,
+			LeaseDuration:  cfg.Rollout.LeaseDuration,
+			RetryInterval:  cfg.Rollout.RetryInterval,
+		}, logger)
+		if err != nil {
+			logger.Error("failed to create rollout coordinator", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("rollout coordinator enabled",
+			"lease_namespace", cfg.Rollout.LeaseNamespace,
+			"lease_duration", cfg.Rollout.LeaseDuration,
+			"retry_interval", cfg.Rollout.RetryInterval)
 	}
 
 	// Create health check engine
@@ -144,6 +166,7 @@ func main() {
 	reconMgr := reconciler.NewManager(dp, router, st, hcEngine, cfg.Agent.ReconcileInterval, logger)
 	reconMgr.SetStatusUpdater(statusUpdater)
 	reconMgr.SetTuningDriftConfig(retainedVIPTuningDriftConfig(cfg.DataPlane.VPP, logger))
+	reconMgr.SetRolloutCoordinator(rolloutCoordinator)
 
 	// Wire health change callback: when health changes, trigger reconcile
 	hcCallback := func(vipKey, backendAddr string, oldState, newState healthcheck.V2BackendState) {
@@ -187,7 +210,7 @@ func main() {
 	currentVIPs, err := watcher.ListCurrent(ctx, watcherCfg)
 	if err != nil {
 		logger.Warn("failed to list current VirtualIPs for stale dataplane cleanup", "error", err)
-	} else if err := cleanupStaleLastConfigs(ctx, st, dp, router, currentVIPs, logger); err != nil {
+	} else if err := cleanupStaleLastConfigs(ctx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
 		logger.Warn("stale dataplane cleanup completed with errors", "error", err)
 	}
 
@@ -268,6 +291,11 @@ func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	vipKey := healthcheck.KeyForVIP(vip)
 	h.logger.Info("VIP update received", "vip", vipKey, "generation", vip.Generation)
 
+	if err := vipvalidation.ValidateDataPlane(vip); err != nil {
+		h.logger.Error("invalid VirtualIP spec, ignoring update", "vip", vipKey, "error", err)
+		return
+	}
+
 	// Start/update health checks
 	if vip.Spec.HealthCheck != nil {
 		if err := h.hcEngine.UpdateVIP(vip); err != nil {
@@ -320,6 +348,7 @@ func cleanupStaleLastConfigs(
 	st *store.Store,
 	dp dataplane.DataPlane,
 	router routing.Router,
+	rollouts reconciler.RolloutCoordinator,
 	currentVIPs []v1alpha1.VirtualIP,
 	logger *slog.Logger,
 ) error {
@@ -336,11 +365,22 @@ func cleanupStaleLastConfigs(
 	}
 
 	currentByKey := make(map[string]*v1alpha1.VirtualIP, len(currentVIPs))
+	currentValidByKey := make(map[string]bool, len(currentVIPs))
+	currentAddresses := make(map[string]struct{}, len(currentVIPs))
 	for i := range currentVIPs {
-		currentByKey[healthcheck.KeyForVIP(&currentVIPs[i])] = &currentVIPs[i]
+		currentVIP := &currentVIPs[i]
+		key := healthcheck.KeyForVIP(currentVIP)
+		currentByKey[key] = currentVIP
+		if err := vipvalidation.Validate(currentVIP); err != nil {
+			logger.Warn("ignoring invalid current VirtualIP for stale route protection", "vip", key, "error", err)
+			continue
+		}
+		currentValidByKey[key] = true
+		currentAddresses[currentVIP.Spec.Address] = struct{}{}
 	}
 
 	var firstErr error
+	decodedLastConfigs := make(map[string]*v1alpha1.VirtualIP, len(lastConfigs))
 	for key, data := range lastConfigs {
 		vip, err := virtualIPFromLastConfig(key, data)
 		if err != nil {
@@ -350,42 +390,83 @@ func cleanupStaleLastConfigs(
 			}
 			continue
 		}
-		if currentVIP, ok := currentByKey[key]; ok && sameRetainedVIPIdentity(vip, currentVIP) {
-			continue
-		}
+		decodedLastConfigs[key] = vip
+	}
 
-		logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "address", vip.Spec.Address)
-		if err := dp.RemoveVIP(ctx, vip); err != nil {
-			logger.Warn("failed to remove stale retained VIP from dataplane", "vip", key, "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+	for key, vip := range decodedLastConfigs {
+		if _, ok := currentByKey[key]; ok && !currentValidByKey[key] && vip.Spec.Address != "" {
+			currentAddresses[vip.Spec.Address] = struct{}{}
 		}
-		if router != nil {
-			if err := router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
-				logger.Warn("failed to withdraw stale retained VIP route", "vip", key, "error", err)
-				if firstErr == nil {
-					firstErr = err
-				}
+	}
+
+	for key, vip := range decodedLastConfigs {
+		if currentVIP, ok := currentByKey[key]; ok {
+			// Invalid current specs are ignored by the event handler; keep the
+			// last known good dataplane state for this key until a valid spec arrives.
+			if !currentValidByKey[key] {
+				logger.Warn("preserving retained VIP for invalid current VirtualIP", "vip", key)
+				continue
+			}
+			if sameRetainedVIPIdentity(vip, currentVIP) {
 				continue
 			}
 		}
-		if err := st.DeleteLastConfig(key); err != nil {
-			logger.Warn("failed to delete stale last-applied config", "vip", key, "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
+
+		_, addressInUse := currentAddresses[vip.Spec.Address]
+		withdrawRoute := !addressInUse
+		cleanup := func(ctx context.Context) error {
+			return cleanupRetainedVIP(ctx, st, dp, router, key, vip, withdrawRoute, logger)
 		}
-		if err := st.DeleteHealthStatesForVIP(key); err != nil {
-			logger.Warn("failed to delete stale health states", "vip", key, "error", err)
+		var cleanupErr error
+		if rollouts != nil {
+			cleanupErr = rollouts.RunExclusive(ctx, rolloutKeyForCleanup(key, vip), cleanup)
+		} else {
+			cleanupErr = cleanup(ctx)
+		}
+		if cleanupErr != nil {
+			logger.Warn("failed to clean stale retained VIP", "vip", key, "error", cleanupErr)
 			if firstErr == nil {
-				firstErr = err
+				firstErr = cleanupErr
 			}
 		}
 	}
 
 	return firstErr
+}
+
+func cleanupRetainedVIP(
+	ctx context.Context,
+	st *store.Store,
+	dp dataplane.DataPlane,
+	router routing.Router,
+	key string,
+	vip *v1alpha1.VirtualIP,
+	withdrawRoute bool,
+	logger *slog.Logger,
+) error {
+	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "address", vip.Spec.Address, "withdraw_route", withdrawRoute)
+	if withdrawRoute && router != nil {
+		if err := router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
+			return fmt.Errorf("failed to withdraw stale retained VIP route: %w", err)
+		}
+	}
+	if err := dp.RemoveVIP(ctx, vip); err != nil {
+		return fmt.Errorf("failed to remove stale retained VIP from dataplane: %w", err)
+	}
+	if err := st.DeleteLastConfig(key); err != nil {
+		return fmt.Errorf("failed to delete stale last-applied config: %w", err)
+	}
+	if err := st.DeleteHealthStatesForVIP(key); err != nil {
+		return fmt.Errorf("failed to delete stale health states: %w", err)
+	}
+	return nil
+}
+
+func rolloutKeyForCleanup(key string, vip *v1alpha1.VirtualIP) string {
+	if vip != nil && vip.Spec.Address != "" {
+		return "vip-address/" + vip.Spec.Address
+	}
+	return "virtualip/" + key
 }
 
 func virtualIPFromLastConfig(key string, data []byte) (*v1alpha1.VirtualIP, error) {

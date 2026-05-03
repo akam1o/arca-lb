@@ -18,7 +18,7 @@ enabled_provider_drivers = amphora:The Octavia Amphora driver., arca:ArcaLB VPP-
 
 [driver_arca]
 kubernetes_config = /etc/octavia/kubeconfig
-namespace = arca-system
+namespace = arca-lb-system
 ```
 
 Restart Octavia API and verify:
@@ -27,7 +27,9 @@ Restart Octavia API and verify:
 openstack loadbalancer provider list
 ```
 
-See [docs/octavia.md](../docs/octavia.md) for full documentation.
+See [docs/octavia.md](../docs/octavia.md) for setup documentation and
+[docs/octavia-operations.md](../docs/octavia-operations.md) for operational
+checks and route ERROR recovery.
 
 ## Concept Mapping
 

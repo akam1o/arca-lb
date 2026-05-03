@@ -42,7 +42,7 @@ def _make_vip(name, spec, annotations=None, status=None, generation=1):
         "kind": "VirtualIP",
         "metadata": {
             "name": name,
-            "namespace": "arca-system",
+            "namespace": "arca-lb-system",
             "generation": generation,
             "labels": {
                 constants.LABEL_MANAGED_BY: constants.LABEL_MANAGED_BY_VALUE,
@@ -86,7 +86,7 @@ class TestBuildHealthCheck(unittest.TestCase):
     def setUp(self, mock_client_cls, mock_watcher_cls, mock_driver_lib_cls,
               mock_conf):
         mock_conf.driver_arca.kubernetes_config = ""
-        mock_conf.driver_arca.namespace = "arca-system"
+        mock_conf.driver_arca.namespace = "arca-lb-system"
         mock_conf.driver_arca.default_encap_type = "L3DSR"
         mock_conf.driver_arca.default_dscp = 10
         mock_conf.driver_arca.status_sync_interval = 10
@@ -223,7 +223,7 @@ class TestDriverLifecycle(unittest.TestCase):
     def setUp(self, mock_client_cls, mock_watcher_cls, mock_driver_lib_cls,
               mock_conf):
         mock_conf.driver_arca.kubernetes_config = ""
-        mock_conf.driver_arca.namespace = "arca-system"
+        mock_conf.driver_arca.namespace = "arca-lb-system"
         mock_conf.driver_arca.default_encap_type = "L3DSR"
         mock_conf.driver_arca.default_dscp = 10
         mock_conf.driver_arca.status_sync_interval = 10
@@ -784,6 +784,65 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(
             annotations[constants.ANNOTATION_POOL_ID], "pool-1111"
         )
+
+    def test_listener_update_default_pool_none_detaches_pool(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {
+                "address": "203.0.113.10",
+                "port": 80,
+                "protocol": "TCP",
+                "backends": [{"address": "10.0.1.1", "weight": 100}],
+                "healthCheck": {
+                    "type": "http",
+                    "intervalSeconds": 10,
+                    "timeoutSeconds": 5,
+                    "riseCount": 3,
+                    "fallCount": 2,
+                    "http": {"port": 80, "path": "/healthz"},
+                },
+            },
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+                constants.ANNOTATION_DRAINING_MEMBER_IDS: json.dumps([
+                    "member-2222",
+                ]),
+            },
+        )
+        self.mock_k8s.find_by_listener.return_value = existing_vip
+
+        self.driver.listener_update(FakeObj({}), FakeObj({
+            "listener_id": "listener-1111",
+            "default_pool_id": None,
+        }))
+
+        self.mock_k8s.update_virtualip.assert_called_once()
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["backends"], [])
+        self.assertNotIn("healthCheck", spec)
+        annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
+        self.assertNotIn(constants.ANNOTATION_POOL_ID, annotations)
+        self.assertNotIn(constants.ANNOTATION_HM_ID, annotations)
+        self.assertNotIn(constants.ANNOTATION_MEMBER_MAP, annotations)
+        self.assertNotIn(
+            constants.ANNOTATION_DRAINING_MEMBER_IDS, annotations
+        )
+        self.mock_driver_lib.get_pool.assert_not_called()
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
 
     def test_listener_update_port_revalidates_existing_pool_members(self):
         from octavia_lib.api.drivers import exceptions as driver_exc
@@ -2157,6 +2216,59 @@ class TestDriverLifecycle(unittest.TestCase):
             "l7rules": [],
         })
 
+    def test_virtualip_status_change_aggregates_loadbalancer_status(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+            },
+            status={
+                "healthyBackends": 1,
+                "totalBackends": 1,
+                "backends": [
+                    {"address": "10.0.1.1", "healthy": True},
+                ],
+                "conditions": [
+                    {"type": "Ready", "status": "True"},
+                ],
+            },
+        )
+        other_vip = _make_vip(
+            "octavia-bbbbbbbb-cccccccc",
+            {"address": "203.0.113.10", "port": 443, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-2222",
+            },
+            status={
+                "healthyBackends": 0,
+                "totalBackends": 0,
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "False",
+                        "reason": "NoBackends",
+                    },
+                ],
+            },
+        )
+        self.mock_k8s.find_by_loadbalancer.return_value = [other_vip]
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(
+            status["loadbalancers"][0]["provisioning_status"], "ACTIVE"
+        )
+        self.assertEqual(
+            status["loadbalancers"][0]["operating_status"], "DEGRADED"
+        )
+        self.assertEqual(
+            status["listeners"][0]["operating_status"], "ONLINE"
+        )
+
     def test_virtualip_status_change_reports_draining_member(self):
         vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",
@@ -2247,6 +2359,53 @@ class TestDriverLifecycle(unittest.TestCase):
                 "operating_status": "OFFLINE",
             },
         ])
+
+    def test_virtualip_status_change_reports_error_when_route_failed(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                    "member-2222": "10.0.1.2",
+                }),
+            },
+            status={
+                "healthyBackends": 2,
+                "totalBackends": 2,
+                "backends": [
+                    {"address": "10.0.1.1", "healthy": True},
+                    {"address": "10.0.1.2", "healthy": True},
+                ],
+                "conditions": [
+                    {"type": "Ready", "status": "True"},
+                    {
+                        "type": "RouteAdvertised",
+                        "status": "Unknown",
+                        "reason": "RouteUpdateFailed",
+                    },
+                ],
+            },
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(
+            status["loadbalancers"][0]["provisioning_status"], "ACTIVE"
+        )
+        self.assertEqual(
+            status["loadbalancers"][0]["operating_status"], "ERROR"
+        )
+        self.assertEqual(
+            status["listeners"][0]["operating_status"], "ERROR"
+        )
+        self.assertEqual(
+            status["pools"][0]["operating_status"], "ERROR"
+        )
 
     def test_virtualip_status_change_reports_error_when_not_ready(self):
         vip = _make_vip(
@@ -2361,6 +2520,36 @@ class TestDriverLifecycle(unittest.TestCase):
                 "conditions": [
                     {
                         "type": "Ready",
+                        "status": "True",
+                        "observedGeneration": 1,
+                    },
+                ],
+            },
+            generation=2,
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
+
+    def test_virtualip_status_change_skips_stale_route_condition(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+            },
+            status={
+                "healthyBackends": 1,
+                "totalBackends": 1,
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "True",
+                        "observedGeneration": 2,
+                    },
+                    {
+                        "type": "RouteAdvertised",
                         "status": "True",
                         "observedGeneration": 1,
                     },

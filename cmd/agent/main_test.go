@@ -95,6 +95,73 @@ func TestVIPEventHandlerPreservesDataplaneWhenHealthCheckUpdateFails(t *testing.
 	}
 }
 
+func TestVIPEventHandlerIgnoresInvalidSpec(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	hcEngine := healthcheck.NewEngine(healthcheck.EngineConfig{WorkerCount: 1, MaxConcurrentChecks: 1}, nil, nil, logger)
+	if err := hcEngine.Start(ctx); err != nil {
+		t.Fatalf("Start health check engine: %v", err)
+	}
+	defer hcEngine.Stop()
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	statusUpdater := &recordingHealthCheckConditionUpdater{}
+	reconMgr := reconciler.NewManager(dp, router, nil, hcEngine, time.Hour, logger)
+	reconMgr.Start(ctx)
+	defer reconMgr.Stop()
+
+	handler := &vipEventHandler{
+		ctx:           ctx,
+		reconciler:    reconMgr,
+		hcEngine:      hcEngine,
+		statusUpdater: statusUpdater,
+		logger:        logger,
+	}
+	valid := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			Generation: 2,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{{Address: "10.0.0.1", Weight: 100}},
+		},
+	}
+	handler.OnVIPUpdate(valid)
+	waitForCondition(t, func() bool {
+		return dp.applyCount() == 1 && dp.backendCount() == 1 && router.IsAnnounced(valid.Spec.Address)
+	}, "initial VIP reconcile")
+	initialConditionUpdates := statusUpdater.updateCount()
+
+	invalid := valid.DeepCopy()
+	invalid.Generation = 3
+	invalid.Spec.Backends = append(invalid.Spec.Backends, v1alpha1.BackendSpec{
+		Address: "10.0.0.1",
+		Weight:  100,
+	})
+
+	handler.OnVIPUpdate(invalid)
+
+	if got := dp.applyCount(); got != 1 {
+		t.Fatalf("dataplane ApplyVIP calls = %d, want 1 after invalid spec update", got)
+	}
+	if got := dp.backendCount(); got != 1 {
+		t.Fatalf("dataplane backends = %d, want existing backend to remain", got)
+	}
+	if !router.IsAnnounced(valid.Spec.Address) {
+		t.Fatal("route was withdrawn after invalid spec update")
+	}
+	if got := statusUpdater.updateCount(); got != initialConditionUpdates {
+		t.Fatalf("health check condition updates = %d, want %d after invalid spec update", got, initialConditionUpdates)
+	}
+}
+
 func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
@@ -132,7 +199,7 @@ func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
 		},
 	}}
 
-	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, current, logger); err != nil {
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
 		t.Fatalf("cleanupStaleLastConfigs: %v", err)
 	}
 
@@ -170,6 +237,272 @@ func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
 	}
 	if router.IsAnnounced("203.0.113.20") {
 		t.Fatal("stale route should be withdrawn")
+	}
+}
+
+func TestCleanupStaleLastConfigsPreservesSharedCurrentAddress(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	activeSpec := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP","backends":[{"address":"10.0.0.1","weight":100}]}`)
+	staleSharedSpec := []byte(`{"address":"203.0.113.10","port":443,"protocol":"TCP","backends":[{"address":"10.0.0.2","weight":100}]}`)
+	if err := st.SaveLastConfig("team-a/web", activeSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveLastConfig("team-b/api", staleSharedSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	current := []v1alpha1.VirtualIP{{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+		},
+	}}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	removed := dp.removedVIPs()
+	if len(removed) != 1 {
+		t.Fatalf("removed VIP count = %d, want 1", len(removed))
+	}
+	if removed[0].Namespace != "team-b" || removed[0].Name != "api" || removed[0].Spec.Address != "203.0.113.10" {
+		t.Fatalf("removed VIP = %#v", removed[0])
+	}
+	stale, err := st.LoadLastConfig("team-b/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != nil {
+		t.Fatal("stale shared-address config should be deleted")
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("shared current address route should remain announced")
+	}
+}
+
+func TestCleanupStaleLastConfigsWithdrawsRouteForInvalidCurrentAddress(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	staleSharedSpec := []byte(`{"address":"203.0.113.10","port":443,"protocol":"TCP","backends":[{"address":"10.0.0.2","weight":100}]}`)
+	if err := st.SaveLastConfig("team-b/api", staleSharedSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	current := []v1alpha1.VirtualIP{{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+				{Address: "10.0.0.1", Weight: 100},
+			},
+		},
+	}}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	removed := dp.removedVIPs()
+	if len(removed) != 1 {
+		t.Fatalf("removed VIP count = %d, want 1", len(removed))
+	}
+	if removed[0].Namespace != "team-b" || removed[0].Name != "api" || removed[0].Spec.Address != "203.0.113.10" {
+		t.Fatalf("removed VIP = %#v", removed[0])
+	}
+	if router.IsAnnounced("203.0.113.10") {
+		t.Fatal("invalid current VIP should not protect stale shared route")
+	}
+}
+
+func TestCleanupStaleLastConfigsPreservesSameKeyWhenCurrentInvalid(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	activeSpec := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP","backends":[{"address":"10.0.0.1","weight":100}]}`)
+	if err := st.SaveLastConfig("team-a/web", activeSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	current := []v1alpha1.VirtualIP{{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.20",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+				{Address: "10.0.0.1", Weight: 100},
+			},
+		},
+	}}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	if removed := dp.removedVIPs(); len(removed) != 0 {
+		t.Fatalf("removed VIP count = %d, want 0 while same-key current spec is invalid", len(removed))
+	}
+	active, err := st.LoadLastConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(active) != string(activeSpec) {
+		t.Fatalf("active config = %q, want %q", active, activeSpec)
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("last known good route should remain announced")
+	}
+}
+
+func TestCleanupStaleLastConfigsPreservesSiblingRouteForInvalidCurrentRetainedAddress(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	activeSpec := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP","backends":[{"address":"10.0.0.1","weight":100}]}`)
+	staleSharedSpec := []byte(`{"address":"203.0.113.10","port":443,"protocol":"TCP","backends":[{"address":"10.0.0.2","weight":100}]}`)
+	if err := st.SaveLastConfig("team-a/web", activeSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveLastConfig("team-b/api", staleSharedSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	current := []v1alpha1.VirtualIP{{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.20",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+				{Address: "10.0.0.1", Weight: 100},
+			},
+		},
+	}}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	removed := dp.removedVIPs()
+	if len(removed) != 1 {
+		t.Fatalf("removed VIP count = %d, want only stale sibling removed", len(removed))
+	}
+	if removed[0].Namespace != "team-b" || removed[0].Name != "api" || removed[0].Spec.Address != "203.0.113.10" {
+		t.Fatalf("removed VIP = %#v", removed[0])
+	}
+	active, err := st.LoadLastConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(active) != string(activeSpec) {
+		t.Fatalf("active config = %q, want %q", active, activeSpec)
+	}
+	stale, err := st.LoadLastConfig("team-b/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != nil {
+		t.Fatal("stale sibling config should be deleted")
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("preserved invalid-current address route should protect sibling cleanup")
+	}
+}
+
+func TestCleanupStaleLastConfigsPreservesSameKeyWhenCurrentHealthCheckInvalid(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	activeSpec := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP","backends":[{"address":"10.0.0.1","weight":100}]}`)
+	if err := st.SaveLastConfig("team-a/web", activeSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	current := []v1alpha1.VirtualIP{{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.20",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{{Address: "10.0.0.1", Weight: 100}},
+			HealthCheck: &v1alpha1.HealthCheckSpec{
+				Type: v1alpha1.HCTypeHTTP,
+			},
+		},
+	}}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	if removed := dp.removedVIPs(); len(removed) != 0 {
+		t.Fatalf("removed VIP count = %d, want 0 while same-key current health check is invalid", len(removed))
+	}
+	active, err := st.LoadLastConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(active) != string(activeSpec) {
+		t.Fatalf("active config = %q, want %q", active, activeSpec)
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("last known good route should remain announced")
 	}
 }
 
@@ -236,12 +569,14 @@ func (r *recordingDataPlane) removedVIPs() []v1alpha1.VirtualIP {
 type recordingHealthCheckConditionUpdater struct {
 	mu        sync.Mutex
 	condition metav1.Condition
+	updates   int
 }
 
 func (r *recordingHealthCheckConditionUpdater) UpdateHealthCheckCondition(_ context.Context, _ *v1alpha1.VirtualIP, condition metav1.Condition) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.condition = condition
+	r.updates++
 	return nil
 }
 
@@ -249,6 +584,12 @@ func (r *recordingHealthCheckConditionUpdater) lastCondition() metav1.Condition 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.condition
+}
+
+func (r *recordingHealthCheckConditionUpdater) updateCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.updates
 }
 
 func waitForCondition(t *testing.T, condition func() bool, description string) {

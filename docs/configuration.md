@@ -31,6 +31,12 @@ routing:
   routeTag: 100
   cmdTimeout: "5s"
 
+rollout:
+  enabled: true
+  leaseNamespace: "arca-lb-system"
+  leaseDuration: "2m"
+  retryInterval: "1s"
+
 healthCheck:
   workerCount: 4
   maxConcurrentChecks: 100
@@ -88,6 +94,19 @@ configure BGP peers.
 | `routing.vtyshPath` | Path to `vtysh` command | `/usr/bin/vtysh` |
 | `routing.routeTag` | Tag value for static routes | `100` |
 | `routing.cmdTimeout` | Timeout for vtysh commands | `5s` |
+
+### Rollout settings
+
+When enabled, agents use Kubernetes `Lease` objects to serialize disruptive VIP
+changes, such as VIP address changes and retained VIP rolling recreates, across
+the cluster.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `rollout.enabled` | Enable cluster-wide rollout serialization | `false` |
+| `rollout.leaseNamespace` | Namespace used for rollout Lease objects | Pod namespace, then `arca-lb-system` |
+| `rollout.leaseDuration` | Lease duration before another agent may take over | `2m` |
+| `rollout.retryInterval` | Wait interval while another agent holds the Lease | `1s` |
 
 ### HealthCheck settings
 

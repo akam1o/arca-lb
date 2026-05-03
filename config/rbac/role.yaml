@@ -74,3 +74,13 @@ rules:
       - get
       - update
       - patch
+  # Rollout coordination
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - create
+      - update
+      - patch

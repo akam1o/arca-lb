@@ -39,6 +39,8 @@ OPERATING_ERROR = "ERROR"
 OPERATING_DRAINING = "DRAINING"
 DEFAULT_MEMBER_WEIGHT = 1
 OCTAVIA_MEMBER_WEIGHT_DRAINING = 0
+CONDITION_READY = "Ready"
+CONDITION_ROUTE_ADVERTISED = "RouteAdvertised"
 
 
 class ArcaLBDriver(driver_base.ProviderDriver):
@@ -342,19 +344,26 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             spec["port"] = port
 
         should_restore_pool = False
+        pool_detached = False
+        detached_pool_id = None
         pool_id = self._listener_default_pool_id(lst)
+        pool_id_present = self._listener_default_pool_present(lst)
         if pool_id:
             should_restore_pool = (
                 annotations.get(constants.ANNOTATION_POOL_ID) != pool_id
             )
             annotations[constants.ANNOTATION_POOL_ID] = pool_id
+        elif pool_id_present and annotations.get(constants.ANNOTATION_POOL_ID):
+            pool_detached = True
+            detached_pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
+            self._clear_pool_association(spec, annotations)
         elif port_changed and annotations.get(constants.ANNOTATION_POOL_ID):
             should_restore_pool = True
 
         admin_state = lst.get("admin_state_up")
         if admin_state is False:
             spec["backends"] = []
-        elif admin_state is True or should_restore_pool:
+        elif not pool_detached and (admin_state is True or should_restore_pool):
             try:
                 restored = self._restore_virtualip_backends([vip])
             except Exception:
@@ -387,7 +396,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             name,
             lb_id=lb_id,
             active_listener_ids=[listener_id],
-            active_pool_ids=[annotations.get(constants.ANNOTATION_POOL_ID)],
+            active_pool_ids=[
+                detached_pool_id or annotations.get(constants.ANNOTATION_POOL_ID)
+            ],
         )
 
     # ------------------------------------------------------------------
@@ -449,9 +460,6 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
-        spec["backends"] = []
-        spec.pop("healthCheck", None)
-
         annotations = vip.get("metadata", {}).get("annotations", {})
         lb_id = annotations.get(constants.ANNOTATION_LB_ID)
         listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
@@ -459,9 +467,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         deleted_member_ids = sorted(
             self._member_map_from_annotations(annotations)
         )
-        annotations.pop(constants.ANNOTATION_POOL_ID, None)
-        annotations.pop(constants.ANNOTATION_HM_ID, None)
-        annotations.pop(constants.ANNOTATION_MEMBER_MAP, None)
+        self._clear_pool_association(spec, annotations)
 
         self._k8s.update_virtualip(name, spec, annotations=annotations)
         self._push_resource_delete_status(
@@ -1019,6 +1025,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 listener.get("default_pool"), "pool_id", "id"
             )
         )
+
+    @classmethod
+    def _listener_default_pool_present(cls, listener):
+        listener = cls._as_dict(listener)
+        return "default_pool_id" in listener or "default_pool" in listener
+
+    @staticmethod
+    def _clear_pool_association(spec, annotations):
+        spec["backends"] = []
+        spec.pop("healthCheck", None)
+        annotations.pop(constants.ANNOTATION_POOL_ID, None)
+        annotations.pop(constants.ANNOTATION_HM_ID, None)
+        annotations.pop(constants.ANNOTATION_MEMBER_MAP, None)
+        annotations.pop(constants.ANNOTATION_DRAINING_MEMBER_IDS, None)
 
     @classmethod
     def _first_object_id(cls, value, *keys):
@@ -1685,44 +1705,26 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if not lb_id:
             return
 
-        ready_condition = self._ready_condition(status.get("conditions", []))
-        if ready_condition is None:
-            LOG.debug(
-                "VirtualIP %s has no Ready condition yet; skipping Octavia "
-                "status update",
-                metadata.get("name"),
-            )
+        vip_status = self._virtualip_octavia_status(vip_obj)
+        if vip_status is None:
             return
-        if not self._status_matches_generation(metadata, status,
-                                               ready_condition):
-            LOG.debug(
-                "VirtualIP %s status is stale for generation %s; skipping "
-                "Octavia status update",
-                metadata.get("name"), metadata.get("generation"),
-            )
-            return
-        is_ready = ready_condition.get("status") == "True"
-        is_no_backends = (
-            ready_condition.get("status") == "False" and
-            ready_condition.get("reason") == "NoBackends"
-        )
 
-        # Build Octavia status update.
-        healthy = status.get("healthyBackends", 0)
-        total = status.get("totalBackends", 0)
-        provisioning_status = (
-            PROVISIONING_ACTIVE
-            if is_ready or is_no_backends
-            else PROVISIONING_ERROR
-        )
-        operating_status = self._octavia_operating_status(
-            is_ready, is_no_backends, healthy, total
+        lb_provisioning_status, lb_operating_status = (
+            self._aggregate_loadbalancer_status(
+                lb_id,
+                vip_obj,
+                vip_status["provisioning_status"],
+                vip_status["operating_status"],
+            )
         )
 
         LOG.debug(
-            "VirtualIP %s status: ready=%s, healthy=%d/%d -> %s/%s",
-            metadata.get("name"), is_ready, healthy, total,
-            provisioning_status, operating_status,
+            "VirtualIP %s status: ready=%s, route_advertised=%s, "
+            "healthy=%d/%d -> %s/%s",
+            metadata.get("name"), vip_status["is_ready"],
+            vip_status["route_advertised"], vip_status["healthy"],
+            vip_status["total"], vip_status["provisioning_status"],
+            vip_status["operating_status"],
         )
 
         status_update = self._build_octavia_status_update(
@@ -1735,27 +1737,138 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 self._draining_member_ids_from_annotations(annotations)
             ),
             backend_statuses=status.get("backends", []),
-            provisioning_status=provisioning_status,
-            operating_status=operating_status,
+            provisioning_status=vip_status["provisioning_status"],
+            operating_status=vip_status["operating_status"],
+            lb_provisioning_status=lb_provisioning_status,
+            lb_operating_status=lb_operating_status,
         )
         self._push_octavia_status(status_update, metadata.get("name"))
 
+    def _virtualip_octavia_status(self, vip_obj):
+        metadata = vip_obj.get("metadata", {})
+        status = vip_obj.get("status", {})
+        conditions = status.get("conditions", [])
+        ready_condition = self._condition(conditions, CONDITION_READY)
+        if ready_condition is None:
+            LOG.debug(
+                "VirtualIP %s has no Ready condition yet; skipping Octavia "
+                "status update",
+                metadata.get("name"),
+            )
+            return None
+        route_condition = self._condition(
+            conditions, CONDITION_ROUTE_ADVERTISED
+        )
+        if not self._status_matches_generation(metadata, status,
+                                               ready_condition,
+                                               route_condition):
+            LOG.debug(
+                "VirtualIP %s status is stale for generation %s; skipping "
+                "Octavia status update",
+                metadata.get("name"), metadata.get("generation"),
+            )
+            return None
+
+        is_ready = ready_condition.get("status") == "True"
+        is_no_backends = (
+            ready_condition.get("status") == "False" and
+            ready_condition.get("reason") == "NoBackends"
+        )
+        healthy = status.get("healthyBackends", 0)
+        total = status.get("totalBackends", 0)
+        route_advertised = self._route_advertised(route_condition)
+        provisioning_status = (
+            PROVISIONING_ACTIVE
+            if is_ready or is_no_backends
+            else PROVISIONING_ERROR
+        )
+        operating_status = self._octavia_operating_status(
+            is_ready, is_no_backends, healthy, total, route_advertised
+        )
+        return {
+            "is_ready": is_ready,
+            "healthy": healthy,
+            "total": total,
+            "route_advertised": route_advertised,
+            "provisioning_status": provisioning_status,
+            "operating_status": operating_status,
+        }
+
+    def _aggregate_loadbalancer_status(self, lb_id, current_vip,
+                                       default_provisioning_status,
+                                       default_operating_status):
+        try:
+            vips = self._k8s.find_by_loadbalancer(lb_id) or []
+        except Exception:
+            LOG.exception("Failed to list VirtualIPs for loadbalancer %s",
+                          lb_id)
+            return default_provisioning_status, default_operating_status
+
+        by_name = {}
+        for vip in vips:
+            annotations = vip.get("metadata", {}).get("annotations", {})
+            if annotations.get(constants.ANNOTATION_LB_ID) != lb_id:
+                continue
+            name = vip.get("metadata", {}).get("name")
+            if name:
+                by_name[name] = vip
+
+        current_name = current_vip.get("metadata", {}).get("name")
+        if current_name:
+            by_name[current_name] = current_vip
+
+        vip_statuses = []
+        for vip in by_name.values():
+            vip_status = self._virtualip_octavia_status(vip)
+            if vip_status is not None:
+                vip_statuses.append(vip_status)
+
+        if not vip_statuses:
+            return default_provisioning_status, default_operating_status
+
+        provisioning_status = (
+            PROVISIONING_ERROR
+            if any(s["provisioning_status"] == PROVISIONING_ERROR
+                   for s in vip_statuses)
+            else PROVISIONING_ACTIVE
+        )
+        operating_statuses = [s["operating_status"] for s in vip_statuses]
+        if OPERATING_ERROR in operating_statuses:
+            operating_status = OPERATING_ERROR
+        elif OPERATING_DEGRADED in operating_statuses:
+            operating_status = OPERATING_DEGRADED
+        elif OPERATING_ONLINE in operating_statuses:
+            operating_status = (
+                OPERATING_ONLINE
+                if all(s == OPERATING_ONLINE for s in operating_statuses)
+                else OPERATING_DEGRADED
+            )
+        elif operating_statuses and all(
+                s == OPERATING_OFFLINE for s in operating_statuses):
+            operating_status = OPERATING_OFFLINE
+        else:
+            operating_status = default_operating_status
+
+        return provisioning_status, operating_status
+
     @staticmethod
-    def _ready_condition(conditions):
+    def _condition(conditions, condition_type):
         for condition in conditions:
-            if condition.get("type") == "Ready":
+            if condition.get("type") == condition_type:
                 return condition
         return None
 
     @classmethod
-    def _status_matches_generation(cls, metadata, status, ready_condition):
+    def _status_matches_generation(cls, metadata, status, *conditions):
         generation = metadata.get("generation")
-        return (
-            cls._generation_matches(status.get("observedGeneration"),
-                                    generation) and
-            cls._generation_matches(
-                ready_condition.get("observedGeneration"), generation
+        if not cls._generation_matches(status.get("observedGeneration"),
+                                       generation):
+            return False
+        return all(
+            condition is None or cls._generation_matches(
+                condition.get("observedGeneration"), generation
             )
+            for condition in conditions
         )
 
     @staticmethod
@@ -1768,13 +1881,24 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return False
 
     @staticmethod
-    def _octavia_operating_status(is_ready, is_no_backends, healthy, total):
+    def _route_advertised(route_condition):
+        if route_condition is None:
+            return None
+        return route_condition.get("status") == "True"
+
+    @staticmethod
+    def _octavia_operating_status(is_ready, is_no_backends, healthy, total,
+                                  route_advertised=None):
         if not is_ready:
             if is_no_backends:
                 return OPERATING_OFFLINE
             return OPERATING_ERROR
         if total <= 0:
             return OPERATING_OFFLINE
+        if healthy <= 0:
+            return OPERATING_ERROR
+        if route_advertised is False:
+            return OPERATING_ERROR
         if healthy >= total:
             return OPERATING_ONLINE
         if healthy > 0:
@@ -1975,11 +2099,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                                      provisioning_status, operating_status,
                                      member_map=None, backend_statuses=None,
                                      member_statuses=None,
-                                     draining_member_ids=None):
+                                     draining_member_ids=None,
+                                     lb_provisioning_status=None,
+                                     lb_operating_status=None):
+        if lb_provisioning_status is None:
+            lb_provisioning_status = provisioning_status
+        if lb_operating_status is None:
+            lb_operating_status = operating_status
         status_update = {
             "loadbalancers": [
                 self._status_entry(
-                    lb_id, provisioning_status, operating_status
+                    lb_id, lb_provisioning_status, lb_operating_status
                 )
             ],
             "listeners": [],

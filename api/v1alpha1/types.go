@@ -202,6 +202,34 @@ type BackendStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
+// AgentStatus reports one agent's observation of a VirtualIP.
+type AgentStatus struct {
+	// AgentID identifies the reporting agent, typically the Kubernetes node name.
+	AgentID string `json:"agentID"`
+
+	// ObservedGeneration is the VirtualIP generation observed by this agent.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// HealthyBackends is the number of healthy backends observed by this agent.
+	HealthyBackends int `json:"healthyBackends"`
+
+	// TotalBackends is the total number of configured backends observed by this agent.
+	TotalBackends int `json:"totalBackends"`
+
+	// Backends reports per-backend health status observed by this agent.
+	// +optional
+	Backends []BackendStatus `json:"backends,omitempty"`
+
+	// Conditions represent this agent's latest observations.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// LastUpdateTime is when this agent observation was written.
+	// +optional
+	LastUpdateTime *metav1.Time `json:"lastUpdateTime,omitempty"`
+}
+
 // VirtualIPStatus defines the observed state of a VirtualIP.
 type VirtualIPStatus struct {
 	// ObservedGeneration is the most recent generation observed by the operator.
@@ -217,6 +245,12 @@ type VirtualIPStatus struct {
 	// Backends reports per-backend health status.
 	// +optional
 	Backends []BackendStatus `json:"backends,omitempty"`
+
+	// AgentStatuses contains per-agent observations used to build the aggregate status.
+	// +optional
+	// +listType=map
+	// +listMapKey=agentID
+	AgentStatuses []AgentStatus `json:"agentStatuses,omitempty"`
 
 	// Conditions represent the latest available observations.
 	// +optional

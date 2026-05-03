@@ -179,6 +179,7 @@ make clean         # ビルド成果物を削除
 - [設定ガイド](docs/configuration.ja.md) - Operator と Agent の設定方法
 - [API リファレンス](docs/api.ja.md) - CRD API リファレンスと REST API (v1)
 - [OpenStack Octavia 連携](docs/octavia.ja.md) - Octavia プロバイダードライバーのセットアップ
+- [Octavia 運用ガイド](docs/octavia-operations.ja.md) - Octavia 連携の状態確認、route ERROR 復旧手順
 - [トラブルシューティング](docs/troubleshooting.ja.md) - よくある問題と解決方法
 - [バックエンドサーバー設定ガイド](docs/backend-setup.ja.md) - バックエンドサーバーの設定方法
 

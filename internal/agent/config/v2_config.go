@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -15,6 +16,7 @@ type V2Config struct {
 	Kubernetes  KubernetesSettings `yaml:"kubernetes"`
 	DataPlane   DataPlaneSettings  `yaml:"dataplane"`
 	Routing     RoutingSettings    `yaml:"routing"`
+	Rollout     RolloutSettings    `yaml:"rollout"`
 	HealthCheck HCSettings         `yaml:"healthCheck"`
 	Metrics     MetricsSettings    `yaml:"metrics"`
 	Telemetry   TelemetrySettings  `yaml:"telemetry"`
@@ -48,6 +50,14 @@ type RoutingSettings struct {
 	VTYShPath  string        `yaml:"vtyshPath"`
 	RouteTag   int           `yaml:"routeTag"`
 	CmdTimeout time.Duration `yaml:"cmdTimeout"`
+}
+
+// RolloutSettings configures cluster-wide serialization of disruptive VIP changes.
+type RolloutSettings struct {
+	Enabled        bool          `yaml:"enabled"`
+	LeaseNamespace string        `yaml:"leaseNamespace"`
+	LeaseDuration  time.Duration `yaml:"leaseDuration"`
+	RetryInterval  time.Duration `yaml:"retryInterval"`
 }
 
 // HCSettings configures the health check engine.
@@ -117,6 +127,14 @@ func applyV2EnvOverrides(cfg *V2Config) {
 	if v := os.Getenv("ARCA_METRICS_ADDRESS"); v != "" {
 		cfg.Metrics.Address = v
 	}
+	if v := os.Getenv("ARCA_ROLLOUT_ENABLED"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.Rollout.Enabled = enabled
+		}
+	}
+	if v := os.Getenv("ARCA_ROLLOUT_LEASE_NAMESPACE"); v != "" {
+		cfg.Rollout.LeaseNamespace = v
+	}
 }
 
 func applyV2Defaults(cfg *V2Config) {
@@ -143,6 +161,12 @@ func applyV2Defaults(cfg *V2Config) {
 	}
 	if cfg.Routing.CmdTimeout == 0 {
 		cfg.Routing.CmdTimeout = 10 * time.Second
+	}
+	if cfg.Rollout.LeaseDuration == 0 {
+		cfg.Rollout.LeaseDuration = 2 * time.Minute
+	}
+	if cfg.Rollout.RetryInterval == 0 {
+		cfg.Rollout.RetryInterval = time.Second
 	}
 	if cfg.HealthCheck.WorkerCount == 0 {
 		cfg.HealthCheck.WorkerCount = 4

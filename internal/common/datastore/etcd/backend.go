@@ -38,24 +38,19 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 	key := ds.backendKey(backend.VIPID, backend.ID)
 	indexKey := ds.backendIndexKey(backend.ID)
 
-	txn := ds.client.Txn(ctx)
-	txnResp, err := txn.If(
-		clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0),
-	).Then(
+	err = ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.Version(key), "=", 0), err: datastore.ErrConflict},
+			{cmp: clientv3.Compare(clientv3.Version(indexKey), "=", 0), err: datastore.ErrConflict},
+		},
 		clientv3.OpPut(key, string(data)),
 		clientv3.OpPut(indexKey, backend.VIPID), // Store VIP ID for reverse lookup
-	).Commit()
+	)
 
 	if err != nil {
 		return fmt.Errorf("failed to put backend to etcd: %w", err)
-	}
-	if !txnResp.Succeeded {
-		return datastore.ErrNotFound
-	}
-
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
 	}
 
 	return nil
@@ -186,25 +181,19 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	// Update in etcd only if the backend, reverse index, and parent VIP still exist.
 	key := ds.backendKey(backend.VIPID, backend.ID)
 	indexKey := ds.backendIndexKey(backend.ID)
-	txnResp, err := ds.client.Txn(ctx).If(
-		clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0),
-		clientv3.Compare(clientv3.Version(key), ">", 0),
-		clientv3.Compare(clientv3.Version(indexKey), ">", 0),
-		clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID),
-	).Then(
+	err = ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.Version(indexKey), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID), err: datastore.ErrNotFound},
+		},
 		clientv3.OpPut(key, string(data)),
 		clientv3.OpPut(indexKey, backend.VIPID),
-	).Commit()
+	)
 	if err != nil {
 		return fmt.Errorf("failed to update backend in etcd: %w", err)
-	}
-	if !txnResp.Succeeded {
-		return datastore.ErrNotFound
-	}
-
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
 	}
 
 	return nil
@@ -222,19 +211,19 @@ func (ds *EtcdDataStore) DeleteBackend(ctx context.Context, id string) error {
 	key := ds.backendKey(backend.VIPID, backend.ID)
 	indexKey := ds.backendIndexKey(backend.ID)
 
-	txn := ds.client.Txn(ctx)
-	_, err = txn.Then(
+	err = ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.Version(indexKey), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID), err: datastore.ErrNotFound},
+		},
 		clientv3.OpDelete(key),
 		clientv3.OpDelete(indexKey),
-	).Commit()
+	)
 
 	if err != nil {
 		return fmt.Errorf("failed to delete backend from etcd: %w", err)
-	}
-
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
 	}
 
 	return nil

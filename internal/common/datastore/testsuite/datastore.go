@@ -68,6 +68,21 @@ func testVIPCRUD(t *testing.T, factory DataStoreFactory) {
 	assert.Equal(t, vip.Protocol, retrieved.Protocol)
 	assert.Equal(t, vip.LBMethod, retrieved.LBMethod)
 
+	// Creating another VIP with the same ID should not overwrite the original.
+	duplicateVIP := &models.VIP{
+		ID:       vip.ID,
+		VIP:      "192.168.1.101",
+		Port:     81,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, duplicateVIP)
+	require.ErrorIs(t, err, datastore.ErrConflict)
+	retrieved, err = ds.GetVIP(ctx, vip.ID)
+	require.NoError(t, err)
+	assert.Equal(t, vip.VIP, retrieved.VIP)
+	assert.Equal(t, vip.Port, retrieved.Port)
+
 	// List VIPs
 	vips, err := ds.ListVIPs(ctx)
 	require.NoError(t, err)
@@ -153,6 +168,29 @@ func testBackendCRUD(t *testing.T, factory DataStoreFactory) {
 	assert.Equal(t, backend.VIPID, retrieved.VIPID)
 	assert.Equal(t, backend.IP, retrieved.IP)
 	assert.Equal(t, backend.Weight, retrieved.Weight)
+
+	// Reusing a backend ID must not move the reverse index to another VIP.
+	otherVIP := &models.VIP{
+		VIP:      "192.168.1.202",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, otherVIP)
+	require.NoError(t, err)
+
+	duplicateBackend := &models.Backend{
+		ID:     backend.ID,
+		VIPID:  otherVIP.ID,
+		IP:     "10.0.0.9",
+		Weight: 1,
+	}
+	err = ds.AddBackend(ctx, duplicateBackend)
+	require.ErrorIs(t, err, datastore.ErrConflict)
+	retrieved, err = ds.GetBackend(ctx, backend.ID)
+	require.NoError(t, err)
+	assert.Equal(t, backend.VIPID, retrieved.VIPID)
+	assert.Equal(t, backend.IP, retrieved.IP)
 
 	// List Backends
 	backends, err := ds.ListBackends(ctx, vip.ID)
@@ -293,6 +331,27 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	assert.Equal(t, 8080, updatedVIP.Port)
 	assert.Equal(t, originalCreatedAt, updatedVIP.CreatedAt)
 
+	txDuplicateVIP, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+
+	duplicateVIP := &models.VIP{
+		ID:       vip.ID,
+		VIP:      "192.168.1.401",
+		Port:     81,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = txDuplicateVIP.CreateVIP(ctx, duplicateVIP)
+	if err == nil {
+		err = txDuplicateVIP.Commit()
+	}
+	require.ErrorIs(t, err, datastore.ErrConflict)
+	_ = txDuplicateVIP.Rollback()
+
+	updatedVIP, err = ds.GetVIP(ctx, vip.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 8080, updatedVIP.Port)
+
 	// A backend created in a transaction should be fully usable after commit.
 	txBackend, err := ds.BeginTx(ctx)
 	require.NoError(t, err)
@@ -315,6 +374,27 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	require.NoError(t, err)
 	assert.Equal(t, committedBackend.ID, retrievedBackend.ID)
 	assert.Equal(t, committedBackend.VIPID, retrievedBackend.VIPID)
+
+	txDuplicateBackend, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+
+	duplicateBackend := &models.Backend{
+		ID:     committedBackend.ID,
+		VIPID:  vip.ID,
+		IP:     "10.0.0.9",
+		Weight: 1,
+	}
+	err = txDuplicateBackend.AddBackend(ctx, duplicateBackend)
+	if err == nil {
+		err = txDuplicateBackend.Commit()
+	}
+	require.ErrorIs(t, err, datastore.ErrConflict)
+	_ = txDuplicateBackend.Rollback()
+
+	retrievedBackend, err = ds.GetBackend(ctx, committedBackend.ID)
+	require.NoError(t, err)
+	assert.Equal(t, committedBackend.VIPID, retrievedBackend.VIPID)
+	assert.Equal(t, committedBackend.IP, retrievedBackend.IP)
 
 	committedBackend.Weight = 20
 	err = ds.UpdateBackend(ctx, committedBackend)

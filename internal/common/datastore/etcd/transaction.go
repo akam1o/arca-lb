@@ -14,23 +14,25 @@ import (
 
 // EtcdTransaction implements datastore.Transaction using etcd STM
 type EtcdTransaction struct {
-	ds            *EtcdDataStore
-	ctx           context.Context
-	ops           []clientv3.Op
-	cmps          []clientv3.Cmp
-	createdVIPIDs map[string]struct{}
-	deletedVIPIDs map[string]struct{}
+	ds                *EtcdDataStore
+	ctx               context.Context
+	ops               []clientv3.Op
+	checks            []etcdTxnCheck
+	createdVIPIDs     map[string]struct{}
+	createdBackendIDs map[string]struct{}
+	deletedVIPIDs     map[string]struct{}
 }
 
 // BeginTx starts a new transaction
 func (ds *EtcdDataStore) BeginTx(ctx context.Context) (datastore.Transaction, error) {
 	return &EtcdTransaction{
-		ds:            ds,
-		ctx:           ctx,
-		ops:           make([]clientv3.Op, 0),
-		cmps:          make([]clientv3.Cmp, 0),
-		createdVIPIDs: make(map[string]struct{}),
-		deletedVIPIDs: make(map[string]struct{}),
+		ds:                ds,
+		ctx:               ctx,
+		ops:               make([]clientv3.Op, 0),
+		checks:            make([]etcdTxnCheck, 0),
+		createdVIPIDs:     make(map[string]struct{}),
+		createdBackendIDs: make(map[string]struct{}),
+		deletedVIPIDs:     make(map[string]struct{}),
 	}, nil
 }
 
@@ -39,6 +41,9 @@ func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error
 	// Generate UUID if not set
 	if vip.ID == "" {
 		vip.ID = uuid.New().String()
+	}
+	if _, created := tx.createdVIPIDs[vip.ID]; created {
+		return datastore.ErrConflict
 	}
 
 	// Set timestamps
@@ -62,6 +67,10 @@ func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error
 
 	// Add put operation to transaction
 	key := tx.ds.vipKey(vip.ID)
+	tx.checks = append(tx.checks, etcdTxnCheck{
+		cmp: clientv3.Compare(clientv3.Version(key), "=", 0),
+		err: datastore.ErrConflict,
+	})
 	tx.ops = append(tx.ops, clientv3.OpPut(key, string(data)))
 	tx.createdVIPIDs[vip.ID] = struct{}{}
 
@@ -73,6 +82,9 @@ func (tx *EtcdTransaction) AddBackend(ctx context.Context, backend *models.Backe
 	// Generate UUID if not set
 	if backend.ID == "" {
 		backend.ID = uuid.New().String()
+	}
+	if _, created := tx.createdBackendIDs[backend.ID]; created {
+		return datastore.ErrConflict
 	}
 	if _, deleted := tx.deletedVIPIDs[backend.VIPID]; deleted {
 		return datastore.ErrNotFound
@@ -95,17 +107,31 @@ func (tx *EtcdTransaction) AddBackend(ctx context.Context, backend *models.Backe
 		if _, err := tx.ds.GetVIP(ctx, backend.VIPID); err != nil {
 			return fmt.Errorf("failed to verify VIP: %w", err)
 		}
-		tx.cmps = append(tx.cmps, clientv3.Compare(clientv3.Version(tx.ds.vipKey(backend.VIPID)), ">", 0))
+		tx.checks = append(tx.checks, etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Version(tx.ds.vipKey(backend.VIPID)), ">", 0),
+			err: datastore.ErrNotFound,
+		})
 	}
 
 	// Add put operations to transaction
 	key := tx.ds.backendKey(backend.VIPID, backend.ID)
 	indexKey := tx.ds.backendIndexKey(backend.ID)
+	tx.checks = append(tx.checks,
+		etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Version(key), "=", 0),
+			err: datastore.ErrConflict,
+		},
+		etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Version(indexKey), "=", 0),
+			err: datastore.ErrConflict,
+		},
+	)
 	tx.ops = append(
 		tx.ops,
 		clientv3.OpPut(key, string(data)),
 		clientv3.OpPut(indexKey, backend.VIPID),
 	)
+	tx.createdBackendIDs[backend.ID] = struct{}{}
 
 	return nil
 }
@@ -127,7 +153,10 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 			return fmt.Errorf("failed to verify VIP: %w", err)
 		}
 		vip.CreatedAt = existing.CreatedAt
-		tx.cmps = append(tx.cmps, clientv3.Compare(clientv3.Version(key), ">", 0))
+		tx.checks = append(tx.checks, etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Version(key), ">", 0),
+			err: datastore.ErrNotFound,
+		})
 		prepareHealthCheckForVIP(vip, existing, now)
 	} else if vip.CreatedAt.IsZero() {
 		vip.CreatedAt = now
@@ -156,7 +185,10 @@ func (tx *EtcdTransaction) DeleteVIP(ctx context.Context, id string) error {
 		if _, err := tx.ds.GetVIP(ctx, id); err != nil {
 			return fmt.Errorf("failed to verify VIP: %w", err)
 		}
-		tx.cmps = append(tx.cmps, clientv3.Compare(clientv3.Version(vipKey), ">", 0))
+		tx.checks = append(tx.checks, etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Version(vipKey), ">", 0),
+			err: datastore.ErrNotFound,
+		})
 	}
 
 	// Add delete VIP and associated backends operations. Reverse indexes are
@@ -179,28 +211,14 @@ func (tx *EtcdTransaction) Commit() error {
 		return nil
 	}
 
-	// Execute all operations in a transaction
-	txn := tx.ds.client.Txn(tx.ctx)
-	if len(tx.cmps) > 0 {
-		txn = txn.If(tx.cmps...)
-	}
-	txnResp, err := txn.Then(tx.ops...).Commit()
-	if err != nil {
+	if err := tx.ds.commitWithRevision(tx.ctx, tx.checks, tx.ops...); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-	if !txnResp.Succeeded {
-		return datastore.ErrNotFound
 	}
 
 	for vipID := range tx.deletedVIPIDs {
 		if err := tx.ds.deleteBackendIndexesForVIP(tx.ctx, vipID); err != nil {
 			return err
 		}
-	}
-
-	// Increment revision after successful commit
-	if _, err := tx.ds.IncrementRevision(tx.ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
 	}
 
 	return nil

@@ -40,14 +40,15 @@ func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
 
 	// Store in etcd
 	key := ds.vipKey(vip.ID)
-	_, err = ds.client.Put(ctx, key, string(data))
+	err = ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(key), "=", 0), err: datastore.ErrConflict},
+		},
+		clientv3.OpPut(key, string(data)),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to put VIP to etcd: %w", err)
-	}
-
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
 	}
 
 	return nil
@@ -143,21 +144,15 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 	// Update in etcd only if the VIP still exists.
 	key := ds.vipKey(vip.ID)
-	txnResp, err := ds.client.Txn(ctx).If(
-		clientv3.Compare(clientv3.Version(key), ">", 0),
-	).Then(
+	err = ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
+		},
 		clientv3.OpPut(key, string(data)),
-	).Commit()
+	)
 	if err != nil {
 		return fmt.Errorf("failed to update VIP in etcd: %w", err)
-	}
-	if !txnResp.Succeeded {
-		return datastore.ErrNotFound
-	}
-
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
 	}
 
 	return nil
@@ -173,24 +168,20 @@ func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
 		clientv3.OpDelete(backendPrefix, clientv3.WithPrefix()),
 	}
 
-	txnResp, err := ds.client.Txn(ctx).If(
-		clientv3.Compare(clientv3.Version(vipKey), ">", 0),
-	).Then(ops...).Commit()
+	err := ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(vipKey), ">", 0), err: datastore.ErrNotFound},
+		},
+		ops...,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to delete VIP from etcd: %w", err)
-	}
-	if !txnResp.Succeeded {
-		return datastore.ErrNotFound
 	}
 
 	// Clean up indexes that may have been added before the VIP delete committed.
 	if err := ds.deleteBackendIndexesForVIP(ctx, id); err != nil {
 		return err
-	}
-
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
 	}
 
 	return nil

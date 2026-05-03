@@ -6,6 +6,7 @@
 import hashlib
 import logging
 import threading
+import time
 
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
@@ -186,8 +187,10 @@ class VirtualIPClient:
 class VirtualIPStatusWatcher:
     """Watches VirtualIP status changes and invokes a callback."""
 
-    def __init__(self, kubeconfig_path="", namespace="arca-lb-system"):
+    def __init__(self, kubeconfig_path="", namespace="arca-lb-system",
+                 sync_interval=0):
         self._namespace = namespace
+        self._sync_interval = max(int(sync_interval or 0), 0)
         if kubeconfig_path:
             k8s_config.load_kube_config(config_file=kubeconfig_path)
         else:
@@ -233,14 +236,20 @@ class VirtualIPStatusWatcher:
         LOG.info("VirtualIP status watcher stopped")
 
     def _watch_loop(self, callback):
-        selector = (
-            f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}"
-        )
+        selector = self._label_selector()
+        last_sync = 0
         while not self._stop_event.is_set():
-            w = k8s_watch.Watch()
-            with self._watch_lock:
-                self._watch = w
+            w = None
             try:
+                if self._sync_interval > 0:
+                    now = time.monotonic()
+                    if now - last_sync >= self._sync_interval:
+                        self._sync_current(callback, selector=selector)
+                        last_sync = time.monotonic()
+
+                w = k8s_watch.Watch()
+                with self._watch_lock:
+                    self._watch = w
                 stream = w.stream(
                     self._api.list_namespaced_custom_object,
                     group=constants.VIRTUALIP_GROUP,
@@ -248,7 +257,7 @@ class VirtualIPStatusWatcher:
                     namespace=self._namespace,
                     plural=constants.VIRTUALIP_PLURAL,
                     label_selector=selector,
-                    timeout_seconds=60,
+                    timeout_seconds=self._watch_timeout_seconds(),
                 )
                 for event in stream:
                     if self._stop_event.is_set():
@@ -269,7 +278,37 @@ class VirtualIPStatusWatcher:
                     )
                     self._stop_event.wait(timeout=5)
             finally:
-                w.stop()
-                with self._watch_lock:
-                    if self._watch is w:
-                        self._watch = None
+                if w is not None:
+                    w.stop()
+                    with self._watch_lock:
+                        if self._watch is w:
+                            self._watch = None
+
+    def _sync_current(self, callback, selector=None):
+        selector = selector or self._label_selector()
+        result = self._api.list_namespaced_custom_object(
+            group=constants.VIRTUALIP_GROUP,
+            version="v1alpha1",
+            namespace=self._namespace,
+            plural=constants.VIRTUALIP_PLURAL,
+            label_selector=selector,
+        )
+        for obj in result.get("items", []):
+            try:
+                callback("SYNC", obj)
+            except Exception:
+                LOG.exception(
+                    "Error in status sync callback for %s",
+                    obj.get("metadata", {}).get("name", "unknown"),
+                )
+
+    @staticmethod
+    def _label_selector():
+        return (
+            f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}"
+        )
+
+    def _watch_timeout_seconds(self):
+        if self._sync_interval <= 0:
+            return 60
+        return max(1, min(60, self._sync_interval))

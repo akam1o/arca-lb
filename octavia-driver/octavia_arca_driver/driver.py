@@ -77,6 +77,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._status_watcher = VirtualIPStatusWatcher(
             kubeconfig_path=conf.kubernetes_config,
             namespace=conf.namespace,
+            sync_interval=getattr(conf, "status_sync_interval", 0),
         )
         self._status_watcher.start(self._on_virtualip_status_change)
         LOG.info("ArcaLB Octavia driver initialized (namespace=%s)",

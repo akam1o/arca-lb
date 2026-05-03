@@ -14,12 +14,18 @@ from octavia_arca_driver.k8s_client import (
 
 
 class FakeCustomObjectsApi:
-    def __init__(self, current):
+    def __init__(self, current=None, items=None):
         self.current = current
+        self.items = items or []
         self.patch_body = None
+        self.list_kwargs = None
 
     def get_namespaced_custom_object(self, **_kwargs):
         return self.current
+
+    def list_namespaced_custom_object(self, **kwargs):
+        self.list_kwargs = kwargs
+        return {"items": self.items}
 
     def patch_namespaced_custom_object(self, **kwargs):
         self.patch_body = kwargs["body"]
@@ -151,6 +157,8 @@ class TestVirtualIPStatusWatcher(unittest.TestCase):
         watcher._thread = thread
         watcher._watch = FakeWatch()
         watcher._watch_lock = threading.Lock()
+        watcher._namespace = "arca-lb-system"
+        watcher._sync_interval = 10
         return watcher
 
     def test_stop_stops_active_watch_and_keeps_live_thread(self):
@@ -172,6 +180,36 @@ class TestVirtualIPStatusWatcher(unittest.TestCase):
         watcher.stop()
 
         self.assertIsNone(watcher._thread)
+
+    def test_sync_current_emits_existing_virtualips(self):
+        first = {"metadata": {"name": "vip-1"}}
+        second = {"metadata": {"name": "vip-2"}}
+        api = FakeCustomObjectsApi(items=[first, second])
+        watcher = self._watcher_with_thread(FakeThread(alive=False))
+        watcher._api = api
+        events = []
+
+        watcher._sync_current(lambda event_type, obj: events.append(
+            (event_type, obj)
+        ))
+
+        self.assertEqual(events, [("SYNC", first), ("SYNC", second)])
+        self.assertEqual(
+            api.list_kwargs["label_selector"],
+            f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
+        )
+
+    def test_watch_timeout_tracks_sync_interval(self):
+        watcher = self._watcher_with_thread(FakeThread(alive=False))
+
+        watcher._sync_interval = 10
+        self.assertEqual(watcher._watch_timeout_seconds(), 10)
+
+        watcher._sync_interval = 120
+        self.assertEqual(watcher._watch_timeout_seconds(), 60)
+
+        watcher._sync_interval = 0
+        self.assertEqual(watcher._watch_timeout_seconds(), 60)
 
 
 if __name__ == "__main__":

@@ -183,3 +183,8 @@ func (ds *EtcdDataStore) revisionKey() string {
 func (ds *EtcdDataStore) backendIndexKey(backendID string) string {
 	return fmt.Sprintf("%s/backend-index/%s", ds.keyPrefix, backendID)
 }
+
+// backendIndexPrefix returns the etcd key prefix for backend ID to VIP ID mappings
+func (ds *EtcdDataStore) backendIndexPrefix() string {
+	return fmt.Sprintf("%s/backend-index/", ds.keyPrefix)
+}

@@ -3,8 +3,10 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -151,6 +153,179 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 	}
 	if ready.Status != metav1.ConditionTrue {
 		t.Fatalf("Ready status = %s, want True", ready.Status)
+	}
+}
+
+func TestUpdateStatusMarksExpiredCurrentGenerationAgentStatusUnknown(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	expired := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 7,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:   "203.0.113.10",
+			Port:      80,
+			Protocol:  v1alpha1.ProtocolTCP,
+			EncapType: v1alpha1.EncapTypeL3DSR,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.1.1", Weight: 100},
+			},
+		},
+		Status: v1alpha1.VirtualIPStatus{
+			ObservedGeneration: 7,
+			HealthyBackends:    1,
+			TotalBackends:      1,
+			Backends: []v1alpha1.BackendStatus{
+				{Address: "10.0.1.1", Healthy: true},
+			},
+			AgentStatuses: []v1alpha1.AgentStatus{
+				{
+					AgentID:            "node-a",
+					ObservedGeneration: 7,
+					HealthyBackends:    1,
+					TotalBackends:      1,
+					LastUpdateTime:     &expired,
+					Backends: []v1alpha1.BackendStatus{
+						{Address: "10.0.1.1", Healthy: true},
+					},
+					Conditions: []metav1.Condition{
+						{Type: agentstatus.ConditionServing, Status: metav1.ConditionTrue, Reason: "BackendsHealthy"},
+						{Type: agentstatus.ConditionRouteAdvertised, Status: metav1.ConditionTrue, Reason: "Advertised"},
+					},
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client:         k8sClient,
+		Scheme:         scheme,
+		AgentStatusTTL: time.Minute,
+	}
+
+	if err := reconciler.updateStatus(context.Background(), vip); err != nil {
+		t.Fatalf("updateStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	key := types.NamespacedName{Namespace: "default", Name: "web"}
+	if err := k8sClient.Get(context.Background(), key, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if len(got.Status.AgentStatuses) != 1 || got.Status.AgentStatuses[0].AgentID != "node-a" {
+		t.Fatalf("AgentStatuses = %#v, want expired current-generation status retained for diagnostics", got.Status.AgentStatuses)
+	}
+	if got.Status.HealthyBackends != 0 {
+		t.Fatalf("HealthyBackends = %d, want expired health excluded", got.Status.HealthyBackends)
+	}
+	if len(got.Status.Backends) != 1 || got.Status.Backends[0].Healthy {
+		t.Fatalf("Backends = %#v, want current backend marked unhealthy", got.Status.Backends)
+	}
+	serving := meta.FindStatusCondition(got.Status.Conditions, agentstatus.ConditionServing)
+	if serving == nil || serving.Status != metav1.ConditionUnknown || serving.Reason != "AgentStatusExpired" {
+		t.Fatalf("Serving = %+v, want Unknown AgentStatusExpired", serving)
+	}
+	advertised := meta.FindStatusCondition(got.Status.Conditions, agentstatus.ConditionRouteAdvertised)
+	if advertised == nil || advertised.Status != metav1.ConditionUnknown || advertised.Reason != "AgentStatusExpired" {
+		t.Fatalf("RouteAdvertised = %+v, want Unknown AgentStatusExpired", advertised)
+	}
+	ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != 7 {
+		t.Fatalf("Ready = %+v, want current generation True", ready)
+	}
+}
+
+func TestUpdateStatusUsesAgentReportedTTL(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	reported := metav1.NewTime(time.Now().Add(-3 * time.Minute))
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 7,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:   "203.0.113.10",
+			Port:      80,
+			Protocol:  v1alpha1.ProtocolTCP,
+			EncapType: v1alpha1.EncapTypeL3DSR,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.1.1", Weight: 100},
+			},
+		},
+		Status: v1alpha1.VirtualIPStatus{
+			ObservedGeneration: 7,
+			HealthyBackends:    1,
+			TotalBackends:      1,
+			Backends: []v1alpha1.BackendStatus{
+				{Address: "10.0.1.1", Healthy: true},
+			},
+			AgentStatuses: []v1alpha1.AgentStatus{
+				{
+					AgentID:            "node-a",
+					ObservedGeneration: 7,
+					HealthyBackends:    1,
+					TotalBackends:      1,
+					LastUpdateTime:     &reported,
+					TTLSeconds:         int64((5 * time.Minute) / time.Second),
+					Backends: []v1alpha1.BackendStatus{
+						{Address: "10.0.1.1", Healthy: true},
+					},
+					Conditions: []metav1.Condition{
+						{Type: agentstatus.ConditionServing, Status: metav1.ConditionTrue, Reason: "BackendsHealthy"},
+						{Type: agentstatus.ConditionRouteAdvertised, Status: metav1.ConditionTrue, Reason: "Advertised"},
+					},
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client:         k8sClient,
+		Scheme:         scheme,
+		AgentStatusTTL: time.Minute,
+	}
+
+	if err := reconciler.updateStatus(context.Background(), vip); err != nil {
+		t.Fatalf("updateStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	key := types.NamespacedName{Namespace: "default", Name: "web"}
+	if err := k8sClient.Get(context.Background(), key, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.Status.HealthyBackends != 1 {
+		t.Fatalf("HealthyBackends = %d, want agent-reported TTL to keep status fresh", got.Status.HealthyBackends)
+	}
+	advertised := meta.FindStatusCondition(got.Status.Conditions, agentstatus.ConditionRouteAdvertised)
+	if advertised == nil || advertised.Status != metav1.ConditionTrue || advertised.Reason != "Advertised" {
+		t.Fatalf("RouteAdvertised = %+v, want True Advertised", advertised)
 	}
 }
 

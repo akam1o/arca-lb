@@ -110,7 +110,7 @@ arca-lb/
 
 ## Requirements
 
-- **Go**: 1.24+ (development)
+- **Go**: 1.25+ (development)
 - **Kubernetes**: 1.28+ (runtime)
 - **VPP**: 24.10 (recommended, Agent runtime)
 - **FRRouting**: 8.0+ (Agent runtime, optional)

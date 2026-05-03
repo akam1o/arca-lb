@@ -10,6 +10,7 @@ import (
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	k8scache "k8s.io/client-go/tools/cache"
@@ -209,13 +210,25 @@ func (h *eventHandler) OnAdd(obj interface{}, _ bool) {
 	h.handler.OnVIPUpdate(vip)
 }
 
-func (h *eventHandler) OnUpdate(_, newObj interface{}) {
+func (h *eventHandler) OnUpdate(oldObj, newObj interface{}) {
 	vip, ok := newObj.(*v1alpha1.VirtualIP)
 	if !ok {
 		return
 	}
+	if oldVIP, ok := oldObj.(*v1alpha1.VirtualIP); ok && sameObservedSpec(oldVIP, vip) {
+		h.logger.Debug("VirtualIP status-only update ignored", "name", vip.Name, "namespace", vip.Namespace)
+		return
+	}
 	h.logger.Debug("VirtualIP updated", "name", vip.Name, "namespace", vip.Namespace)
 	h.handler.OnVIPUpdate(vip)
+}
+
+func sameObservedSpec(oldVIP, newVIP *v1alpha1.VirtualIP) bool {
+	if oldVIP == nil || newVIP == nil {
+		return false
+	}
+	return oldVIP.Generation == newVIP.Generation &&
+		equality.Semantic.DeepEqual(oldVIP.Spec, newVIP.Spec)
 }
 
 func (h *eventHandler) OnDelete(obj interface{}) {

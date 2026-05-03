@@ -193,13 +193,13 @@ The Agent runs as a DaemonSet on each load balancer node:
 
 ### Operator
 
-- **Language**: Go 1.24+
+- **Language**: Go 1.25+
 - **Framework**: controller-runtime (sigs.k8s.io/controller-runtime)
 - **Validation**: CRD OpenAPI/CEL validation, with an optional admission webhook implementation
 
 ### Agent
 
-- **Language**: Go 1.24+
+- **Language**: Go 1.25+
 - **K8s integration**: client-go Informers
 - **VPP integration**: go.fd.io/govpp v0.13.0
 - **FRR integration**: via `vtysh`

@@ -115,6 +115,8 @@ status:
 | `http` | HTTPHealthCheck | No | HTTP/HTTPS-specific settings |
 | `tcp` | TCPHealthCheck | No | TCP/TLS-HELLO-specific settings |
 
+Note: Health check timing is currently stored and validated as whole seconds. Sub-second intervals and timeouts are not accepted in the current API/model. Millisecond-granularity health check timing is planned for a future API/model revision; use second-aligned values until then.
+
 #### HTTPHealthCheck
 
 | Field | Type | Required | Description |

@@ -4,7 +4,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
+	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
 	vipvalidation "github.com/akam1o/arca-lb/internal/virtualip/validation"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,7 +28,9 @@ const (
 // VirtualIPReconciler reconciles a VirtualIP object.
 type VirtualIPReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme                  *runtime.Scheme
+	AgentStatusTTL          time.Duration
+	AgentStatusRequeueAfter time.Duration
 }
 
 // +kubebuilder:rbac:groups=arca.io,resources=virtualips,verbs=get;list;watch;create;update;patch;delete
@@ -96,7 +100,11 @@ func (r *VirtualIPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"port", vip.Spec.Port,
 		"backends", len(vip.Spec.Backends))
 
-	return ctrl.Result{}, nil
+	result := ctrl.Result{}
+	if r.shouldRequeueAgentStatusPrune(&vip) {
+		result.RequeueAfter = r.effectiveAgentStatusRequeueAfter()
+	}
+	return result, nil
 }
 
 // SetupWithManager registers the controller with the manager.
@@ -115,6 +123,19 @@ func (r *VirtualIPReconciler) updateStatus(ctx context.Context, vip *v1alpha1.Vi
 		HealthyBackends:    vip.Status.HealthyBackends, // Preserved from agent updates
 		Backends:           vip.Status.Backends,        // Preserved from agent updates
 		AgentStatuses:      vip.Status.AgentStatuses,   // Preserved from agent updates
+	}
+
+	newStatus.Conditions = vip.Status.Conditions
+	if newStatus.ObservedGeneration == vip.Generation {
+		aggregate := vip.DeepCopy()
+		aggregate.Status = newStatus
+		agentstatus.RefreshAggregateStatus(
+			aggregate,
+			vip.Generation,
+			time.Now(),
+			r.effectiveAgentStatusTTL(),
+		)
+		newStatus = aggregate.Status
 	}
 
 	// Set Ready condition based on configuration validity
@@ -137,7 +158,6 @@ func (r *VirtualIPReconciler) updateStatus(ctx context.Context, vip *v1alpha1.Vi
 		readyCond.Message = fmt.Sprintf("%d backends configured", newStatus.TotalBackends)
 	}
 
-	newStatus.Conditions = vip.Status.Conditions
 	meta.SetStatusCondition(&newStatus.Conditions, readyCond)
 
 	if !equality.Semantic.DeepEqual(vip.Status, newStatus) {
@@ -148,6 +168,31 @@ func (r *VirtualIPReconciler) updateStatus(ctx context.Context, vip *v1alpha1.Vi
 	}
 
 	return nil
+}
+
+func (r *VirtualIPReconciler) effectiveAgentStatusTTL() time.Duration {
+	if r.AgentStatusTTL > 0 {
+		return r.AgentStatusTTL
+	}
+	return agentstatus.DefaultAgentStatusTTL
+}
+
+func (r *VirtualIPReconciler) effectiveAgentStatusRequeueAfter() time.Duration {
+	if r.AgentStatusRequeueAfter > 0 {
+		return r.AgentStatusRequeueAfter
+	}
+	ttl := r.effectiveAgentStatusTTL()
+	if ttl <= 2*time.Second {
+		return ttl
+	}
+	return ttl / 2
+}
+
+func (r *VirtualIPReconciler) shouldRequeueAgentStatusPrune(vip *v1alpha1.VirtualIP) bool {
+	if vip == nil {
+		return false
+	}
+	return vip.Status.ObservedGeneration == vip.Generation && len(vip.Status.AgentStatuses) > 0
 }
 
 func applyDefaults(vip *v1alpha1.VirtualIP) bool {

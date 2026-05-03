@@ -96,7 +96,12 @@ func newHTTPProberFromSpec(cfg *v1alpha1.HTTPHealthCheck, useTLS bool) (*httpPro
 	}
 
 	return &httpProber{
-		client:        &http.Client{Transport: transport},
+		client: &http.Client{
+			Transport: transport,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		port:          cfg.Port,
 		path:          path,
 		method:        method,
@@ -307,17 +312,21 @@ func (p *tlsHelloProber) Close() error { return nil }
 
 type pingProber struct{}
 
+const defaultPingTimeout = 2 * time.Second
+
 func (p *pingProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
+	pingCtx, cancel := contextWithDefaultTimeout(ctx, defaultPingTimeout)
+	defer cancel()
 
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux":
-		cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-W", "2", target)
+		cmd = exec.CommandContext(pingCtx, "ping", "-c", "1", "-W", pingTimeoutSeconds(pingCtx, defaultPingTimeout), target)
 	case "darwin":
-		cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-t", "2", target)
+		cmd = exec.CommandContext(pingCtx, "ping", "-c", "1", target)
 	default:
-		cmd = exec.CommandContext(ctx, "ping", "-c", "1", target)
+		cmd = exec.CommandContext(pingCtx, "ping", "-c", "1", target)
 	}
 
 	if err := cmd.Run(); err != nil {
@@ -328,3 +337,28 @@ func (p *pingProber) Probe(ctx context.Context, target string) V2ProbeResult {
 }
 
 func (p *pingProber) Close() error { return nil }
+
+func contextWithDefaultTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func pingTimeoutSeconds(ctx context.Context, fallback time.Duration) string {
+	timeout := fallback
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = time.Until(deadline)
+	}
+	if timeout <= 0 {
+		return "1"
+	}
+	seconds := int(timeout / time.Second)
+	if timeout%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	return strconv.Itoa(seconds)
+}

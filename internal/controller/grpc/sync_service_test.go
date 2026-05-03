@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"testing"
@@ -170,8 +171,10 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 				assert.Equal(t, int32(5), hc.TimeoutSec)
 				assert.Equal(t, int32(3), hc.RiseCount)
 				assert.Equal(t, int32(3), hc.FallCount)
-				assert.Contains(t, hc.Config, "port")
-				assert.Contains(t, hc.Config, "path")
+				var hcConfig map[string]interface{}
+				require.NoError(t, json.Unmarshal([]byte(hc.Config), &hcConfig))
+				assert.Equal(t, float64(8080), hcConfig["port"])
+				assert.Equal(t, "/health", hcConfig["path"])
 			},
 		},
 		{

@@ -15,6 +15,7 @@ data:
     agent:
       storePath: /var/lib/arca-lb/agent.db
       reconcileInterval: 30s
+      statusTTL: 2m
     kubernetes:
       namespace: ""
       resyncInterval: 30s

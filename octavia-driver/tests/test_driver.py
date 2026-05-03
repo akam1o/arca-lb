@@ -7,6 +7,9 @@ import json
 import unittest
 from unittest import mock
 
+from octavia_lib.api.drivers import data_models as octavia_data_models
+from octavia_lib.api.drivers import exceptions as driver_exc
+
 from octavia_arca_driver import constants
 from octavia_arca_driver.driver import ArcaLBDriver
 
@@ -74,6 +77,22 @@ class TestParseExpectedCodes(unittest.TestCase):
 
     def test_none(self):
         self.assertEqual(ArcaLBDriver._parse_expected_codes(None), [200])
+
+    def test_invalid_token_raises(self):
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            ArcaLBDriver._parse_expected_codes("200,abc")
+
+    def test_reversed_range_raises(self):
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            ArcaLBDriver._parse_expected_codes("204-200")
+
+    def test_out_of_range_code_raises(self):
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            ArcaLBDriver._parse_expected_codes("99")
+
+    def test_empty_list_token_raises(self):
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            ArcaLBDriver._parse_expected_codes("200,")
 
 
 class TestBuildHealthCheck(unittest.TestCase):
@@ -493,6 +512,53 @@ class TestDriverLifecycle(unittest.TestCase):
         }))
 
         spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["healthCheck"]["type"], "http")
+        self.assertEqual(spec["healthCheck"]["http"]["port"], 80)
+        self.assertEqual(spec["healthCheck"]["http"]["path"], "/healthz")
+        annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
+        self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
+
+    def test_listener_create_restores_octavia_pool_model_details(self):
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        self.mock_driver_lib.get_pool.return_value = octavia_data_models.Pool(
+            pool_id="pool-1111",
+            loadbalancer_id=lb_id,
+            listener_id="aaaaaaaa-1111-2222-3333-444444444444",
+            members=[
+                octavia_data_models.Member(
+                    member_id="member-1111",
+                    address="10.0.1.1",
+                    protocol_port=80,
+                    weight=100,
+                ),
+            ],
+            healthmonitor=octavia_data_models.HealthMonitor(
+                healthmonitor_id="hm-1111",
+                pool_id="pool-1111",
+                type="HTTP",
+                delay=10,
+                timeout=5,
+                max_retries=3,
+                max_retries_down=2,
+                url_path="/healthz",
+                expected_codes="200",
+            ),
+        )
+
+        self.driver.listener_create(FakeObj({
+            "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "vip_address": "203.0.113.10",
+            "default_pool_id": "pool-1111",
+        }))
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["backends"], [{
+            "address": "10.0.1.1",
+            "weight": 100,
+        }])
         self.assertEqual(spec["healthCheck"]["type"], "http")
         self.assertEqual(spec["healthCheck"]["http"]["port"], 80)
         self.assertEqual(spec["healthCheck"]["http"]["path"], "/healthz")
@@ -1277,6 +1343,24 @@ class TestDriverLifecycle(unittest.TestCase):
             "id": "member-1111",
             "provisioning_status": "DELETED",
         }])
+
+    def test_member_update_without_associated_virtualip_raises(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        self.mock_k8s.find_by_pool.return_value = None
+        self.mock_driver_lib.get_pool.return_value = None
+
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+            "protocol_port": 80,
+        })
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.member_update(FakeObj({}), member)
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+        self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
 
     def test_member_update_weight_zero_removes_backend(self):
         existing_vip = _make_vip(
@@ -2405,6 +2489,103 @@ class TestDriverLifecycle(unittest.TestCase):
         )
         self.assertEqual(
             status["pools"][0]["operating_status"], "ERROR"
+        )
+
+    def test_virtualip_status_change_reports_degraded_when_agent_status_expired(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+            status={
+                "healthyBackends": 0,
+                "totalBackends": 2,
+                "conditions": [
+                    {"type": "Ready", "status": "True"},
+                    {
+                        "type": "Serving",
+                        "status": "Unknown",
+                        "reason": "AgentStatusExpired",
+                    },
+                    {
+                        "type": "RouteAdvertised",
+                        "status": "Unknown",
+                        "reason": "AgentStatusExpired",
+                    },
+                ],
+            },
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(
+            status["loadbalancers"][0]["operating_status"], "DEGRADED"
+        )
+        self.assertEqual(
+            status["listeners"][0]["operating_status"], "DEGRADED"
+        )
+        self.assertEqual(
+            status["pools"][0]["operating_status"], "DEGRADED"
+        )
+
+    def test_virtualip_status_change_uses_degraded_for_expired_listener_aggregate(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+            },
+            status={
+                "healthyBackends": 1,
+                "totalBackends": 1,
+                "backends": [
+                    {"address": "10.0.1.1", "healthy": True},
+                ],
+                "conditions": [
+                    {"type": "Ready", "status": "True"},
+                ],
+            },
+        )
+        unknown_vip = _make_vip(
+            "octavia-bbbbbbbb-cccccccc",
+            {"address": "203.0.113.10", "port": 443, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-2222",
+            },
+            status={
+                "healthyBackends": 0,
+                "totalBackends": 2,
+                "conditions": [
+                    {"type": "Ready", "status": "True"},
+                    {
+                        "type": "Serving",
+                        "status": "Unknown",
+                        "reason": "AgentStatusExpired",
+                    },
+                    {
+                        "type": "RouteAdvertised",
+                        "status": "Unknown",
+                        "reason": "AgentStatusExpired",
+                    },
+                ],
+            },
+        )
+        self.mock_k8s.find_by_loadbalancer.return_value = [unknown_vip]
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(
+            status["loadbalancers"][0]["operating_status"], "DEGRADED"
+        )
+        self.assertEqual(
+            status["listeners"][0]["operating_status"], "ONLINE"
         )
 
     def test_virtualip_status_change_reports_error_when_not_ready(self):

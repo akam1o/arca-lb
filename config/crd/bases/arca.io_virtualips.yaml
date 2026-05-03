@@ -364,6 +364,11 @@ spec:
                         written.
                       format: date-time
                       type: string
+                    ttlSeconds:
+                      description: TTLSeconds is how long this observation should remain
+                        valid.
+                      format: int64
+                      type: integer
                     observedGeneration:
                       description: ObservedGeneration is the VirtualIP generation
                         observed by this agent.

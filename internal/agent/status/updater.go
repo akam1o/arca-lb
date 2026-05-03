@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 
@@ -21,6 +22,14 @@ import (
 )
 
 const (
+	// DefaultAgentStatusTTL is how long a per-agent observation remains valid
+	// without a refresh from the reporting agent.
+	DefaultAgentStatusTTL = 2 * time.Minute
+
+	// DefaultExpiredAgentStatusRetention is how long expired per-agent
+	// observations are retained for diagnostics before being pruned.
+	DefaultExpiredAgentStatusRetention = 7 * 24 * time.Hour
+
 	// ConditionHealthCheckReady reports whether the agent accepted the current
 	// health check configuration.
 	ConditionHealthCheckReady = "HealthCheckReady"
@@ -32,6 +41,8 @@ const (
 	// ConditionRouteAdvertised reports whether the shared VIP address route is
 	// currently advertised by this node.
 	ConditionRouteAdvertised = "RouteAdvertised"
+
+	reasonAgentStatusExpired = "AgentStatusExpired"
 )
 
 // Config configures Kubernetes API access for status updates.
@@ -41,13 +52,18 @@ type Config struct {
 
 	// AgentID identifies this agent in per-agent status, typically the node name.
 	AgentID string
+
+	// AgentStatusTTL controls when observations from other agents stop
+	// contributing to the aggregate status. Zero uses DefaultAgentStatusTTL.
+	AgentStatusTTL time.Duration
 }
 
 // Updater writes agent-observed backend health to VirtualIP status.
 type Updater struct {
-	client  client.Client
-	agentID string
-	logger  *slog.Logger
+	client         client.Client
+	agentID        string
+	agentStatusTTL time.Duration
+	logger         *slog.Logger
 }
 
 // NewUpdater creates a Kubernetes-backed status updater.
@@ -72,9 +88,10 @@ func NewUpdater(cfg Config, logger *slog.Logger) (*Updater, error) {
 	}
 
 	return &Updater{
-		client:  k8sClient,
-		agentID: normalizeAgentID(cfg.AgentID),
-		logger:  logger.With("component", "status-updater"),
+		client:         k8sClient,
+		agentID:        normalizeAgentID(cfg.AgentID),
+		agentStatusTTL: normalizeAgentStatusTTL(cfg.AgentStatusTTL),
+		logger:         logger.With("component", "status-updater"),
 	}, nil
 }
 
@@ -110,6 +127,7 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 		}
 
 		agentID := normalizeAgentID(u.agentID)
+		statusTTL := u.effectiveAgentStatusTTL()
 		now := metav1.Now()
 		agentStatus := v1alpha1.AgentStatus{
 			AgentID:            agentID,
@@ -118,6 +136,7 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 			HealthyBackends:    len(healthyBackends),
 			Backends:           buildBackendStatuses(vip.Spec.Backends, healthySet),
 			LastUpdateTime:     &now,
+			TTLSeconds:         durationSeconds(statusTTL),
 		}
 		for _, condition := range conditions {
 			condition.ObservedGeneration = vip.Generation
@@ -127,7 +146,7 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 		current.Status.AgentStatuses = upsertAgentStatus(
 			current.Status.AgentStatuses, agentStatus, vip.Generation,
 		)
-		applyAggregateStatus(&current, vip.Generation)
+		RefreshAggregateStatus(&current, vip.Generation, now.Time, statusTTL)
 
 		return u.client.Status().Update(ctx, &current)
 	})
@@ -162,6 +181,9 @@ func (u *Updater) UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.
 		condition.Type = ConditionHealthCheckReady
 		condition.ObservedGeneration = vip.Generation
 		meta.SetStatusCondition(&current.Status.Conditions, condition)
+		if condition.Status == metav1.ConditionFalse {
+			RefreshAggregateStatus(&current, vip.Generation, time.Now(), u.effectiveAgentStatusTTL())
+		}
 
 		return u.client.Status().Update(ctx, &current)
 	})
@@ -194,6 +216,28 @@ func normalizeAgentID(agentID string) string {
 	return "unknown"
 }
 
+func normalizeAgentStatusTTL(ttl time.Duration) time.Duration {
+	if ttl > 0 {
+		return ttl
+	}
+	return DefaultAgentStatusTTL
+}
+
+func durationSeconds(ttl time.Duration) int64 {
+	ttl = normalizeAgentStatusTTL(ttl)
+	if ttl%time.Second == 0 {
+		return int64(ttl / time.Second)
+	}
+	return int64(ttl/time.Second) + 1
+}
+
+func (u *Updater) effectiveAgentStatusTTL() time.Duration {
+	if u == nil {
+		return DefaultAgentStatusTTL
+	}
+	return normalizeAgentStatusTTL(u.agentStatusTTL)
+}
+
 func upsertAgentStatus(statuses []v1alpha1.AgentStatus, next v1alpha1.AgentStatus, generation int64) []v1alpha1.AgentStatus {
 	out := make([]v1alpha1.AgentStatus, 0, len(statuses)+1)
 	replaced := false
@@ -213,16 +257,58 @@ func upsertAgentStatus(statuses []v1alpha1.AgentStatus, next v1alpha1.AgentStatu
 	return out
 }
 
-func applyAggregateStatus(vip *v1alpha1.VirtualIP, generation int64) {
-	currentStatuses := make([]v1alpha1.AgentStatus, 0, len(vip.Status.AgentStatuses))
-	for _, status := range vip.Status.AgentStatuses {
-		if status.ObservedGeneration == generation {
-			currentStatuses = append(currentStatuses, status)
-		}
+// RefreshAggregateStatus prunes old per-agent observations and rebuilds the
+// aggregate status fields for the requested generation.
+func RefreshAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, now time.Time, ttl time.Duration) {
+	if vip == nil {
+		return
+	}
+	freshStatuses, expiredStatuses := splitAgentStatuses(vip.Status.AgentStatuses, generation, now, ttl)
+	vip.Status.AgentStatuses = append(append([]v1alpha1.AgentStatus{}, freshStatuses...), expiredStatuses...)
+	applyAggregateStatus(vip, generation, freshStatuses, expiredStatuses)
+}
+
+func splitAgentStatuses(statuses []v1alpha1.AgentStatus, generation int64, now time.Time, ttl time.Duration) ([]v1alpha1.AgentStatus, []v1alpha1.AgentStatus) {
+	ttl = normalizeAgentStatusTTL(ttl)
+	if now.IsZero() {
+		now = time.Now()
 	}
 
+	fresh := make([]v1alpha1.AgentStatus, 0, len(statuses))
+	expired := make([]v1alpha1.AgentStatus, 0, len(statuses))
+	for _, status := range statuses {
+		if status.ObservedGeneration != generation {
+			continue
+		}
+		if agentStatusExpired(status, now, agentStatusTTL(status, ttl)) {
+			if agentStatusExpired(status, now, DefaultExpiredAgentStatusRetention) {
+				continue
+			}
+			expired = append(expired, status)
+			continue
+		}
+		fresh = append(fresh, status)
+	}
+	return fresh, expired
+}
+
+func agentStatusExpired(status v1alpha1.AgentStatus, now time.Time, ttl time.Duration) bool {
+	if status.LastUpdateTime == nil {
+		return true
+	}
+	return now.Sub(status.LastUpdateTime.Time) > ttl
+}
+
+func agentStatusTTL(status v1alpha1.AgentStatus, fallback time.Duration) time.Duration {
+	if status.TTLSeconds > 0 {
+		return time.Duration(status.TTLSeconds) * time.Second
+	}
+	return normalizeAgentStatusTTL(fallback)
+}
+
+func applyAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, freshStatuses []v1alpha1.AgentStatus, expiredStatuses []v1alpha1.AgentStatus) {
 	healthySet := make(map[string]struct{})
-	for _, status := range currentStatuses {
+	for _, status := range freshStatuses {
 		for _, backend := range status.Backends {
 			if backend.Healthy {
 				healthySet[backend.Address] = struct{}{}
@@ -236,8 +322,8 @@ func applyAggregateStatus(vip *v1alpha1.VirtualIP, generation int64) {
 	vip.Status.Backends = buildBackendStatuses(vip.Spec.Backends, healthySet)
 
 	conditions := preserveNonAgentConditions(vip.Status.Conditions)
-	meta.SetStatusCondition(&conditions, aggregateServingCondition(vip, currentStatuses))
-	meta.SetStatusCondition(&conditions, aggregateRouteAdvertisedCondition(vip, currentStatuses))
+	meta.SetStatusCondition(&conditions, aggregateServingCondition(vip, freshStatuses, expiredStatuses))
+	meta.SetStatusCondition(&conditions, aggregateRouteAdvertisedCondition(vip, freshStatuses, expiredStatuses))
 	vip.Status.Conditions = conditions
 }
 
@@ -254,12 +340,18 @@ func preserveNonAgentConditions(conditions []metav1.Condition) []metav1.Conditio
 	return out
 }
 
-func aggregateServingCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.AgentStatus) metav1.Condition {
+func aggregateServingCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.AgentStatus, expiredStatuses []v1alpha1.AgentStatus) metav1.Condition {
 	condition := metav1.Condition{
 		Type:               ConditionServing,
 		ObservedGeneration: vip.Generation,
 	}
 	if len(statuses) == 0 {
+		if len(expiredStatuses) > 0 {
+			condition.Status = metav1.ConditionUnknown
+			condition.Reason = reasonAgentStatusExpired
+			condition.Message = "Only expired agent observations are available; serving state is unknown"
+			return condition
+		}
 		condition.Status = metav1.ConditionUnknown
 		condition.Reason = "NoAgentStatus"
 		condition.Message = "No agent has reported serving state for this generation"
@@ -296,6 +388,12 @@ func aggregateServingCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.Agen
 		condition.Message = unknown.Message
 		return condition
 	}
+	if len(expiredStatuses) > 0 {
+		condition.Status = metav1.ConditionUnknown
+		condition.Reason = reasonAgentStatusExpired
+		condition.Message = "Some agent observations have expired; serving state is unknown"
+		return condition
+	}
 
 	condition.Status = metav1.ConditionFalse
 	if len(vip.Spec.Backends) == 0 {
@@ -309,12 +407,18 @@ func aggregateServingCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.Agen
 	return condition
 }
 
-func aggregateRouteAdvertisedCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.AgentStatus) metav1.Condition {
+func aggregateRouteAdvertisedCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.AgentStatus, expiredStatuses []v1alpha1.AgentStatus) metav1.Condition {
 	condition := metav1.Condition{
 		Type:               ConditionRouteAdvertised,
 		ObservedGeneration: vip.Generation,
 	}
 	if len(statuses) == 0 {
+		if len(expiredStatuses) > 0 {
+			condition.Status = metav1.ConditionUnknown
+			condition.Reason = reasonAgentStatusExpired
+			condition.Message = "Only expired agent observations are available; route advertisement state is unknown"
+			return condition
+		}
 		condition.Status = metav1.ConditionUnknown
 		condition.Reason = "NoAgentStatus"
 		condition.Message = "No agent has reported route advertisement state for this generation"
@@ -356,6 +460,12 @@ func aggregateRouteAdvertisedCondition(vip *v1alpha1.VirtualIP, statuses []v1alp
 		condition.Status = metav1.ConditionTrue
 		condition.Reason = "Advertised"
 		condition.Message = fmt.Sprintf("VIP address %s is advertised by %d agent(s)", vip.Spec.Address, advertised)
+		return condition
+	}
+	if len(expiredStatuses) > 0 {
+		condition.Status = metav1.ConditionUnknown
+		condition.Reason = reasonAgentStatusExpired
+		condition.Message = "Some agent observations have expired; route advertisement state is unknown"
 		return condition
 	}
 

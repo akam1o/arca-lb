@@ -65,6 +65,7 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 							Type:  datastore.EventTypeError,
 							Error: fmt.Errorf("failed to build watch event: %w", err),
 						}
+						lastID = change.ID
 						continue
 					}
 

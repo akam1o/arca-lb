@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -30,6 +31,7 @@ func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
 	if vip.LBMethod == "" {
 		vip.LBMethod = models.LBMethodMaglev
 	}
+	prepareHealthCheckForVIP(vip, nil, now)
 
 	// Serialize VIP to JSON
 	data, err := json.Marshal(vip)
@@ -39,17 +41,42 @@ func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
 
 	// Store in etcd
 	key := ds.vipKey(vip.ID)
-	_, err = ds.client.Put(ctx, key, string(data))
+	err = ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(key), "=", 0), err: datastore.ErrConflict},
+		},
+		clientv3.OpPut(key, string(data)),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to put VIP to etcd: %w", err)
 	}
 
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
+	return nil
+}
+
+func prepareHealthCheckForVIP(vip, existing *models.VIP, now time.Time) {
+	if vip.HealthCheck == nil {
+		return
 	}
 
-	return nil
+	if vip.HealthCheck.ID == "" {
+		if existing != nil && existing.HealthCheck != nil && existing.HealthCheck.ID != "" {
+			vip.HealthCheck.ID = existing.HealthCheck.ID
+		} else {
+			vip.HealthCheck.ID = uuid.New().String()
+		}
+	}
+	vip.HealthCheck.VIPID = vip.ID
+
+	if vip.HealthCheck.CreatedAt.IsZero() {
+		if existing != nil && existing.HealthCheck != nil && !existing.HealthCheck.CreatedAt.IsZero() {
+			vip.HealthCheck.CreatedAt = existing.HealthCheck.CreatedAt
+		} else {
+			vip.HealthCheck.CreatedAt = now
+		}
+	}
+	vip.HealthCheck.UpdatedAt = now
 }
 
 // GetVIP retrieves a VIP by ID from etcd
@@ -106,7 +133,9 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 	// Preserve CreatedAt
 	vip.CreatedAt = existing.CreatedAt
-	vip.UpdatedAt = time.Now()
+	now := time.Now()
+	vip.UpdatedAt = now
+	prepareHealthCheckForVIP(vip, existing, now)
 
 	// Serialize VIP to JSON
 	data, err := json.Marshal(vip)
@@ -114,16 +143,17 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 		return fmt.Errorf("failed to marshal VIP: %w", err)
 	}
 
-	// Update in etcd
+	// Update in etcd only if the VIP still exists.
 	key := ds.vipKey(vip.ID)
-	_, err = ds.client.Put(ctx, key, string(data))
+	err = ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
+		},
+		clientv3.OpPut(key, string(data)),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to update VIP in etcd: %w", err)
-	}
-
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
 	}
 
 	return nil
@@ -131,23 +161,33 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 // DeleteVIP deletes a VIP and its associated backends from etcd
 func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
-	// Delete VIP
 	vipKey := ds.vipKey(id)
-	_, err := ds.client.Delete(ctx, vipKey)
+	backendPrefix := ds.backendPrefix(id)
+
+	ops := []clientv3.Op{
+		clientv3.OpDelete(vipKey),
+		clientv3.OpDelete(backendPrefix, clientv3.WithPrefix()),
+	}
+
+	err := ds.commitWithRevision(
+		ctx,
+		[]etcdTxnCheck{
+			{cmp: clientv3.Compare(clientv3.Version(vipKey), ">", 0), err: datastore.ErrNotFound},
+		},
+		ops...,
+	)
 	if err != nil {
+		if errors.Is(err, datastore.ErrNotFound) {
+			if cleanupErr := ds.deleteBackendIndexesForVIP(ctx, id); cleanupErr != nil {
+				return cleanupErr
+			}
+		}
 		return fmt.Errorf("failed to delete VIP from etcd: %w", err)
 	}
 
-	// Delete all associated backends
-	backendPrefix := ds.backendPrefix(id)
-	_, err = ds.client.Delete(ctx, backendPrefix, clientv3.WithPrefix())
-	if err != nil {
-		return fmt.Errorf("failed to delete backends from etcd: %w", err)
-	}
-
-	// Increment revision
-	if _, err := ds.IncrementRevision(ctx); err != nil {
-		return fmt.Errorf("failed to increment revision: %w", err)
+	// Clean up indexes that may have been added before the VIP delete committed.
+	if err := ds.deleteBackendIndexesForVIP(ctx, id); err != nil {
+		return err
 	}
 
 	return nil

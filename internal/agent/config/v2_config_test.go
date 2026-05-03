@@ -3,7 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadV2Config_Defaults(t *testing.T) {
@@ -48,6 +50,9 @@ dataplane:
 	if cfg.Rollout.RetryInterval == 0 {
 		t.Error("Rollout.RetryInterval should default")
 	}
+	if cfg.Agent.StatusTTL != 2*time.Minute {
+		t.Errorf("Agent.StatusTTL = %s, want 2m", cfg.Agent.StatusTTL)
+	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("Log.Level = %q, want info", cfg.Log.Level)
 	}
@@ -74,6 +79,7 @@ dataplane:
 	t.Setenv("ARCA_DATAPLANE_TYPE", "vpp")
 	t.Setenv("ARCA_ROLLOUT_ENABLED", "true")
 	t.Setenv("ARCA_ROLLOUT_LEASE_NAMESPACE", "rollout-ns")
+	t.Setenv("ARCA_AGENT_STATUS_TTL", "5m")
 
 	cfg, err := LoadV2Config(cfgPath)
 	if err != nil {
@@ -92,6 +98,9 @@ dataplane:
 	if cfg.Rollout.LeaseNamespace != "rollout-ns" {
 		t.Errorf("Rollout.LeaseNamespace = %q, want rollout-ns", cfg.Rollout.LeaseNamespace)
 	}
+	if cfg.Agent.StatusTTL != 5*time.Minute {
+		t.Errorf("Agent.StatusTTL = %s, want 5m", cfg.Agent.StatusTTL)
+	}
 }
 
 func TestLoadV2Config_InvalidDataPlaneType(t *testing.T) {
@@ -109,6 +118,63 @@ dataplane:
 	_, err := LoadV2Config(cfgPath)
 	if err == nil {
 		t.Fatal("expected validation error for invalid dataplane type")
+	}
+}
+
+func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		vppYAML string
+		wantErr string
+	}{
+		{
+			name:    "invalid encap type",
+			vppYAML: "encap_type: L3dsr\n",
+			wantErr: "dataplane.vpp.encap_type",
+		},
+		{
+			name:    "invalid service type",
+			vppYAML: "service_type: ClusterIP\n",
+			wantErr: "dataplane.vpp.service_type",
+		},
+		{
+			name:    "dscp wraps uint8",
+			vppYAML: "dscp: 300\n",
+			wantErr: "dataplane.vpp.dscp",
+		},
+		{
+			name:    "zero flow table length",
+			vppYAML: "new_flows_table_length: 0\n",
+			wantErr: "dataplane.vpp.new_flows_table_length",
+		},
+		{
+			name:    "flow table length wraps uint32",
+			vppYAML: "new_flows_table_length: 4294967296\n",
+			wantErr: "dataplane.vpp.new_flows_table_length",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+			content := "agent:\n  id: test-agent\ndataplane:\n  type: vpp\n  vpp:\n"
+			for _, line := range strings.Split(strings.TrimSuffix(tt.vppYAML, "\n"), "\n") {
+				content += "    " + line + "\n"
+			}
+
+			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadV2Config(cfgPath)
+			if err == nil {
+				t.Fatalf("expected validation error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadV2Config error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

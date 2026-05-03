@@ -128,8 +128,9 @@ func main() {
 	}()
 
 	statusUpdater, err := agentstatus.NewUpdater(agentstatus.Config{
-		Kubeconfig: cfg.Kubernetes.Kubeconfig,
-		AgentID:    cfg.Agent.ID,
+		Kubeconfig:     cfg.Kubernetes.Kubeconfig,
+		AgentID:        cfg.Agent.ID,
+		AgentStatusTTL: cfg.Agent.StatusTTL,
 	}, logger)
 	if err != nil {
 		logger.Error("failed to create status updater", "error", err)

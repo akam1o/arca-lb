@@ -8,20 +8,22 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+type etcdTxnCheck struct {
+	cmp clientv3.Cmp
+	err error
+}
+
 // initRevision initializes the revision counter in etcd if it doesn't exist
 func (ds *EtcdDataStore) initRevision(ctx context.Context) error {
 	key := ds.revisionKey()
-	resp, err := ds.client.Get(ctx, key)
-	if err != nil {
-		return fmt.Errorf("failed to get revision from etcd: %w", err)
-	}
 
-	// If revision doesn't exist, initialize it to 1
-	if len(resp.Kvs) == 0 {
-		_, err = ds.client.Put(ctx, key, "1")
-		if err != nil {
-			return fmt.Errorf("failed to initialize revision in etcd: %w", err)
-		}
+	_, err := ds.client.Txn(ctx).If(
+		clientv3.Compare(clientv3.Version(key), "=", 0),
+	).Then(
+		clientv3.OpPut(key, "1"),
+	).Commit()
+	if err != nil {
+		return fmt.Errorf("failed to initialize revision in etcd: %w", err)
 	}
 
 	return nil
@@ -92,4 +94,66 @@ func (ds *EtcdDataStore) IncrementRevision(ctx context.Context) (int64, error) {
 		// If transaction failed, retry (CAS conflict)
 		// The loop will continue and try again with the updated value
 	}
+}
+
+func (ds *EtcdDataStore) commitWithRevision(ctx context.Context, checks []etcdTxnCheck, ops ...clientv3.Op) error {
+	key := ds.revisionKey()
+
+	for {
+		resp, err := ds.client.Get(ctx, key)
+		if err != nil {
+			return fmt.Errorf("failed to get revision from etcd: %w", err)
+		}
+		if len(resp.Kvs) == 0 {
+			return fmt.Errorf("revision not found")
+		}
+
+		currentValue := string(resp.Kvs[0].Value)
+		currentRevision, err := strconv.ParseInt(currentValue, 10, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse revision: %w", err)
+		}
+
+		newValue := strconv.FormatInt(currentRevision+1, 10)
+
+		cmps := make([]clientv3.Cmp, 0, len(checks)+1)
+		cmps = append(cmps, clientv3.Compare(clientv3.Value(key), "=", currentValue))
+		for _, check := range checks {
+			cmps = append(cmps, check.cmp)
+		}
+
+		txnOps := make([]clientv3.Op, 0, len(ops)+1)
+		txnOps = append(txnOps, ops...)
+		txnOps = append(txnOps, clientv3.OpPut(key, newValue))
+
+		txnResp, err := ds.client.Txn(ctx).If(cmps...).Then(txnOps...).Commit()
+		if err != nil {
+			return fmt.Errorf("failed to commit revision transaction: %w", err)
+		}
+		if txnResp.Succeeded {
+			return nil
+		}
+
+		failedCheck, err := ds.firstFailedEtcdTxnCheck(ctx, checks)
+		if err != nil {
+			return err
+		}
+		if failedCheck != nil {
+			return failedCheck.err
+		}
+	}
+}
+
+func (ds *EtcdDataStore) firstFailedEtcdTxnCheck(ctx context.Context, checks []etcdTxnCheck) (*etcdTxnCheck, error) {
+	for i := range checks {
+		txnResp, err := ds.client.Txn(ctx).If(checks[i].cmp).Then(clientv3.OpGet(ds.revisionKey())).Commit()
+		if err != nil {
+			return nil, fmt.Errorf("failed to check transaction condition: %w", err)
+		}
+		if !txnResp.Succeeded {
+			return &checks[i], nil
+		}
+	}
+
+	return nil, nil
 }

@@ -252,6 +252,68 @@ func TestEtcdTransaction_DeleteVIPMissingCleansStaleBackendIndex(t *testing.T) {
 	assert.Empty(t, resp.Kvs)
 }
 
+func TestEtcdTransaction_CommitRetryAfterCleanupFailureCleansStaleBackendIndex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg := &datastore.Config{
+		Type:          "etcd",
+		EtcdEndpoints: []string{"http://localhost:2379"},
+		EtcdKeyPrefix: "/arca-lb-test-tx-commit-retry-cleans-index",
+	}
+
+	dsIface, err := NewEtcdDataStore(ctx, cfg)
+	require.NoError(t, err)
+	ds := dsIface.(*EtcdDataStore)
+	defer func() {
+		_, _ = ds.client.Delete(context.Background(), ds.keyPrefix, clientv3.WithPrefix())
+		_ = ds.Close()
+	}()
+
+	vip := &models.VIP{
+		VIP:      "192.168.1.902",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	backend := &models.Backend{
+		VIPID:  vip.ID,
+		IP:     "10.0.0.11",
+		Weight: 10,
+	}
+	err = ds.AddBackend(ctx, backend)
+	require.NoError(t, err)
+
+	txIface, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	tx := txIface.(*EtcdTransaction)
+	err = tx.DeleteVIP(ctx, vip.ID)
+	require.NoError(t, err)
+
+	err = tx.ds.commitWithRevision(tx.ctx, tx.checks, tx.ops...)
+	require.NoError(t, err)
+	tx.committed = true
+
+	indexKey := ds.backendIndexKey(backend.ID)
+	resp, err := ds.client.Get(ctx, indexKey)
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+
+	cancel()
+
+	err = tx.Commit()
+	require.NoError(t, err)
+
+	resp, err = ds.client.Get(context.Background(), indexKey)
+	require.NoError(t, err)
+	assert.Empty(t, resp.Kvs)
+}
+
 func TestEtcdDataStore_BackendIndexCleanupPreservesLiveBackend(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")

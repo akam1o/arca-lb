@@ -22,6 +22,7 @@ type EtcdTransaction struct {
 	createdVIPIDs     map[string]struct{}
 	createdBackendIDs map[string]struct{}
 	deletedVIPIDs     map[string]struct{}
+	committed         bool
 }
 
 // BeginTx starts a new transaction
@@ -217,14 +218,34 @@ func (tx *EtcdTransaction) Commit() error {
 		return nil
 	}
 
-	if err := tx.ds.commitWithRevision(tx.ctx, tx.checks, tx.ops...); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+	if !tx.committed {
+		if err := tx.ds.commitWithRevision(tx.ctx, tx.checks, tx.ops...); err != nil {
+			if errors.Is(err, datastore.ErrNotFound) {
+				if cleanupErr := tx.cleanupDeletedVIPIndexes(); cleanupErr != nil {
+					return cleanupErr
+				}
+			}
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		tx.committed = true
 	}
 
+	return tx.cleanupDeletedVIPIndexes()
+}
+
+func (tx *EtcdTransaction) cleanupDeletedVIPIndexes() error {
+	ctx := tx.ctx
+	cancel := func() {}
+	if tx.committed && ctx.Err() != nil {
+		ctx, cancel = context.WithTimeout(context.Background(), tx.ds.requestTimeout)
+	}
+	defer cancel()
+
 	for vipID := range tx.deletedVIPIDs {
-		if err := tx.ds.deleteBackendIndexesForVIP(tx.ctx, vipID); err != nil {
+		if err := tx.ds.deleteBackendIndexesForVIP(ctx, vipID); err != nil {
 			return err
 		}
+		delete(tx.deletedVIPIDs, vipID)
 	}
 
 	return nil

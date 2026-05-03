@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -271,16 +272,16 @@ func (c *routeCoordinator) FinishDrain(ctx context.Context, vipKey, address stri
 	return c.reconcileLocked(ctx, address, state)
 }
 
-func (c *routeCoordinator) addressChangePending(vipKey, address string) bool {
+func (c *routeCoordinator) pendingAddressChange(vipKey, address string) (string, bool) {
 	if c == nil || c.router == nil || address == "" {
-		return false
+		return "", false
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	previousAddress := c.vipAddresses[vipKey]
-	return previousAddress != "" && previousAddress != address
+	return previousAddress, previousAddress != "" && previousAddress != address
 }
 
 func (c *routeCoordinator) prepareAddressChange(ctx context.Context, vipKey, address string) (bool, error) {
@@ -637,23 +638,66 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	}
 	hasHealthy := len(healthyBackends) > 0
 
-	if vr.rollouts != nil && vr.routes.addressChangePending(vr.key, vip.Spec.Address) {
-		key := rolloutKeyForVIP(vip)
-		if err := vr.rollouts.RunExclusive(ctx, key, func(ctx context.Context) error {
-			if !vr.isCurrent(vip) {
-				vr.logger.Debug("skipping stale VIP address rollout", "generation", vip.Generation)
+	if vr.rollouts != nil {
+		previousAddress, pending := vr.routes.pendingAddressChange(vr.key, vip.Spec.Address)
+		if pending {
+			keys := rolloutKeysForAddresses(previousAddress, vip.Spec.Address)
+			if err := runExclusiveRollouts(ctx, vr.rollouts, keys, func(ctx context.Context) error {
+				if !vr.isCurrent(vip) {
+					vr.logger.Debug("skipping stale VIP address rollout", "generation", vip.Generation)
+					return nil
+				}
+				vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, true)
 				return nil
+			}); err != nil {
+				vr.logger.Error("failed to coordinate VIP address rollout", "error", err, "rollouts", keys)
+				span.RecordError(err)
 			}
-			vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, true)
-			return nil
-		}); err != nil {
-			vr.logger.Error("failed to coordinate VIP address rollout", "error", err, "rollout", key)
-			span.RecordError(err)
+			return
 		}
-		return
 	}
 
 	vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, false)
+}
+
+func runExclusiveRollouts(ctx context.Context, rollouts RolloutCoordinator, keys []string, fn func(context.Context) error) error {
+	if rollouts == nil || len(keys) == 0 {
+		return fn(ctx)
+	}
+
+	var run func(context.Context, int) error
+	run = func(ctx context.Context, index int) error {
+		if index >= len(keys) {
+			return fn(ctx)
+		}
+		key := keys[index]
+		return rollouts.RunExclusive(ctx, key, func(ctx context.Context) error {
+			return run(ctx, index+1)
+		})
+	}
+	return run(ctx, 0)
+}
+
+func rolloutKeysForAddresses(addresses ...string) []string {
+	seen := make(map[string]struct{}, len(addresses))
+	keys := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if address == "" {
+			continue
+		}
+		key := rolloutKeyForAddress(address)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func rolloutKeyForAddress(address string) string {
+	return "vip-address/" + address
 }
 
 func (vr *vipReconciler) reconcileApplied(
@@ -726,13 +770,6 @@ func (vr *vipReconciler) reconcileApplied(
 		"total", len(vip.Spec.Backends),
 		"serving", hasHealthy,
 		"route_advertised", routeAdvertised)
-}
-
-func rolloutKeyForVIP(vip *v1alpha1.VirtualIP) string {
-	if vip == nil {
-		return "virtualip/"
-	}
-	return "virtualip/" + vip.Namespace + "/" + vip.Name
 }
 
 func (vr *vipReconciler) isCurrent(vip *v1alpha1.VirtualIP) bool {
@@ -817,7 +854,7 @@ func (vr *vipReconciler) repairTuningDrift(
 	}
 
 	if vr.rollouts != nil && !rolloutHeld {
-		return vr.rollouts.RunExclusive(ctx, rolloutKeyForVIP(vip), func(ctx context.Context) error {
+		return runExclusiveRollouts(ctx, vr.rollouts, rolloutKeysForAddresses(vip.Spec.Address), func(ctx context.Context) error {
 			if !vr.isCurrent(vip) {
 				vr.logger.Debug("skipping stale retained VIP tuning drift repair", "generation", vip.Generation)
 				return nil

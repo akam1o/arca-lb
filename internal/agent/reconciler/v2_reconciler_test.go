@@ -122,8 +122,10 @@ func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 		Desired: "2048",
 	}}
 	router := newRecordingRouter(events)
+	rollouts := &recordingRolloutCoordinator{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetRolloutCoordinator(rollouts)
 	mgr.SetTuningDriftConfig(TuningDriftConfig{
 		Policy:        TuningDriftPolicyRollingRecreate,
 		DrainDuration: time.Millisecond,
@@ -160,6 +162,9 @@ func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 	}
 	if drifts := dp.TuningDrifts("default/web"); len(drifts) != 0 {
 		t.Fatalf("drifts after recreate = %#v, want none", drifts)
+	}
+	if got := rollouts.keysSnapshot(); len(got) != 1 || got[0] != "vip-address/203.0.113.10" {
+		t.Fatalf("rollout keys = %#v, want address-scoped key", got)
 	}
 }
 
@@ -368,8 +373,8 @@ func TestV2ReconcilerDrainsPreviousAddressBeforeDataplaneUpdateAndRetries(t *tes
 	if got := router.withdrawCount(); got != 1 {
 		t.Fatalf("withdraw count = %d, want one failed previous address withdraw", got)
 	}
-	if got := rollouts.callCount(); got != 1 {
-		t.Fatalf("rollout lock calls = %d, want one failed address rollout attempt", got)
+	if got := rollouts.callCount(); got != 2 {
+		t.Fatalf("rollout lock calls = %d, want old and new address locks for one failed rollout attempt", got)
 	}
 	if !router.IsAnnounced("203.0.113.10") {
 		t.Fatal("old VIP address should remain tracked as announced after withdraw failure")
@@ -403,11 +408,16 @@ func TestV2ReconcilerDrainsPreviousAddressBeforeDataplaneUpdateAndRetries(t *tes
 	if got := dp.lastAppliedVIP().Spec.Address; got != "203.0.113.20" {
 		t.Fatalf("last applied VIP address = %s, want new address", got)
 	}
-	if got := rollouts.callCount(); got != 2 {
+	if got := rollouts.callCount(); got != 4 {
 		t.Fatalf("rollout lock calls = %d, want failed attempt and retry", got)
 	}
-	if got := rollouts.lastKey(); got != "virtualip/default/web" {
-		t.Fatalf("rollout key = %q, want virtualip/default/web", got)
+	if got := rollouts.keysSnapshot(); !sameStringSlice(got, []string{
+		"vip-address/203.0.113.10",
+		"vip-address/203.0.113.20",
+		"vip-address/203.0.113.10",
+		"vip-address/203.0.113.20",
+	}) {
+		t.Fatalf("rollout keys = %#v, want old and new VIP address keys", got)
 	}
 }
 
@@ -450,7 +460,7 @@ func TestV2ReconcilerSkipsStaleAddressRolloutAfterWaitingForLock(t *testing.T) {
 	if router.IsAnnounced("203.0.113.20") {
 		t.Fatal("stale desired address should not be announced after rollout lock wait")
 	}
-	if got := rollouts.callCount(); got != 2 {
+	if got := rollouts.callCount(); got != 4 {
 		t.Fatalf("rollout lock calls = %d, want stale attempt and latest retry", got)
 	}
 }
@@ -549,6 +559,18 @@ func findTestCondition(conditions []metav1.Condition, conditionType string) *met
 		}
 	}
 	return nil
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type recordingDataPlane struct {
@@ -767,6 +789,12 @@ func (r *recordingRolloutCoordinator) lastKey() string {
 		return ""
 	}
 	return r.keys[len(r.keys)-1]
+}
+
+func (r *recordingRolloutCoordinator) keysSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.keys...)
 }
 
 type blockingRolloutCoordinator struct {

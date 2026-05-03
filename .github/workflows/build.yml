@@ -117,6 +117,8 @@ jobs:
     permissions:
       contents: write
       packages: write
+    env:
+      DOCKERHUB_ENABLED: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -131,7 +133,7 @@ jobs:
           echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Login to Docker Hub (if needed)
-        if: github.event_name != 'pull_request'
+        if: env.DOCKERHUB_ENABLED == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -150,7 +152,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/arca-lb-operator
             ghcr.io/${{ steps.vars.outputs.owner_lc }}/arca-lb-operator
           tags: |
             type=ref,event=branch
@@ -167,7 +168,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/arca-lb-agent
             ghcr.io/${{ steps.vars.outputs.owner_lc }}/arca-lb-agent
           tags: |
             type=ref,event=branch
@@ -178,6 +178,9 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Prepare image output directory
+        run: mkdir -p dist
 
       - name: Build operator image tar (linux/amd64)
         uses: docker/build-push-action@v5
@@ -200,6 +203,21 @@ jobs:
             docker push "${tag}"
           done <<< "${{ steps.meta-operator.outputs.tags }}"
 
+      - name: Push operator tags to Docker Hub
+        if: env.DOCKERHUB_ENABLED == 'true'
+        env:
+          DOCKERHUB_NAMESPACE: ${{ secrets.DOCKER_USERNAME }}
+          GHCR_OWNER: ${{ steps.vars.outputs.owner_lc }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            image="${tag#ghcr.io/${GHCR_OWNER}/}"
+            dockerhub_tag="${DOCKERHUB_NAMESPACE}/${image}"
+            docker tag "${tag}" "${dockerhub_tag}"
+            docker push "${dockerhub_tag}"
+          done <<< "${{ steps.meta-operator.outputs.tags }}"
+
       - name: Build agent image tar (linux/amd64)
         uses: docker/build-push-action@v5
         with:
@@ -219,6 +237,21 @@ jobs:
           while IFS= read -r tag; do
             [ -n "${tag}" ] || continue
             docker push "${tag}"
+          done <<< "${{ steps.meta-agent.outputs.tags }}"
+
+      - name: Push agent tags to Docker Hub
+        if: env.DOCKERHUB_ENABLED == 'true'
+        env:
+          DOCKERHUB_NAMESPACE: ${{ secrets.DOCKER_USERNAME }}
+          GHCR_OWNER: ${{ steps.vars.outputs.owner_lc }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            image="${tag#ghcr.io/${GHCR_OWNER}/}"
+            dockerhub_tag="${DOCKERHUB_NAMESPACE}/${image}"
+            docker tag "${tag}" "${dockerhub_tag}"
+            docker push "${dockerhub_tag}"
           done <<< "${{ steps.meta-agent.outputs.tags }}"
 
       - name: Package image archives

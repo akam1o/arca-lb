@@ -366,10 +366,14 @@ func cleanupStaleLastConfigs(
 	currentByKey := make(map[string]*v1alpha1.VirtualIP, len(currentVIPs))
 	currentAddresses := make(map[string]struct{}, len(currentVIPs))
 	for i := range currentVIPs {
-		currentByKey[healthcheck.KeyForVIP(&currentVIPs[i])] = &currentVIPs[i]
-		if currentVIPs[i].Spec.Address != "" {
-			currentAddresses[currentVIPs[i].Spec.Address] = struct{}{}
+		currentVIP := &currentVIPs[i]
+		key := healthcheck.KeyForVIP(currentVIP)
+		currentByKey[key] = currentVIP
+		if err := vipvalidation.ValidateDataPlane(currentVIP); err != nil {
+			logger.Warn("ignoring invalid current VirtualIP for stale route protection", "vip", key, "error", err)
+			continue
 		}
+		currentAddresses[currentVIP.Spec.Address] = struct{}{}
 	}
 
 	var firstErr error

@@ -1794,10 +1794,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             conditions, CONDITION_ROUTE_ADVERTISED
         )
         serving_condition = self._condition(conditions, CONDITION_SERVING)
-        if not self._status_matches_generation(metadata, status,
-                                               ready_condition,
-                                               serving_condition,
-                                               route_condition):
+        ready_status = ready_condition.get("status")
+        if ready_status == "False":
+            status_is_current = self._condition_matches_generation(
+                metadata, ready_condition
+            )
+        else:
+            status_is_current = self._status_matches_generation(
+                metadata, status, ready_condition,
+                serving_condition, route_condition,
+            )
+        if not status_is_current:
             LOG.debug(
                 "VirtualIP %s status is stale for generation %s; skipping "
                 "Octavia status update",
@@ -1805,7 +1812,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
             return None
 
-        is_ready = ready_condition.get("status") == "True"
+        is_ready = ready_status == "True"
         is_no_backends = (
             ready_condition.get("status") == "False" and
             ready_condition.get("reason") == "NoBackends"
@@ -1910,6 +1917,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 condition.get("observedGeneration"), generation
             )
             for condition in conditions
+        )
+
+    @classmethod
+    def _condition_matches_generation(cls, metadata, condition):
+        if condition is None:
+            return False
+        return cls._generation_matches(
+            condition.get("observedGeneration"), metadata.get("generation")
         )
 
     @staticmethod

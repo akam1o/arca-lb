@@ -2618,6 +2618,57 @@ class TestDriverLifecycle(unittest.TestCase):
             status["loadbalancers"][0]["operating_status"], "ERROR"
         )
 
+    def test_ready_false_status_ignores_stale_agent_conditions(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+            status={
+                "observedGeneration": 1,
+                "healthyBackends": 1,
+                "totalBackends": 1,
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "False",
+                        "reason": "InvalidSpec",
+                        "observedGeneration": 2,
+                    },
+                    {
+                        "type": "Serving",
+                        "status": "True",
+                        "observedGeneration": 1,
+                    },
+                    {
+                        "type": "RouteAdvertised",
+                        "status": "True",
+                        "observedGeneration": 1,
+                    },
+                ],
+            },
+            generation=2,
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(
+            status["loadbalancers"][0]["provisioning_status"], "ERROR"
+        )
+        self.assertEqual(
+            status["loadbalancers"][0]["operating_status"], "ERROR"
+        )
+        self.assertEqual(
+            status["listeners"][0]["operating_status"], "ERROR"
+        )
+        self.assertEqual(
+            status["pools"][0]["operating_status"], "ERROR"
+        )
+
     def test_virtualip_status_change_reports_offline_without_backends(self):
         vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",

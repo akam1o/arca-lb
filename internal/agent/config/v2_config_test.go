@@ -59,6 +59,9 @@ dataplane:
 	if cfg.Log.Format != "json" {
 		t.Errorf("Log.Format = %q, want json", cfg.Log.Format)
 	}
+	if cfg.Telemetry.OTLPInsecure {
+		t.Error("Telemetry.OTLPInsecure = true, want false")
+	}
 }
 
 func TestLoadV2Config_EnvOverride(t *testing.T) {
@@ -80,6 +83,8 @@ dataplane:
 	t.Setenv("ARCA_ROLLOUT_ENABLED", "true")
 	t.Setenv("ARCA_ROLLOUT_LEASE_NAMESPACE", "rollout-ns")
 	t.Setenv("ARCA_AGENT_STATUS_TTL", "5m")
+	t.Setenv("ARCA_OTLP_ENDPOINT", "collector.example.com:4317")
+	t.Setenv("ARCA_OTLP_INSECURE", "true")
 
 	cfg, err := LoadV2Config(cfgPath)
 	if err != nil {
@@ -100,6 +105,42 @@ dataplane:
 	}
 	if cfg.Agent.StatusTTL != 5*time.Minute {
 		t.Errorf("Agent.StatusTTL = %s, want 5m", cfg.Agent.StatusTTL)
+	}
+	if cfg.Telemetry.OTLPEndpoint != "collector.example.com:4317" {
+		t.Errorf("Telemetry.OTLPEndpoint = %q, want collector.example.com:4317", cfg.Telemetry.OTLPEndpoint)
+	}
+	if !cfg.Telemetry.OTLPInsecure {
+		t.Error("Telemetry.OTLPInsecure = false, want true")
+	}
+}
+
+func TestLoadV2Config_TelemetryInsecureYAML(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: noop
+telemetry:
+  otlpEndpoint: collector.example.com:4317
+  otlpInsecure: true
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadV2Config(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadV2Config: %v", err)
+	}
+
+	if cfg.Telemetry.OTLPEndpoint != "collector.example.com:4317" {
+		t.Errorf("Telemetry.OTLPEndpoint = %q, want collector.example.com:4317", cfg.Telemetry.OTLPEndpoint)
+	}
+	if !cfg.Telemetry.OTLPInsecure {
+		t.Error("Telemetry.OTLPInsecure = false, want true")
 	}
 }
 

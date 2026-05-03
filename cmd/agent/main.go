@@ -70,6 +70,7 @@ func main() {
 		ServiceName:    "arca-lb-agent",
 		ServiceVersion: "2.0.0",
 		OTLPEndpoint:   cfg.Telemetry.OTLPEndpoint,
+		OTLPInsecure:   cfg.Telemetry.OTLPInsecure,
 		MetricsEnabled: cfg.Metrics.Enabled,
 	})
 	if err != nil {

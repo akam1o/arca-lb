@@ -28,6 +28,9 @@ type Config struct {
 	// If empty, tracing is disabled.
 	OTLPEndpoint string
 
+	// OTLPInsecure disables TLS for OTLP trace export.
+	OTLPInsecure bool
+
 	// MetricsEnabled enables Prometheus metrics export.
 	MetricsEnabled bool
 }
@@ -65,10 +68,14 @@ func Setup(ctx context.Context, cfg Config) (*Shutdown, error) {
 
 	// --- Traces ---
 	if cfg.OTLPEndpoint != "" {
-		exporter, err := otlptracegrpc.New(ctx,
+		traceOptions := []otlptracegrpc.Option{
 			otlptracegrpc.WithEndpoint(cfg.OTLPEndpoint),
-			otlptracegrpc.WithInsecure(),
-		)
+		}
+		if cfg.OTLPInsecure {
+			traceOptions = append(traceOptions, otlptracegrpc.WithInsecure())
+		}
+
+		exporter, err := otlptracegrpc.New(ctx, traceOptions...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create OTLP trace exporter: %w", err)
 		}
@@ -82,7 +89,7 @@ func Setup(ctx context.Context, cfg Config) (*Shutdown, error) {
 		)
 		otel.SetTracerProvider(tp)
 		shutdown.fns = append(shutdown.fns, tp.Shutdown)
-		logger.Info("OTLP trace exporter configured", "endpoint", cfg.OTLPEndpoint)
+		logger.Info("OTLP trace exporter configured", "endpoint", cfg.OTLPEndpoint, "insecure", cfg.OTLPInsecure)
 	} else {
 		logger.Info("tracing disabled (no OTLP endpoint)")
 	}

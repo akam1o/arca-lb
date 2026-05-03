@@ -51,6 +51,7 @@ metrics:
 
 telemetry:
   otlpEndpoint: ""         # empty = disabled
+  otlpInsecure: false      # true only for plaintext collectors
 
 log:
   level: "info"            # "debug", "info", "warn", "error"
@@ -137,6 +138,7 @@ the cluster.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `telemetry.otlpEndpoint` | OTLP collector endpoint (empty = disabled) | `""` |
+| `telemetry.otlpInsecure` | Disable TLS when exporting traces to a plaintext OTLP collector | `false` |
 
 ### Log settings
 

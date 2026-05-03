@@ -51,6 +51,7 @@ metrics:
 
 telemetry:
   otlpEndpoint: ""         # 空 = 無効
+  otlpInsecure: false      # plaintext collector の場合のみ true
 
 log:
   level: "info"            # "debug", "info", "warn", "error"
@@ -128,6 +129,7 @@ log:
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `telemetry.otlpEndpoint` | OTLP コレクターエンドポイント（空 = 無効） | `""` |
+| `telemetry.otlpInsecure` | TLS を使わない plaintext OTLP collector へトレースを送信する | `false` |
 
 ### Log 設定
 

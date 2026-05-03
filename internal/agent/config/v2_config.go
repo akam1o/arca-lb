@@ -81,6 +81,7 @@ type MetricsSettings struct {
 // TelemetrySettings configures OpenTelemetry.
 type TelemetrySettings struct {
 	OTLPEndpoint string `yaml:"otlpEndpoint"`
+	OTLPInsecure bool   `yaml:"otlpInsecure"`
 }
 
 // LogSettings configures logging.
@@ -132,6 +133,11 @@ func applyV2EnvOverrides(cfg *V2Config) {
 	}
 	if v := os.Getenv("ARCA_OTLP_ENDPOINT"); v != "" {
 		cfg.Telemetry.OTLPEndpoint = v
+	}
+	if v := os.Getenv("ARCA_OTLP_INSECURE"); v != "" {
+		if insecure, err := strconv.ParseBool(v); err == nil {
+			cfg.Telemetry.OTLPInsecure = insecure
+		}
 	}
 	if v := os.Getenv("ARCA_METRICS_ADDRESS"); v != "" {
 		cfg.Metrics.Address = v

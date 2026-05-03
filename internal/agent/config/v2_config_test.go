@@ -282,6 +282,11 @@ func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 			vppYAML: "new_flows_table_length: 4294967296\n",
 			wantErr: "dataplane.vpp.new_flows_table_length",
 		},
+		{
+			name:    "invalid retained tuning drift policy",
+			vppYAML: "retained_vip_tuning_drift_policy: rolling-recreate\n",
+			wantErr: "dataplane.vpp.retained_vip_tuning_drift_policy",
+		},
 	}
 
 	for _, tt := range tests {

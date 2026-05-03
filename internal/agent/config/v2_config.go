@@ -302,6 +302,13 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 		}
 	}
 
+	if value, ok := vpp["retained_vip_tuning_drift_policy"]; ok {
+		policy, ok := value.(string)
+		if !ok || (policy != "" && !validV2VPPTuningDriftPolicy(policy)) {
+			return fmt.Errorf("dataplane.vpp.retained_vip_tuning_drift_policy must be one of preserve, rolling_recreate")
+		}
+	}
+
 	return nil
 }
 
@@ -317,6 +324,15 @@ func validV2VPPEncapType(value string) bool {
 func validV2VPPServiceType(value string) bool {
 	switch value {
 	case "CLUSTERIP", "NODEPORT":
+		return true
+	default:
+		return false
+	}
+}
+
+func validV2VPPTuningDriftPolicy(value string) bool {
+	switch value {
+	case "preserve", "rolling_recreate":
 		return true
 	default:
 		return false

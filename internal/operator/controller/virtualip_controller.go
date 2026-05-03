@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	vipvalidation "github.com/akam1o/arca-lb/internal/virtualip/validation"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -186,63 +187,5 @@ func applyDefaults(vip *v1alpha1.VirtualIP) bool {
 }
 
 func validateSpec(spec *v1alpha1.VirtualIPSpec) error {
-	if spec.EncapType == v1alpha1.EncapTypeL3DSR && spec.DSCP != nil {
-		if *spec.DSCP == 0 || *spec.DSCP > 63 {
-			return fmt.Errorf("DSCP must be 1-63 when specified for L3DSR encapsulation")
-		}
-	}
-
-	// Check for duplicate backend addresses
-	seen := make(map[string]bool)
-	for _, be := range spec.Backends {
-		if seen[be.Address] {
-			return fmt.Errorf("duplicate backend address: %s", be.Address)
-		}
-		seen[be.Address] = true
-	}
-
-	if err := validateHealthCheckSpec(spec.HealthCheck); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
-	if hc == nil {
-		return nil
-	}
-
-	switch hc.Type {
-	case v1alpha1.HCTypeHTTP, v1alpha1.HCTypeHTTPS:
-		if hc.HTTP == nil {
-			return fmt.Errorf("spec.healthCheck.http is required for type %q", hc.Type)
-		}
-		if hc.HTTP.Port < 1 || hc.HTTP.Port > 65535 {
-			return fmt.Errorf("spec.healthCheck.http.port must be 1-65535")
-		}
-	case v1alpha1.HCTypeTCP, v1alpha1.HCTypeTLSHello:
-		if hc.TCP == nil {
-			return fmt.Errorf("spec.healthCheck.tcp is required for type %q", hc.Type)
-		}
-		if hc.TCP.Port < 1 || hc.TCP.Port > 65535 {
-			return fmt.Errorf("spec.healthCheck.tcp.port must be 1-65535")
-		}
-	case v1alpha1.HCTypePing:
-		// No additional config required.
-	default:
-		return fmt.Errorf("spec.healthCheck.type %q is not valid", hc.Type)
-	}
-
-	if hc.IntervalSeconds < 1 {
-		return fmt.Errorf("spec.healthCheck.intervalSeconds must be >= 1")
-	}
-	if hc.TimeoutSeconds < 1 {
-		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be >= 1")
-	}
-	if hc.TimeoutSeconds >= hc.IntervalSeconds {
-		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be less than intervalSeconds")
-	}
-
-	return nil
+	return vipvalidation.ValidateSpec(spec)
 }

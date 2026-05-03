@@ -29,6 +29,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/store"
 	"github.com/akam1o/arca-lb/internal/agent/watcher"
 	otelsetup "github.com/akam1o/arca-lb/internal/pkg/otel"
+	vipvalidation "github.com/akam1o/arca-lb/internal/virtualip/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -267,6 +268,11 @@ type healthCheckConditionUpdater interface {
 func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	vipKey := healthcheck.KeyForVIP(vip)
 	h.logger.Info("VIP update received", "vip", vipKey, "generation", vip.Generation)
+
+	if err := vipvalidation.ValidateDataPlane(vip); err != nil {
+		h.logger.Error("invalid VirtualIP spec, ignoring update", "vip", vipKey, "error", err)
+		return
+	}
 
 	// Start/update health checks
 	if vip.Spec.HealthCheck != nil {

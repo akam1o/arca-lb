@@ -76,6 +76,12 @@ type VIPRecreator interface {
 	RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error
 }
 
+// VIPUpdateDrainChecker is optionally implemented by data planes that need
+// route drain coordination before applying some in-place VIP updates.
+type VIPUpdateDrainChecker interface {
+	NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool, error)
+}
+
 // New creates a DataPlane from a type name and config.
 func New(dpType string, cfg map[string]interface{}) (DataPlane, error) {
 	switch dpType {

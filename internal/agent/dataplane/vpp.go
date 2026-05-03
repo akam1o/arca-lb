@@ -238,6 +238,22 @@ func (v *VPP) TuningDrifts(vipKey string) []VIPTuningDrift {
 	return out
 }
 
+func (v *VPP) NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool, error) {
+	if current == nil || desired == nil || current.Spec.Address != desired.Spec.Address {
+		return false, nil
+	}
+
+	currentAttrs, err := v.effectiveVIPAttributes(current)
+	if err != nil {
+		return false, fmt.Errorf("invalid current VIP attributes for %s: %w", v.vipKey(current), err)
+	}
+	desiredAttrs, err := v.effectiveVIPAttributes(desired)
+	if err != nil {
+		return false, fmt.Errorf("invalid desired VIP attributes for %s: %w", v.vipKey(desired), err)
+	}
+	return currentAttrs != desiredAttrs, nil
+}
+
 func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()

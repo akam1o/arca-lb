@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -311,6 +312,131 @@ func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 	}
 	if got := rollouts.keysSnapshot(); len(got) != 1 || got[0] != "vip-address/203.0.113.10" {
 		t.Fatalf("rollout keys = %#v, want address-scoped key", got)
+	}
+}
+
+func TestV2ReconcilerDrainsSameAddressDisruptiveUpdate(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	dp.recordApplies = true
+	router := newRecordingRouter(events)
+	rollouts := &recordingRolloutCoordinator{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetRolloutCoordinator(rollouts)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return dp.applyCount() == 1 && router.announceCount() == 1
+	}, "initial VIP apply")
+
+	updated := vip.DeepCopy()
+	updated.Generation = 2
+	updated.Spec.Port = 443
+	mgr.OnVIPUpdate(updated)
+
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.applyCount() == 2 &&
+			router.withdrawCount() == 1 &&
+			router.announceCount() == 2 &&
+			last != nil &&
+			last.Spec.Port == 443
+	}, "same-address disruptive update")
+
+	got := events.snapshot()
+	want := []string{
+		"apply:default/web:80",
+		"announce:203.0.113.10",
+		"withdraw:203.0.113.10",
+		"apply:default/web:443",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+	if got := rollouts.keysSnapshot(); len(got) != 1 || got[0] != "vip-address/203.0.113.10" {
+		t.Fatalf("rollout keys = %#v, want address-scoped key", got)
+	}
+}
+
+func TestV2ReconcilerDrainsDisruptiveUpdateWithServingSibling(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	dp.recordApplies = true
+	router := newRecordingRouter(events)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	web80 := newV2TestVIP("default", "web-80", "uid-80")
+	web80.Spec.Port = 80
+	mgr.OnVIPUpdate(web80)
+	waitFor(t, func() bool {
+		return dp.applyCount() == 1 && router.announceCount() == 1
+	}, "initial shared address VIP apply")
+
+	web443 := newV2TestVIP("default", "web-443", "uid-443")
+	web443.Spec.Port = 443
+	mgr.OnVIPUpdate(web443)
+	waitFor(t, func() bool { return dp.applyCount() == 2 }, "sibling VIP apply")
+
+	updated := web80.DeepCopy()
+	updated.Generation = 2
+	updated.Spec.Port = 8080
+	mgr.OnVIPUpdate(updated)
+
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.applyCount() == 3 &&
+			router.withdrawCount() == 1 &&
+			router.announceCount() == 2 &&
+			last != nil &&
+			last.Name == "web-80" &&
+			last.Spec.Port == 8080
+	}, "same-address disruptive update with sibling")
+
+	got := events.snapshot()
+	want := []string{
+		"apply:default/web-80:80",
+		"announce:203.0.113.10",
+		"apply:default/web-443:443",
+		"withdraw:203.0.113.10",
+		"apply:default/web-80:8080",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
 	}
 }
 
@@ -945,15 +1071,16 @@ func healthStateAbsent(st *store.Store, vipKey, backendAddr string) bool {
 }
 
 type recordingDataPlane struct {
-	mu        sync.Mutex
-	applies   int
-	removals  int
-	applyErr  error
-	removeErr error
-	recreates int
-	drifts    []dataplane.VIPTuningDrift
-	events    *eventRecorder
-	lastVIP   *v1alpha1.VirtualIP
+	mu            sync.Mutex
+	applies       int
+	removals      int
+	applyErr      error
+	removeErr     error
+	recreates     int
+	drifts        []dataplane.VIPTuningDrift
+	events        *eventRecorder
+	recordApplies bool
+	lastVIP       *v1alpha1.VirtualIP
 }
 
 func newRecordingDataPlane() *recordingDataPlane {
@@ -965,6 +1092,9 @@ func (r *recordingDataPlane) ApplyVIP(_ context.Context, vip *v1alpha1.VirtualIP
 	defer r.mu.Unlock()
 	r.applies++
 	r.lastVIP = vip.DeepCopy()
+	if r.recordApplies {
+		r.events.record("apply:" + vip.Namespace + "/" + vip.Name + ":" + fmt.Sprint(vip.Spec.Port))
+	}
 	return r.applyErr
 }
 
@@ -1014,6 +1144,27 @@ func (r *recordingDataPlane) RecreateVIP(_ context.Context, vip *v1alpha1.Virtua
 	r.drifts = nil
 	r.events.record("recreate:" + vip.Namespace + "/" + vip.Name)
 	return nil
+}
+
+func (r *recordingDataPlane) NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool, error) {
+	if current == nil || desired == nil || current.Spec.Address != desired.Spec.Address {
+		return false, nil
+	}
+	return current.Spec.Port != desired.Spec.Port ||
+		current.Spec.Protocol != desired.Spec.Protocol ||
+		current.Spec.EncapType != desired.Spec.EncapType ||
+		!sameUint8Ptr(current.Spec.DSCP, desired.Spec.DSCP), nil
+}
+
+func sameUint8Ptr(a, b *uint8) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return *a == *b
+	}
 }
 
 func (r *recordingDataPlane) applyCount() int {

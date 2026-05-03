@@ -176,6 +176,24 @@ func TestTLSHelloProberSucceedsWithTLSServer(t *testing.T) {
 	}
 }
 
+func TestPingTimeoutSecondsHonorsContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3500*time.Millisecond)
+	defer cancel()
+
+	if got := pingTimeoutSeconds(ctx, 2*time.Second); got != "4" {
+		t.Fatalf("ping timeout = %q, want 4 second ceil of context deadline", got)
+	}
+}
+
+func TestPingTimeoutSecondsUsesFallbackWithoutDeadline(t *testing.T) {
+	ctx, cancel := contextWithDefaultTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if got := pingTimeoutSeconds(ctx, 2*time.Second); got != "2" {
+		t.Fatalf("ping timeout = %q, want fallback 2 seconds", got)
+	}
+}
+
 func startSilentTCPServer(t *testing.T) (string, int) {
 	t.Helper()
 

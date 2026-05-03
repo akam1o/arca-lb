@@ -222,6 +222,11 @@ func validateV2(cfg *V2Config) error {
 	default:
 		return fmt.Errorf("unsupported dataplane.type: %s", cfg.DataPlane.Type)
 	}
+	if cfg.DataPlane.Type == "vpp" {
+		if err := validateV2VPPSettings(cfg.DataPlane.VPP); err != nil {
+			return err
+		}
+	}
 
 	switch cfg.Routing.Type {
 	case "frr", "noop":
@@ -230,4 +235,98 @@ func validateV2(cfg *V2Config) error {
 	}
 
 	return nil
+}
+
+func validateV2VPPSettings(vpp map[string]interface{}) error {
+	if vpp == nil {
+		return nil
+	}
+
+	if value, ok := vpp["socket_path"]; ok {
+		socketPath, ok := value.(string)
+		if !ok || socketPath == "" {
+			return fmt.Errorf("dataplane.vpp.socket_path must be a non-empty string")
+		}
+	}
+
+	if value, ok := vpp["encap_type"]; ok {
+		encapType, ok := value.(string)
+		if !ok || !validV2VPPEncapType(encapType) {
+			return fmt.Errorf("dataplane.vpp.encap_type must be one of GRE4, GRE6, L3DSR, NAT4, NAT6")
+		}
+	}
+
+	if value, ok := vpp["dscp"]; ok {
+		dscp, ok := v2IntegerSetting(value)
+		if !ok || dscp < 1 || dscp > 63 {
+			return fmt.Errorf("dataplane.vpp.dscp must be an integer between 1 and 63")
+		}
+	}
+
+	if value, ok := vpp["service_type"]; ok {
+		serviceType, ok := value.(string)
+		if !ok || !validV2VPPServiceType(serviceType) {
+			return fmt.Errorf("dataplane.vpp.service_type must be one of CLUSTERIP, NODEPORT")
+		}
+	}
+
+	if value, ok := vpp["new_flows_table_length"]; ok {
+		tableLength, ok := v2IntegerSetting(value)
+		if !ok || tableLength < 1 || tableLength > int64(^uint32(0)) {
+			return fmt.Errorf("dataplane.vpp.new_flows_table_length must be an integer between 1 and %d", uint64(^uint32(0)))
+		}
+	}
+
+	return nil
+}
+
+func validV2VPPEncapType(value string) bool {
+	switch value {
+	case "GRE4", "GRE6", "L3DSR", "NAT4", "NAT6":
+		return true
+	default:
+		return false
+	}
+}
+
+func validV2VPPServiceType(value string) bool {
+	switch value {
+	case "CLUSTERIP", "NODEPORT":
+		return true
+	default:
+		return false
+	}
+}
+
+func v2IntegerSetting(value interface{}) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int8:
+		return int64(v), true
+	case int16:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case int64:
+		return v, true
+	case uint:
+		if uint64(v) > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(v), true
+	case uint8:
+		return int64(v), true
+	case uint16:
+		return int64(v), true
+	case uint32:
+		return int64(v), true
+	case uint64:
+		if v > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(v), true
+	default:
+		return 0, false
+	}
 }

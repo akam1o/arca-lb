@@ -26,15 +26,6 @@ rules:
       - update
       - patch
   - apiGroups:
-      - coordination.k8s.io
-    resources:
-      - leases
-    verbs:
-      - get
-      - create
-      - update
-      - patch
-  - apiGroups:
       - arca.io
     resources:
       - virtualips/finalizers
@@ -81,5 +72,15 @@ rules:
       - virtualips/status
     verbs:
       - get
+      - update
+      - patch
+  # Rollout coordination
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - create
       - update
       - patch

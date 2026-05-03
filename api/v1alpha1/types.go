@@ -228,6 +228,10 @@ type AgentStatus struct {
 	// LastUpdateTime is when this agent observation was written.
 	// +optional
 	LastUpdateTime *metav1.Time `json:"lastUpdateTime,omitempty"`
+
+	// TTLSeconds is how long this observation should remain valid.
+	// +optional
+	TTLSeconds int64 `json:"ttlSeconds,omitempty"`
 }
 
 // VirtualIPStatus defines the observed state of a VirtualIP.

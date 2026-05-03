@@ -41,7 +41,7 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
 	flag.BoolVar(&enableWebhooks, "enable-webhooks", false, "Enable admission webhooks.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election.")
-	flag.DurationVar(&agentStatusTTL, "agent-status-ttl", 0, "Maximum age for per-agent VirtualIP status observations. Zero uses the default.")
+	flag.DurationVar(&agentStatusTTL, "agent-status-ttl", 0, "Fallback maximum age for per-agent VirtualIP status observations without ttlSeconds. Zero uses the default.")
 	flag.DurationVar(&agentStatusPruneInterval, "agent-status-prune-interval", 0, "How often to recheck VirtualIPs with current per-agent status. Zero uses half of --agent-status-ttl.")
 	flag.Parse()
 

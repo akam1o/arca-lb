@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -151,7 +153,7 @@ func applyV2Defaults(cfg *V2Config) {
 		cfg.Agent.ReconcileInterval = 30 * time.Second
 	}
 	if cfg.Agent.StatusTTL == 0 {
-		cfg.Agent.StatusTTL = 4 * cfg.Agent.ReconcileInterval
+		cfg.Agent.StatusTTL = agentstatus.DefaultAgentStatusTTL
 	}
 	if cfg.Kubernetes.ResyncInterval == 0 {
 		cfg.Kubernetes.ResyncInterval = 30 * time.Second

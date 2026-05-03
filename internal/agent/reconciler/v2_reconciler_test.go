@@ -792,15 +792,6 @@ func (r *recordingRolloutCoordinator) callCount() int {
 	return r.calls
 }
 
-func (r *recordingRolloutCoordinator) lastKey() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.keys) == 0 {
-		return ""
-	}
-	return r.keys[len(r.keys)-1]
-}
-
 func (r *recordingRolloutCoordinator) keysSnapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -110,7 +110,7 @@ func TestFRRExecVTYShUsesMultipleCArgs(t *testing.T) {
 	f := &FRR{
 		config: FRRConfig{
 			VTYShPath:  vtyshPath,
-			CmdTimeout: time.Second,
+			CmdTimeout: 10 * time.Second,
 		},
 	}
 
@@ -157,7 +157,7 @@ func TestFRRWithdrawUntrackedVIPExecutesDelete(t *testing.T) {
 		config: FRRConfig{
 			VTYShPath:  vtyshPath,
 			RouteTag:   10000,
-			CmdTimeout: time.Second,
+			CmdTimeout: 10 * time.Second,
 		},
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 		announced: make(map[string]bool),

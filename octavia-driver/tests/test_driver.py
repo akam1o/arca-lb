@@ -446,6 +446,31 @@ class TestDriverLifecycle(unittest.TestCase):
         annotations = self.mock_k8s.create_virtualip.call_args[1]["annotations"]
         self.assertNotIn(constants.ANNOTATION_POOL_ID, annotations)
 
+    def test_pool_create_with_missing_listener_virtualip_reports_error(self):
+        self.mock_k8s.find_by_listener.return_value = None
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.pool_create(FakeObj({
+                "pool_id": "pool-1111",
+                "loadbalancer_id": "lb-1111",
+                "listener_id": "listener-1111",
+            }))
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ERROR",
+        }])
+
     def test_listener_create_restores_explicit_default_pool_members(self):
         lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
         self.mock_driver_lib.get_pool.return_value = FakeObj({
@@ -564,6 +589,54 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(spec["healthCheck"]["http"]["path"], "/healthz")
         annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
         self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
+
+    def test_restore_backends_aborts_on_member_fetch_error(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        self.mock_driver_lib.get_pool.return_value = FakeObj({
+            "pool_id": "pool-1111",
+            "members": ["member-1111"],
+        })
+        self.mock_driver_lib.get_member.side_effect = RuntimeError(
+            "octavia unavailable"
+        )
+
+        with mock.patch("octavia_arca_driver.driver.LOG.exception"):
+            with self.assertRaises(RuntimeError):
+                self.driver._restore_virtualip_backends([existing_vip])
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+
+    def test_restore_backends_aborts_on_health_monitor_fetch_error(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "healthCheck": {"type": "tcp", "tcp": {"port": 80}}},
+            annotations={
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+            },
+        )
+        self.mock_driver_lib.get_pool.return_value = FakeObj({
+            "pool_id": "pool-1111",
+            "members": [],
+            "healthmonitor_id": "hm-1111",
+        })
+        self.mock_driver_lib.get_healthmonitor.side_effect = RuntimeError(
+            "octavia unavailable"
+        )
+
+        with mock.patch("octavia_arca_driver.driver.LOG.exception"):
+            with self.assertRaises(RuntimeError):
+                self.driver._restore_virtualip_backends([existing_vip])
+
+        self.mock_k8s.update_virtualip.assert_not_called()
 
     def test_listener_create_cleans_up_virtualip_when_restore_fails(self):
         from octavia_lib.api.drivers import exceptions as driver_exc
@@ -771,6 +844,49 @@ class TestDriverLifecycle(unittest.TestCase):
         }])
         self.assertEqual(status["members"], [{
             "id": "member-1111",
+            "provisioning_status": "ERROR",
+        }])
+
+    def test_loadbalancer_update_enabled_preserves_vip_on_pool_fetch_error(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}],
+             "healthCheck": {"type": "tcp", "tcp": {"port": 80}}},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+        )
+        self.mock_k8s.find_by_loadbalancer.return_value = [existing_vip]
+        self.mock_driver_lib.get_pool.side_effect = RuntimeError(
+            "octavia unavailable"
+        )
+
+        with mock.patch("octavia_arca_driver.driver.LOG.exception"):
+            with self.assertRaises(RuntimeError):
+                self.driver.loadbalancer_update(FakeObj({}), FakeObj({
+                    "loadbalancer_id": "lb-1111",
+                    "admin_state_up": True,
+                }))
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
             "provisioning_status": "ERROR",
         }])
 
@@ -2082,6 +2198,47 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(status["healthmonitors"], [{
             "id": "hm-1111",
             "provisioning_status": "ACTIVE",
+        }])
+
+    def test_health_monitor_update_without_associated_virtualip_raises(self):
+        self.mock_k8s.find_by_pool.return_value = None
+        self.mock_driver_lib.get_pool.return_value = FakeObj({
+            "pool_id": "pool-1111",
+            "loadbalancer_id": "lb-1111",
+            "listener_id": "listener-1111",
+        })
+
+        hm = FakeObj({
+            "healthmonitor_id": "hm-1111",
+            "pool_id": "pool-1111",
+            "type": "HTTP",
+            "delay": 10,
+            "timeout": 5,
+            "max_retries": 3,
+            "max_retries_down": 2,
+            "url_path": "/healthz",
+        })
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.health_monitor_update(FakeObj({}), hm)
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ERROR",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "ERROR",
         }])
 
     def test_health_monitor_create_uses_member_protocol_port(self):

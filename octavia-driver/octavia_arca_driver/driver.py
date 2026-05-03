@@ -432,7 +432,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if not vip:
             LOG.warning("No VirtualIP found for listener %s (pool %s)",
                         listener_id, pool_id)
-            return
+            self._push_missing_virtualip_error_status(
+                f"pool/{pool_id}",
+                pool_id=pool_id,
+                lb_id=lb_id,
+                listener_id=listener_id,
+            )
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "Listener is not associated with a VirtualIP."
+                ),
+                operator_fault_string=(
+                    f"No VirtualIP for listener {listener_id}, pool {pool_id}"
+                ),
+            )
 
         associated = self._associate_pool_with_virtualip(vip, pool_id)
         if not associated:
@@ -816,7 +829,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     active_pool_ids=[pool_id],
                     active_hm_ids=[hm.get("healthmonitor_id")],
                 )
-            return
+                return
+            hm_id = hm.get("healthmonitor_id")
+            self._push_missing_virtualip_error_status(
+                f"healthmonitor/{hm_id}",
+                pool_id=pool_id,
+                hm_id=hm_id,
+            )
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Pool not associated with a VirtualIP.",
+                operator_fault_string=f"No VirtualIP for pool {pool_id}",
+            )
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
@@ -1132,7 +1155,15 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
     def _push_pool_restore_error_status(self, vip_name, lb_id, listener_id,
                                         pool_id):
-        member_ids, hm_ids = self._pool_dependent_resource_ids(pool_id)
+        member_ids = []
+        hm_ids = []
+        try:
+            member_ids, hm_ids = self._pool_dependent_resource_ids(pool_id)
+        except Exception:
+            LOG.exception(
+                "Failed to resolve Octavia dependents for pool %s error status",
+                pool_id,
+            )
         self._push_resource_error_status(
             vip_name,
             lb_id=lb_id,
@@ -1140,6 +1171,29 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             error_pool_ids=[pool_id],
             error_hm_ids=hm_ids,
             error_member_ids=member_ids,
+        )
+
+    def _push_missing_virtualip_error_status(self, vip_name, pool_id=None,
+                                             lb_id=None, listener_id=None,
+                                             hm_id=None):
+        pool = {}
+        if pool_id and (not lb_id or not listener_id):
+            try:
+                pool = self._pool_from_octavia(pool_id)
+            except Exception:
+                LOG.exception(
+                    "Failed to fetch Octavia pool %s for missing VirtualIP "
+                    "error status", pool_id
+                )
+
+        self._push_resource_error_status(
+            vip_name,
+            lb_id=lb_id or self._pool_loadbalancer_id(pool),
+            error_listener_ids=[
+                listener_id or self._pool_listener_id(pool)
+            ],
+            error_pool_ids=[pool_id],
+            error_hm_ids=[hm_id],
         )
 
     def _pool_dependent_resource_ids(self, pool_id):
@@ -1643,18 +1697,24 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return {}
         try:
             return self._as_dict(self._driver_lib.get_pool(pool_id))
+        except driver_exc.NotFound:
+            LOG.warning("Octavia pool %s not found", pool_id)
+            return {}
         except Exception:
             LOG.exception("Failed to fetch Octavia pool %s", pool_id)
-            return {}
+            raise
 
     def _member_from_octavia(self, member_id):
         if not member_id:
             return {}
         try:
             return self._as_dict(self._driver_lib.get_member(member_id))
+        except driver_exc.NotFound:
+            LOG.warning("Octavia member %s not found", member_id)
+            return {}
         except Exception:
             LOG.exception("Failed to fetch Octavia member %s", member_id)
-            return {}
+            raise
 
     def _health_monitor_from_octavia(self, healthmonitor_id):
         if not healthmonitor_id:
@@ -1663,10 +1723,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return self._as_dict(
                 self._driver_lib.get_healthmonitor(healthmonitor_id)
             )
+        except driver_exc.NotFound:
+            LOG.warning("Octavia health monitor %s not found",
+                        healthmonitor_id)
+            return {}
         except Exception:
             LOG.exception("Failed to fetch Octavia health monitor %s",
                           healthmonitor_id)
-            return {}
+            raise
 
     @staticmethod
     def _as_dict(value):

@@ -208,6 +208,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Start HTTP server for the container healthcheck and optional metrics before
+	// initial sync so liveness does not depend on stale dataplane cleanup time.
+	metricsServer := newAgentHTTPServer(cfg.Metrics, logger)
+	go func() {
+		logger.Info("agent HTTP server starting", "address", cfg.Metrics.Address, "metrics_enabled", cfg.Metrics.Enabled)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("agent HTTP server error", "error", err)
+		}
+	}()
+
 	watcherErrCh := make(chan error, 1)
 	watcherSyncedCh := make(chan struct{})
 	go func() {
@@ -228,15 +238,6 @@ func main() {
 		}
 	case <-watcherSyncedCh:
 	}
-
-	// Start HTTP server for the container healthcheck and optional metrics.
-	metricsServer := newAgentHTTPServer(cfg.Metrics, logger)
-	go func() {
-		logger.Info("agent HTTP server starting", "address", cfg.Metrics.Address, "metrics_enabled", cfg.Metrics.Enabled)
-		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("agent HTTP server error", "error", err)
-		}
-	}()
 
 	// Wait for signal
 	sigCh := make(chan os.Signal, 1)

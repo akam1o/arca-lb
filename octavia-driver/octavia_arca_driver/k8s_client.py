@@ -61,10 +61,14 @@ class VirtualIPClient:
 
     def update_virtualip(self, name, spec, annotations=None, labels=None):
         """Update an existing VirtualIP custom resource (patch)."""
-        patch = {"spec": spec}
+        current = None
+        if annotations is not None:
+            current = self.get_virtualip(name) or {}
+
+        patch = {"spec": self._merge_patch_spec(spec)}
         if annotations is not None:
             patch.setdefault("metadata", {})["annotations"] = (
-                self._merge_patch_annotations(name, annotations)
+                self._merge_patch_annotations(current, annotations)
             )
         if labels is not None:
             patch.setdefault("metadata", {})["labels"] = labels
@@ -79,11 +83,20 @@ class VirtualIPClient:
             body=patch,
         )
 
-    def _merge_patch_annotations(self, name, annotations):
+    def _merge_patch_spec(self, spec):
+        """Build spec patch with explicit nulls for removed optional fields."""
+        desired = dict(spec)
+        for key in ("healthCheck",):
+            if key not in desired:
+                desired[key] = None
+        return desired
+
+    def _merge_patch_annotations(self, current, annotations):
         """Build annotation patch with explicit nulls for deleted keys."""
         desired = dict(annotations)
-        current = self.get_virtualip(name) or {}
-        current_annotations = current.get("metadata", {}).get("annotations") or {}
+        current_annotations = (
+            (current or {}).get("metadata", {}).get("annotations") or {}
+        )
         for key in constants.MANAGED_ANNOTATIONS:
             if key in current_annotations and key not in desired:
                 desired[key] = None

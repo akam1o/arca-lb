@@ -114,6 +114,7 @@ func (r *VirtualIPReconciler) updateStatus(ctx context.Context, vip *v1alpha1.Vi
 		TotalBackends:      len(vip.Spec.Backends),
 		HealthyBackends:    vip.Status.HealthyBackends, // Preserved from agent updates
 		Backends:           vip.Status.Backends,        // Preserved from agent updates
+		AgentStatuses:      vip.Status.AgentStatuses,   // Preserved from agent updates
 	}
 
 	// Set Ready condition based on configuration validity

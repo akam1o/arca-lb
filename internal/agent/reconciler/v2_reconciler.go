@@ -728,6 +728,20 @@ func (vr *vipReconciler) reconcileApplied(
 	if err := vr.dp.ApplyVIP(ctx, vip, healthyBackends); err != nil {
 		vr.logger.Error("failed to apply VIP to data plane", "error", err)
 		span.RecordError(err)
+		routeAdvertised, routeErr = vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, false)
+		if routeErr != nil {
+			vr.logger.Error("failed to withdraw VIP address route after data plane apply failure", "error", routeErr)
+			span.RecordError(routeErr)
+		}
+		if vr.statusUpdater != nil {
+			if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+				dataplaneApplyFailedCondition(err),
+				routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+			); statusErr != nil {
+				vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+				span.RecordError(statusErr)
+			}
+		}
 		return
 	}
 
@@ -806,6 +820,19 @@ func servingCondition(vip *v1alpha1.VirtualIP, healthyBackends int) metav1.Condi
 	condition.Message = fmt.Sprintf("No healthy backends available for %s:%d/%s",
 		vip.Spec.Address, vip.Spec.Port, vip.Spec.Protocol)
 	return condition
+}
+
+func dataplaneApplyFailedCondition(applyErr error) metav1.Condition {
+	message := "Failed to apply VIP to data plane"
+	if applyErr != nil {
+		message = applyErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionServing,
+		Status:  metav1.ConditionUnknown,
+		Reason:  "DataPlaneApplyFailed",
+		Message: message,
+	}
 }
 
 func routeAdvertisedCondition(vip *v1alpha1.VirtualIP, advertised bool, routeErr error) metav1.Condition {

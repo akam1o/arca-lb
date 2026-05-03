@@ -59,6 +59,31 @@ class TestVirtualIPClient(unittest.TestCase):
         )
         self.assertNotIn("example.com/keep-out-of-scope", annotations)
 
+    def test_update_virtualip_sets_null_for_removed_health_check(self):
+        api = FakeCustomObjectsApi({
+            "metadata": {"annotations": {}},
+            "spec": {
+                "address": "203.0.113.10",
+                "port": 80,
+                "protocol": "TCP",
+                "healthCheck": {
+                    "type": "tcp",
+                    "tcp": {"port": 80},
+                },
+            },
+        })
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+
+        client.update_virtualip(
+            "vip-1",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+        )
+
+        spec = api.patch_body["spec"]
+        self.assertIsNone(spec["healthCheck"])
+
 
 if __name__ == "__main__":
     unittest.main()

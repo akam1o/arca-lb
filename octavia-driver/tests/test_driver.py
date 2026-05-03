@@ -2216,6 +2216,59 @@ class TestDriverLifecycle(unittest.TestCase):
             "l7rules": [],
         })
 
+    def test_virtualip_status_change_aggregates_loadbalancer_status(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+            },
+            status={
+                "healthyBackends": 1,
+                "totalBackends": 1,
+                "backends": [
+                    {"address": "10.0.1.1", "healthy": True},
+                ],
+                "conditions": [
+                    {"type": "Ready", "status": "True"},
+                ],
+            },
+        )
+        other_vip = _make_vip(
+            "octavia-bbbbbbbb-cccccccc",
+            {"address": "203.0.113.10", "port": 443, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-2222",
+            },
+            status={
+                "healthyBackends": 0,
+                "totalBackends": 0,
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "False",
+                        "reason": "NoBackends",
+                    },
+                ],
+            },
+        )
+        self.mock_k8s.find_by_loadbalancer.return_value = [other_vip]
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(
+            status["loadbalancers"][0]["provisioning_status"], "ACTIVE"
+        )
+        self.assertEqual(
+            status["loadbalancers"][0]["operating_status"], "DEGRADED"
+        )
+        self.assertEqual(
+            status["listeners"][0]["operating_status"], "ONLINE"
+        )
+
     def test_virtualip_status_change_reports_draining_member(self):
         vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",

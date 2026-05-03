@@ -40,7 +40,7 @@ func TestV2ManagerRecreatesVIPAfterDelete(t *testing.T) {
 	waitFor(t, func() bool { return dp.applyCount() == 2 }, "recreated VIP apply")
 }
 
-func TestV2ReconcilerSkipsStatusAndRouteWhenDataPlaneFails(t *testing.T) {
+func TestV2ReconcilerReportsStatusAndWithdrawsRouteWhenDataPlaneFails(t *testing.T) {
 	dp := newRecordingDataPlane()
 	dp.applyErr = errors.New("apply failed")
 	router := routing.NewNoop()
@@ -61,8 +61,18 @@ func TestV2ReconcilerSkipsStatusAndRouteWhenDataPlaneFails(t *testing.T) {
 	if router.IsAnnounced(vip.Spec.Address) {
 		t.Fatal("route was announced despite dataplane apply failure")
 	}
-	if got := statusUpdater.updateCount(); got != 0 {
-		t.Fatalf("status updates = %d, want 0 after dataplane apply failure", got)
+	if got := statusUpdater.updateCount(); got != 1 {
+		t.Fatalf("status updates = %d, want 1 after dataplane apply failure", got)
+	}
+	serving := findTestCondition(statusUpdater.lastConditions(), agentstatus.ConditionServing)
+	if serving == nil {
+		t.Fatal("Serving condition missing")
+	}
+	if serving.Status != metav1.ConditionUnknown {
+		t.Fatalf("Serving status = %s, want Unknown", serving.Status)
+	}
+	if serving.Reason != "DataPlaneApplyFailed" {
+		t.Fatalf("Serving reason = %q, want DataPlaneApplyFailed", serving.Reason)
 	}
 }
 

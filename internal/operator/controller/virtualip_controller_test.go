@@ -92,6 +92,17 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 			Backends: []v1alpha1.BackendStatus{
 				{Address: "10.0.1.1", Healthy: true},
 			},
+			AgentStatuses: []v1alpha1.AgentStatus{
+				{
+					AgentID:            "node-a",
+					ObservedGeneration: 6,
+					HealthyBackends:    1,
+					TotalBackends:      1,
+					Backends: []v1alpha1.BackendStatus{
+						{Address: "10.0.1.1", Healthy: true},
+					},
+				},
+			},
 		},
 	}
 
@@ -123,6 +134,9 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 	}
 	if len(got.Status.Backends) != 1 || got.Status.Backends[0].Address != "10.0.1.1" {
 		t.Fatalf("Backends = %#v, want preserved agent backend status", got.Status.Backends)
+	}
+	if len(got.Status.AgentStatuses) != 1 || got.Status.AgentStatuses[0].AgentID != "node-a" {
+		t.Fatalf("AgentStatuses = %#v, want preserved per-agent status", got.Status.AgentStatuses)
 	}
 	if got.Status.TotalBackends != 2 {
 		t.Fatalf("TotalBackends = %d, want current spec count 2", got.Status.TotalBackends)

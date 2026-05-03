@@ -365,6 +365,63 @@ class TestDriverLifecycle(unittest.TestCase):
             annotations[constants.ANNOTATION_LISTENER_ID], listener_id
         )
 
+    def test_listener_create_conflict_preserves_existing_pool_state(self):
+        listener_id = "aaaaaaaa-1111-2222-3333-444444444444"
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        backends = [{"address": "10.0.1.1", "weight": 100}]
+        health_check = {"type": "tcp", "tcp": {"port": 80}}
+        member_map = json.dumps({"member-1111": "10.0.1.1"})
+        draining_ids = json.dumps(["member-2222"])
+        listener = FakeObj({
+            "listener_id": listener_id,
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 8080,
+            "vip_address": "203.0.113.10",
+            "project_id": "test-project",
+        })
+        self.mock_k8s.create_virtualip.side_effect = (
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            )
+        )
+        self.mock_k8s.get_virtualip.return_value = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {
+                "address": "203.0.113.10",
+                "port": 80,
+                "protocol": "TCP",
+                "backends": backends,
+                "healthCheck": health_check,
+            },
+            {
+                constants.ANNOTATION_LB_ID: lb_id,
+                constants.ANNOTATION_LISTENER_ID: listener_id,
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+                constants.ANNOTATION_MEMBER_MAP: member_map,
+                constants.ANNOTATION_DRAINING_MEMBER_IDS: draining_ids,
+            },
+        )
+
+        self.driver.listener_create(listener)
+
+        name, spec = self.mock_k8s.update_virtualip.call_args[0]
+        annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
+        self.assertEqual(name, "octavia-bbbbbbbb-aaaaaaaa")
+        self.assertEqual(spec["port"], 8080)
+        self.assertEqual(spec["backends"], backends)
+        self.assertEqual(spec["healthCheck"], health_check)
+        self.assertEqual(annotations[constants.ANNOTATION_POOL_ID], "pool-1111")
+        self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
+        self.assertEqual(
+            annotations[constants.ANNOTATION_MEMBER_MAP], member_map
+        )
+        self.assertEqual(
+            annotations[constants.ANNOTATION_DRAINING_MEMBER_IDS],
+            draining_ids,
+        )
+
     def test_listener_create_rejects_conflicting_virtualip_owner(self):
         listener = FakeObj({
             "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",

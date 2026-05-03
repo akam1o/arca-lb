@@ -1151,11 +1151,34 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         desired_annotations = copy.deepcopy(annotations)
 
         def mutate(_current_vip, current_spec, current_annotations):
-            current_spec.clear()
-            current_spec.update(copy.deepcopy(desired_spec))
-            for key in constants.MANAGED_ANNOTATIONS:
-                current_annotations.pop(key, None)
-            current_annotations.update(copy.deepcopy(desired_annotations))
+            for key in ("address", "port", "protocol", "encapType"):
+                if key in desired_spec:
+                    current_spec[key] = copy.deepcopy(desired_spec[key])
+            if "dscp" in desired_spec:
+                current_spec["dscp"] = copy.deepcopy(desired_spec["dscp"])
+            else:
+                current_spec.pop("dscp", None)
+
+            for key in (
+                constants.ANNOTATION_LB_ID,
+                constants.ANNOTATION_LISTENER_ID,
+                constants.ANNOTATION_PROJECT_ID,
+            ):
+                if key in desired_annotations:
+                    current_annotations[key] = desired_annotations[key]
+
+            desired_pool_id = desired_annotations.get(
+                constants.ANNOTATION_POOL_ID
+            )
+            current_pool_id = current_annotations.get(
+                constants.ANNOTATION_POOL_ID
+            )
+            if desired_pool_id and (
+                not current_pool_id or current_pool_id == desired_pool_id
+            ):
+                current_annotations[constants.ANNOTATION_POOL_ID] = (
+                    desired_pool_id
+                )
 
         self._update_virtualip_with_retry(name, mutate, initial_vip=existing)
         return False

@@ -124,6 +124,50 @@ func TestV2ReconcilerReportsRouteFailureInStatus(t *testing.T) {
 	}
 }
 
+func TestV2ReconcilerSkipsExternalEffectsWhenLastConfigPersistFails(t *testing.T) {
+	dp := newRecordingDataPlane()
+	router := routing.NewNoop()
+	statusUpdater := &recordingStatusUpdater{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("store.Close: %v", err)
+	}
+
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return statusUpdater.updateCount() == 1 }, "status update after last config persist failure")
+
+	if got := dp.applyCount(); got != 0 {
+		t.Fatalf("dataplane applies = %d, want 0 after persist failure", got)
+	}
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route was announced despite last config persist failure")
+	}
+	serving := findTestCondition(statusUpdater.lastConditions(), agentstatus.ConditionServing)
+	if serving == nil {
+		t.Fatal("Serving condition missing")
+	}
+	if serving.Status != metav1.ConditionUnknown {
+		t.Fatalf("Serving status = %s, want Unknown", serving.Status)
+	}
+	if serving.Reason != "LastConfigPersistFailed" {
+		t.Fatalf("Serving reason = %q, want LastConfigPersistFailed", serving.Reason)
+	}
+}
+
 func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 	events := &eventRecorder{}
 	dp := newRecordingDataPlane()

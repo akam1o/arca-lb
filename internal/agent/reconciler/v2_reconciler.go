@@ -734,6 +734,21 @@ func (vr *vipReconciler) reconcileApplied(
 	hasHealthy bool,
 	rolloutHeld bool,
 ) {
+	if err := vr.persistLastConfig(vip); err != nil {
+		vr.logger.Error("failed to persist last config before reconcile", "error", err)
+		span.RecordError(err)
+		if vr.statusUpdater != nil {
+			if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+				lastConfigPersistFailedCondition(err),
+				routeAdvertisedCondition(vip, false, nil),
+			); statusErr != nil {
+				vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+				span.RecordError(statusErr)
+			}
+		}
+		return
+	}
+
 	routeAdvertised, routeErr := vr.routes.prepareAddressChange(ctx, vr.key, vip.Spec.Address)
 	if routeErr != nil {
 		vr.logger.Error("failed to prepare VIP address route change", "error", routeErr)
@@ -795,21 +810,26 @@ func (vr *vipReconciler) reconcileApplied(
 		}
 	}
 
-	// Persist last-applied config
-	if vr.store != nil {
-		data, err := json.Marshal(vip.Spec)
-		if err == nil {
-			if err := vr.store.SaveLastConfig(vr.key, data); err != nil {
-				vr.logger.Warn("failed to persist last config", "error", err)
-			}
-		}
-	}
-
 	vr.logger.Info("VIP reconciled",
 		"healthy", len(healthyBackends),
 		"total", len(vip.Spec.Backends),
 		"serving", hasHealthy,
 		"route_advertised", routeAdvertised)
+}
+
+func (vr *vipReconciler) persistLastConfig(vip *v1alpha1.VirtualIP) error {
+	if vr.store == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(vip.Spec)
+	if err != nil {
+		return fmt.Errorf("failed to encode last config: %w", err)
+	}
+	if err := vr.store.SaveLastConfig(vr.key, data); err != nil {
+		return fmt.Errorf("failed to save last config: %w", err)
+	}
+	return nil
 }
 
 func (vr *vipReconciler) isCurrent(vip *v1alpha1.VirtualIP) bool {
@@ -857,6 +877,19 @@ func dataplaneApplyFailedCondition(applyErr error) metav1.Condition {
 		Type:    agentstatus.ConditionServing,
 		Status:  metav1.ConditionUnknown,
 		Reason:  "DataPlaneApplyFailed",
+		Message: message,
+	}
+}
+
+func lastConfigPersistFailedCondition(persistErr error) metav1.Condition {
+	message := "Failed to persist last-applied config"
+	if persistErr != nil {
+		message = persistErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionServing,
+		Status:  metav1.ConditionUnknown,
+		Reason:  "LastConfigPersistFailed",
 		Message: message,
 	}
 }

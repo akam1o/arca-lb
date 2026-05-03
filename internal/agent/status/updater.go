@@ -421,9 +421,17 @@ func aggregateDataPlaneReadyCondition(vip *v1alpha1.VirtualIP, statuses []v1alph
 	}
 
 	hasFreshDataPlaneCondition := false
+	var missing *metav1.Condition
 	for _, status := range statuses {
 		dataPlane := meta.FindStatusCondition(status.Conditions, ConditionDataPlaneReady)
 		if dataPlane == nil {
+			if missing == nil {
+				missing = &metav1.Condition{
+					Status:  metav1.ConditionUnknown,
+					Reason:  "MissingAgentCondition",
+					Message: fmt.Sprintf("Agent %s has not reported data plane apply state", status.AgentID),
+				}
+			}
 			continue
 		}
 		hasFreshDataPlaneCondition = true
@@ -433,6 +441,13 @@ func aggregateDataPlaneReadyCondition(vip *v1alpha1.VirtualIP, statuses []v1alph
 			condition.Message = dataPlane.Message
 			return condition, true
 		}
+	}
+
+	if missing != nil {
+		condition.Status = missing.Status
+		condition.Reason = missing.Reason
+		condition.Message = missing.Message
+		return condition, true
 	}
 
 	if hasFreshDataPlaneCondition {

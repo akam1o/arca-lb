@@ -320,6 +320,86 @@ func TestUpdateVIPStatusAggregatesRetainedOldVIPDataPlaneCondition(t *testing.T)
 	}
 }
 
+func TestAggregateDataPlaneReadyTreatsMissingFreshConditionAsUnknown(t *testing.T) {
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Generation: 3,
+		},
+	}
+
+	condition, ok := aggregateDataPlaneReadyCondition(vip, []v1alpha1.AgentStatus{
+		{
+			AgentID: "node-a",
+			Conditions: []metav1.Condition{
+				{
+					Type:    ConditionDataPlaneReady,
+					Status:  metav1.ConditionTrue,
+					Reason:  "Applied",
+					Message: "node-a applied",
+				},
+			},
+		},
+		{
+			AgentID: "node-b",
+		},
+	}, nil)
+	if !ok {
+		t.Fatal("expected aggregate DataPlaneReady condition")
+	}
+	if condition.Status != metav1.ConditionUnknown ||
+		condition.Reason != "MissingAgentCondition" ||
+		condition.Message != "Agent node-b has not reported data plane apply state" {
+		t.Fatalf("DataPlaneReady aggregate = %+v, want Unknown MissingAgentCondition", condition)
+	}
+	if condition.ObservedGeneration != 3 {
+		t.Fatalf("ObservedGeneration = %d, want 3", condition.ObservedGeneration)
+	}
+}
+
+func TestAggregateDataPlaneReadyTrueOnlyWhenAllFreshAgentsReportTrue(t *testing.T) {
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Generation: 3,
+		},
+	}
+
+	condition, ok := aggregateDataPlaneReadyCondition(vip, []v1alpha1.AgentStatus{
+		{
+			AgentID: "node-a",
+			Conditions: []metav1.Condition{
+				{
+					Type:    ConditionDataPlaneReady,
+					Status:  metav1.ConditionTrue,
+					Reason:  "Applied",
+					Message: "node-a applied",
+				},
+			},
+		},
+		{
+			AgentID: "node-b",
+			Conditions: []metav1.Condition{
+				{
+					Type:    ConditionDataPlaneReady,
+					Status:  metav1.ConditionTrue,
+					Reason:  "Applied",
+					Message: "node-b applied",
+				},
+			},
+		},
+	}, nil)
+	if !ok {
+		t.Fatal("expected aggregate DataPlaneReady condition")
+	}
+	if condition.Status != metav1.ConditionTrue ||
+		condition.Reason != "Applied" ||
+		condition.Message != "Desired VIP is applied to the data plane by all reporting agents" {
+		t.Fatalf("DataPlaneReady aggregate = %+v, want True Applied", condition)
+	}
+	if condition.ObservedGeneration != 3 {
+		t.Fatalf("ObservedGeneration = %d, want 3", condition.ObservedGeneration)
+	}
+}
+
 func TestUpdateVIPStatusTreatsExpiredAgentStatusAsUnknown(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {

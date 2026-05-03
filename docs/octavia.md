@@ -98,6 +98,11 @@ Create a kubeconfig with appropriate RBAC permissions:
 
 ```yaml
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: arca-system
+---
+apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: octavia-arca-driver

@@ -344,19 +344,26 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             spec["port"] = port
 
         should_restore_pool = False
+        pool_detached = False
+        detached_pool_id = None
         pool_id = self._listener_default_pool_id(lst)
+        pool_id_present = self._listener_default_pool_present(lst)
         if pool_id:
             should_restore_pool = (
                 annotations.get(constants.ANNOTATION_POOL_ID) != pool_id
             )
             annotations[constants.ANNOTATION_POOL_ID] = pool_id
+        elif pool_id_present and annotations.get(constants.ANNOTATION_POOL_ID):
+            pool_detached = True
+            detached_pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
+            self._clear_pool_association(spec, annotations)
         elif port_changed and annotations.get(constants.ANNOTATION_POOL_ID):
             should_restore_pool = True
 
         admin_state = lst.get("admin_state_up")
         if admin_state is False:
             spec["backends"] = []
-        elif admin_state is True or should_restore_pool:
+        elif not pool_detached and (admin_state is True or should_restore_pool):
             try:
                 restored = self._restore_virtualip_backends([vip])
             except Exception:
@@ -389,7 +396,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             name,
             lb_id=lb_id,
             active_listener_ids=[listener_id],
-            active_pool_ids=[annotations.get(constants.ANNOTATION_POOL_ID)],
+            active_pool_ids=[
+                detached_pool_id or annotations.get(constants.ANNOTATION_POOL_ID)
+            ],
         )
 
     # ------------------------------------------------------------------
@@ -451,9 +460,6 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
-        spec["backends"] = []
-        spec.pop("healthCheck", None)
-
         annotations = vip.get("metadata", {}).get("annotations", {})
         lb_id = annotations.get(constants.ANNOTATION_LB_ID)
         listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
@@ -461,9 +467,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         deleted_member_ids = sorted(
             self._member_map_from_annotations(annotations)
         )
-        annotations.pop(constants.ANNOTATION_POOL_ID, None)
-        annotations.pop(constants.ANNOTATION_HM_ID, None)
-        annotations.pop(constants.ANNOTATION_MEMBER_MAP, None)
+        self._clear_pool_association(spec, annotations)
 
         self._k8s.update_virtualip(name, spec, annotations=annotations)
         self._push_resource_delete_status(
@@ -1021,6 +1025,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 listener.get("default_pool"), "pool_id", "id"
             )
         )
+
+    @classmethod
+    def _listener_default_pool_present(cls, listener):
+        listener = cls._as_dict(listener)
+        return "default_pool_id" in listener or "default_pool" in listener
+
+    @staticmethod
+    def _clear_pool_association(spec, annotations):
+        spec["backends"] = []
+        spec.pop("healthCheck", None)
+        annotations.pop(constants.ANNOTATION_POOL_ID, None)
+        annotations.pop(constants.ANNOTATION_HM_ID, None)
+        annotations.pop(constants.ANNOTATION_MEMBER_MAP, None)
+        annotations.pop(constants.ANNOTATION_DRAINING_MEMBER_IDS, None)
 
     @classmethod
     def _first_object_id(cls, value, *keys):

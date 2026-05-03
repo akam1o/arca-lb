@@ -98,6 +98,11 @@ status_sync_interval = 10
 
 ```yaml
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: arca-system
+---
+apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: octavia-arca-driver

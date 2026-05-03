@@ -24,6 +24,16 @@ ANNOTATION_PROJECT_ID = "arca.io/octavia-project-id"
 ANNOTATION_MEMBER_MAP = "arca.io/octavia-member-map"
 ANNOTATION_DRAINING_MEMBER_IDS = "arca.io/octavia-draining-member-ids"
 
+MANAGED_ANNOTATIONS = {
+    ANNOTATION_LB_ID,
+    ANNOTATION_LISTENER_ID,
+    ANNOTATION_POOL_ID,
+    ANNOTATION_HM_ID,
+    ANNOTATION_PROJECT_ID,
+    ANNOTATION_MEMBER_MAP,
+    ANNOTATION_DRAINING_MEMBER_IDS,
+}
+
 # Mapping from Octavia protocol strings to VirtualIP protocol values.
 PROTOCOL_MAP = {
     "TCP": "TCP",

@@ -278,7 +278,8 @@ type VirtualIP struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   VirtualIPSpec   `json:"spec,omitempty"`
+	// +kubebuilder:validation:Required
+	Spec   VirtualIPSpec   `json:"spec"`
 	Status VirtualIPStatus `json:"status,omitempty"`
 }
 

@@ -47,6 +47,15 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	}
 }
 
+func TestVirtualIPCRDRequiresSpec(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	schema := virtualIPCRDSchema(t, crd)
+
+	if !containsString(stringSlice(t, schema["required"]), "spec") {
+		t.Fatalf("spec is not required in CRD schema")
+	}
+}
+
 func TestVirtualIPCRDDefinesBackendMonitorAddress(t *testing.T) {
 	crd := loadVirtualIPCRD(t)
 	backends := crdSchemaProperty(t, crd, "spec", "backends")
@@ -78,16 +87,21 @@ func loadVirtualIPCRD(t *testing.T) map[string]interface{} {
 
 func crdSchemaProperty(t *testing.T, crd map[string]interface{}, path ...string) map[string]interface{} {
 	t.Helper()
+	current := virtualIPCRDSchema(t, crd)
+	for _, name := range path {
+		current = nestedMapFromValue(t, current, "properties", name)
+	}
+	return current
+}
+
+func virtualIPCRDSchema(t *testing.T, crd map[string]interface{}) map[string]interface{} {
+	t.Helper()
 
 	versions := nestedSlice(t, crd, "spec", "versions")
 	if len(versions) == 0 {
 		t.Fatalf("CRD has no versions")
 	}
-	current := nestedMapFromValue(t, versions[0], "schema", "openAPIV3Schema")
-	for _, name := range path {
-		current = nestedMapFromValue(t, current, "properties", name)
-	}
-	return current
+	return nestedMapFromValue(t, versions[0], "schema", "openAPIV3Schema")
 }
 
 func validationMessages(t *testing.T, schema map[string]interface{}) []string {

@@ -407,6 +407,10 @@ func cleanupStaleLastConfigs(
 	for i := range currentVIPs {
 		currentVIP := &currentVIPs[i]
 		key := healthcheck.KeyForVIP(currentVIP)
+		if !currentVIP.DeletionTimestamp.IsZero() {
+			logger.Info("treating terminating VirtualIP as stale during initial cleanup", "vip", key)
+			continue
+		}
 		currentByKey[key] = currentVIP
 		if err := vipvalidation.Validate(currentVIP); err != nil {
 			logger.Warn("ignoring invalid current VirtualIP for stale route protection", "vip", key, "error", err)

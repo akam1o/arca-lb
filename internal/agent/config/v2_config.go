@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
@@ -241,6 +242,15 @@ func validateV2(cfg *V2Config) error {
 	case "frr", "noop":
 	default:
 		return fmt.Errorf("unsupported routing.type: %s", cfg.Routing.Type)
+	}
+
+	if cfg.Metrics.Enabled {
+		if !strings.HasPrefix(cfg.Metrics.Path, "/") {
+			return fmt.Errorf("metrics.path must be an absolute HTTP path")
+		}
+		if cfg.Metrics.Path == "/health" {
+			return fmt.Errorf("metrics.path must not be /health")
+		}
 	}
 
 	return nil

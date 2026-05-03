@@ -168,6 +168,48 @@ func TestLoadV2Config_InvalidHealthCheckSettings(t *testing.T) {
 	}
 }
 
+func TestLoadV2Config_InvalidMetricsPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		metricsYAML string
+		wantErr     string
+	}{
+		{
+			name:        "relative path",
+			metricsYAML: "enabled: true\npath: metrics\n",
+			wantErr:     "metrics.path",
+		},
+		{
+			name:        "health path conflict",
+			metricsYAML: "enabled: true\npath: /health\n",
+			wantErr:     "metrics.path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\nmetrics:\n"
+			for _, line := range strings.Split(strings.TrimSuffix(tt.metricsYAML, "\n"), "\n") {
+				content += "  " + line + "\n"
+			}
+
+			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadV2Config(cfgPath)
+			if err == nil {
+				t.Fatalf("expected validation error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadV2Config error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 	tests := []struct {
 		name    string

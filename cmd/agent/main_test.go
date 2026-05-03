@@ -319,6 +319,110 @@ func TestCleanupStaleLastConfigsReturnsErrorWhenCleanupFails(t *testing.T) {
 	}
 }
 
+func TestCleanupStaleLastConfigsCleansPendingConfig(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	pendingSpec := []byte(`{"address":"203.0.113.20","port":443,"protocol":"TCP","backends":[{"address":"10.0.0.2","weight":100}]}`)
+	if err := st.SavePendingConfig("team-b/api", pendingSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.20"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, nil, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	removed := dp.removedVIPs()
+	if len(removed) != 1 {
+		t.Fatalf("removed VIP count = %d, want 1", len(removed))
+	}
+	if removed[0].Namespace != "team-b" || removed[0].Name != "api" || removed[0].Spec.Address != "203.0.113.20" {
+		t.Fatalf("removed VIP = %#v", removed[0])
+	}
+	pending, err := st.LoadPendingConfig("team-b/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != nil {
+		t.Fatal("stale pending config should be deleted")
+	}
+	if router.IsAnnounced("203.0.113.20") {
+		t.Fatal("stale pending route should be withdrawn")
+	}
+}
+
+func TestCleanupStaleLastConfigsKeepsPendingCurrentAndCleansPreviousLastApplied(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	lastSpec := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP","backends":[{"address":"10.0.0.1","weight":100}]}`)
+	pendingSpec := []byte(`{"address":"203.0.113.20","port":443,"protocol":"TCP","backends":[{"address":"10.0.0.2","weight":100}]}`)
+	if err := st.SaveLastConfig("team-a/web", lastSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SavePendingConfig("team-a/web", pendingSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	current := []v1alpha1.VirtualIP{{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.20",
+			Port:     443,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{{Address: "10.0.0.2", Weight: 100}},
+		},
+	}}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	removed := dp.removedVIPs()
+	if len(removed) != 1 {
+		t.Fatalf("removed VIP count = %d, want previous last-applied VIP removed", len(removed))
+	}
+	if removed[0].Spec.Address != "203.0.113.10" {
+		t.Fatalf("removed VIP address = %s, want previous address", removed[0].Spec.Address)
+	}
+	last, err := st.LoadLastConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last != nil {
+		t.Fatal("previous last-applied config should be deleted")
+	}
+	pending, err := st.LoadPendingConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pending) != string(pendingSpec) {
+		t.Fatalf("pending config = %q, want current pending config %q", pending, pendingSpec)
+	}
+	if router.IsAnnounced("203.0.113.10") {
+		t.Fatal("previous route should be withdrawn")
+	}
+}
+
 func TestCleanupStaleLastConfigsPreservesSharedCurrentAddress(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))

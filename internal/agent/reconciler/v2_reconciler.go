@@ -77,10 +77,12 @@ type Manager struct {
 	safetyInterval time.Duration
 	tuningDrift    TuningDriftConfig
 
-	mu     sync.RWMutex
-	vips   map[string]*vipReconciler // key: namespace/name
-	ctx    context.Context
-	cancel context.CancelFunc
+	mu               sync.RWMutex
+	vips             map[string]*vipReconciler // key: namespace/name
+	deleting         map[string]*vipReconciler // key: namespace/name
+	pendingRecreates map[string]*v1alpha1.VirtualIP
+	ctx              context.Context
+	cancel           context.CancelFunc
 }
 
 // NewManager creates a new reconciler manager.
@@ -96,14 +98,16 @@ func NewManager(
 		safetyInterval = 30 * time.Second
 	}
 	return &Manager{
-		dp:             dp,
-		store:          st,
-		healthTracker:  ht,
-		routes:         newRouteCoordinator(router, logger),
-		logger:         logger,
-		safetyInterval: safetyInterval,
-		tuningDrift:    normalizeTuningDriftConfig(TuningDriftConfig{}),
-		vips:           make(map[string]*vipReconciler),
+		dp:               dp,
+		store:            st,
+		healthTracker:    ht,
+		routes:           newRouteCoordinator(router, logger),
+		logger:           logger,
+		safetyInterval:   safetyInterval,
+		tuningDrift:      normalizeTuningDriftConfig(TuningDriftConfig{}),
+		vips:             make(map[string]*vipReconciler),
+		deleting:         make(map[string]*vipReconciler),
+		pendingRecreates: make(map[string]*v1alpha1.VirtualIP),
 	}
 }
 
@@ -392,11 +396,23 @@ func (m *Manager) Stop() {
 		m.cancel()
 	}
 
-	reconcilers := make([]*vipReconciler, 0, len(m.vips))
+	reconcilers := make([]*vipReconciler, 0, len(m.vips)+len(m.deleting))
+	seen := make(map[*vipReconciler]struct{}, len(m.vips)+len(m.deleting))
 	for _, vr := range m.vips {
-		reconcilers = append(reconcilers, vr)
+		if _, ok := seen[vr]; !ok {
+			seen[vr] = struct{}{}
+			reconcilers = append(reconcilers, vr)
+		}
+	}
+	for _, vr := range m.deleting {
+		if _, ok := seen[vr]; !ok {
+			seen[vr] = struct{}{}
+			reconcilers = append(reconcilers, vr)
+		}
 	}
 	m.vips = make(map[string]*vipReconciler)
+	m.deleting = make(map[string]*vipReconciler)
+	m.pendingRecreates = make(map[string]*v1alpha1.VirtualIP)
 	m.mu.Unlock()
 
 	for _, vr := range reconcilers {
@@ -409,8 +425,14 @@ func (m *Manager) Stop() {
 // OnVIPUpdate is called when a VirtualIP is created or updated.
 func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	key := vip.Namespace + "/" + vip.Name
+	desired := vip.DeepCopy()
 
 	m.mu.Lock()
+	if _, deleting := m.deleting[key]; deleting {
+		m.pendingRecreates[key] = desired
+		m.mu.Unlock()
+		return
+	}
 
 	vr, exists := m.vips[key]
 	if !exists {
@@ -420,7 +442,7 @@ func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	}
 	m.mu.Unlock()
 
-	vr.update(vip.DeepCopy())
+	vr.update(desired)
 }
 
 // OnVIPDelete is called when a VirtualIP is deleted.
@@ -431,22 +453,35 @@ func (m *Manager) OnVIPDelete(vip *v1alpha1.VirtualIP) {
 	vr, ok := m.vips[key]
 	if ok {
 		delete(m.vips, key)
+		m.deleting[key] = vr
+	} else if pending, pendingOK := m.pendingRecreates[key]; pendingOK && pending.UID == vip.UID {
+		delete(m.pendingRecreates, key)
 	}
 	m.mu.Unlock()
 
 	if ok {
-		// The goroutine will handle cleanup and exit. The manager removes the
-		// entry immediately so a later add for the same namespace/name creates a
-		// fresh reconciler instead of sending updates to the deleting goroutine.
+		// The goroutine will handle cleanup and exit. Recreates for this key are
+		// queued until cleanup succeeds so a stale delete retry cannot remove a
+		// freshly applied VIP with the same namespace/name.
 		vr.markDeleted(vip.DeepCopy())
 	}
 }
 
 func (m *Manager) onVIPReconcilerStopped(key string, stopped *vipReconciler) {
 	var current *vipReconciler
+	var recreated *vipReconciler
+	var pendingVIP *v1alpha1.VirtualIP
 
 	m.mu.Lock()
-	if vr, ok := m.vips[key]; ok {
+	if vr, ok := m.deleting[key]; ok && vr == stopped {
+		delete(m.deleting, key)
+		if pending := m.pendingRecreates[key]; pending != nil {
+			delete(m.pendingRecreates, key)
+			recreated = newVIPReconciler(key, m.dp, m.routes, m.store, m.healthTracker, m.statusUpdater, m.rollouts, m.safetyInterval, m.tuningDrift, m.logger, m.onVIPReconcilerStopped)
+			m.vips[key] = recreated
+			pendingVIP = pending
+		}
+	} else if vr, ok := m.vips[key]; ok {
 		if vr == stopped {
 			delete(m.vips, key)
 		} else {
@@ -455,9 +490,14 @@ func (m *Manager) onVIPReconcilerStopped(key string, stopped *vipReconciler) {
 	}
 	m.mu.Unlock()
 
-	// If a VIP with the same namespace/name was recreated while the old
-	// reconciler was still deleting dataplane state, reconcile the new object
-	// after old cleanup completes.
+	if recreated != nil {
+		go recreated.run(m.ctx)
+		recreated.update(pendingVIP)
+		return
+	}
+
+	// If another reconciler already owns this key, reconcile it after the
+	// stopped goroutine exits.
 	if current != nil {
 		current.triggerReconcile()
 	}
@@ -734,8 +774,8 @@ func (vr *vipReconciler) reconcileApplied(
 	hasHealthy bool,
 	rolloutHeld bool,
 ) {
-	if err := vr.persistLastConfig(vip); err != nil {
-		vr.logger.Error("failed to persist last config before reconcile", "error", err)
+	if err := vr.persistPendingConfig(vip); err != nil {
+		vr.logger.Error("failed to persist pending config before reconcile", "error", err)
 		span.RecordError(err)
 		if vr.statusUpdater != nil {
 			if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
@@ -786,6 +826,21 @@ func (vr *vipReconciler) reconcileApplied(
 		return
 	}
 
+	if err := vr.commitLastConfig(vip); err != nil {
+		vr.logger.Error("failed to commit last config after dataplane apply", "error", err)
+		span.RecordError(err)
+		if vr.statusUpdater != nil {
+			if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+				lastConfigPersistFailedCondition(err),
+				routeAdvertisedCondition(vip, routeAdvertised, nil),
+			); statusErr != nil {
+				vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+				span.RecordError(statusErr)
+			}
+		}
+		return
+	}
+
 	if drifts := dataplaneTuningDrifts(vr.dp, vr.key); len(drifts) > 0 {
 		if err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, rolloutHeld); err != nil {
 			vr.logger.Error("failed to repair retained VIP tuning drift", "error", err, "drifts", drifts)
@@ -817,7 +872,22 @@ func (vr *vipReconciler) reconcileApplied(
 		"route_advertised", routeAdvertised)
 }
 
-func (vr *vipReconciler) persistLastConfig(vip *v1alpha1.VirtualIP) error {
+func (vr *vipReconciler) persistPendingConfig(vip *v1alpha1.VirtualIP) error {
+	if vr.store == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(vip.Spec)
+	if err != nil {
+		return fmt.Errorf("failed to encode pending config: %w", err)
+	}
+	if err := vr.store.SavePendingConfig(vr.key, data); err != nil {
+		return fmt.Errorf("failed to save pending config: %w", err)
+	}
+	return nil
+}
+
+func (vr *vipReconciler) commitLastConfig(vip *v1alpha1.VirtualIP) error {
 	if vr.store == nil {
 		return nil
 	}
@@ -826,8 +896,8 @@ func (vr *vipReconciler) persistLastConfig(vip *v1alpha1.VirtualIP) error {
 	if err != nil {
 		return fmt.Errorf("failed to encode last config: %w", err)
 	}
-	if err := vr.store.SaveLastConfig(vr.key, data); err != nil {
-		return fmt.Errorf("failed to save last config: %w", err)
+	if err := vr.store.CommitLastConfig(vr.key, data); err != nil {
+		return fmt.Errorf("failed to commit last config: %w", err)
 	}
 	return nil
 }
@@ -1030,6 +1100,9 @@ func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.Virtual
 		} else {
 			if err := vr.store.DeleteLastConfig(vr.key); err != nil {
 				vr.logger.Warn("failed to delete last config", "error", err)
+			}
+			if err := vr.store.DeletePendingConfig(vr.key); err != nil {
+				vr.logger.Warn("failed to delete pending config", "error", err)
 			}
 			if err := vr.store.DeleteHealthStatesForVIP(vr.key); err != nil {
 				vr.logger.Warn("failed to delete health states", "error", err)

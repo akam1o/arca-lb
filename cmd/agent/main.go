@@ -358,6 +358,19 @@ func (h *vipEventHandler) updateHealthCheckCondition(vip *v1alpha1.VirtualIP, st
 	}
 }
 
+type retainedConfigSource string
+
+const (
+	retainedConfigLastApplied retainedConfigSource = "last-applied"
+	retainedConfigPending     retainedConfigSource = "pending"
+)
+
+type retainedConfig struct {
+	key    string
+	source retainedConfigSource
+	vip    *v1alpha1.VirtualIP
+}
+
 func cleanupStaleLastConfigs(
 	ctx context.Context,
 	st *store.Store,
@@ -375,7 +388,11 @@ func cleanupStaleLastConfigs(
 	if err != nil {
 		return fmt.Errorf("failed to load last-applied configs: %w", err)
 	}
-	if len(lastConfigs) == 0 {
+	pendingConfigs, err := st.LoadAllPendingConfigs()
+	if err != nil {
+		return fmt.Errorf("failed to load pending configs: %w", err)
+	}
+	if len(lastConfigs) == 0 && len(pendingConfigs) == 0 {
 		return nil
 	}
 
@@ -395,26 +412,41 @@ func cleanupStaleLastConfigs(
 	}
 
 	var firstErr error
-	decodedLastConfigs := make(map[string]*v1alpha1.VirtualIP, len(lastConfigs))
+	retainedConfigs := make([]retainedConfig, 0, len(lastConfigs)+len(pendingConfigs))
 	for key, data := range lastConfigs {
-		vip, err := virtualIPFromLastConfig(key, data)
+		vip, err := virtualIPFromRetainedConfig(key, data, retainedConfigLastApplied)
 		if err != nil {
-			logger.Warn("failed to decode stale last-applied config", "vip", key, "error", err)
+			logger.Warn("failed to decode retained VIP config", "vip", key, "source", retainedConfigLastApplied, "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		decodedLastConfigs[key] = vip
+		retainedConfigs = append(retainedConfigs, retainedConfig{key: key, source: retainedConfigLastApplied, vip: vip})
+	}
+	for key, data := range pendingConfigs {
+		vip, err := virtualIPFromRetainedConfig(key, data, retainedConfigPending)
+		if err != nil {
+			logger.Warn("failed to decode retained VIP config", "vip", key, "source", retainedConfigPending, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		retainedConfigs = append(retainedConfigs, retainedConfig{key: key, source: retainedConfigPending, vip: vip})
 	}
 
-	for key, vip := range decodedLastConfigs {
+	for _, retained := range retainedConfigs {
+		key := retained.key
+		vip := retained.vip
 		if _, ok := currentByKey[key]; ok && !currentValidByKey[key] && vip.Spec.Address != "" {
 			currentAddresses[vip.Spec.Address] = struct{}{}
 		}
 	}
 
-	for key, vip := range decodedLastConfigs {
+	for _, retained := range retainedConfigs {
+		key := retained.key
+		vip := retained.vip
 		if currentVIP, ok := currentByKey[key]; ok {
 			// Invalid current specs are ignored by the event handler; keep the
 			// last known good dataplane state for this key until a valid spec arrives.
@@ -430,7 +462,7 @@ func cleanupStaleLastConfigs(
 		_, addressInUse := currentAddresses[vip.Spec.Address]
 		withdrawRoute := !addressInUse
 		cleanup := func(ctx context.Context) error {
-			return cleanupRetainedVIP(ctx, st, dp, router, key, vip, withdrawRoute, logger)
+			return cleanupRetainedVIP(ctx, st, dp, router, key, retained.source, vip, withdrawRoute, logger)
 		}
 		var cleanupErr error
 		if rollouts != nil {
@@ -455,11 +487,12 @@ func cleanupRetainedVIP(
 	dp dataplane.DataPlane,
 	router routing.Router,
 	key string,
+	source retainedConfigSource,
 	vip *v1alpha1.VirtualIP,
 	withdrawRoute bool,
 	logger *slog.Logger,
 ) error {
-	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "address", vip.Spec.Address, "withdraw_route", withdrawRoute)
+	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "source", source, "address", vip.Spec.Address, "withdraw_route", withdrawRoute)
 	if withdrawRoute && router != nil {
 		if err := router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
 			return fmt.Errorf("failed to withdraw stale retained VIP route: %w", err)
@@ -468,8 +501,17 @@ func cleanupRetainedVIP(
 	if err := dp.RemoveVIP(ctx, vip); err != nil {
 		return fmt.Errorf("failed to remove stale retained VIP from dataplane: %w", err)
 	}
-	if err := st.DeleteLastConfig(key); err != nil {
-		return fmt.Errorf("failed to delete stale last-applied config: %w", err)
+	switch source {
+	case retainedConfigLastApplied:
+		if err := st.DeleteLastConfig(key); err != nil {
+			return fmt.Errorf("failed to delete stale last-applied config: %w", err)
+		}
+	case retainedConfigPending:
+		if err := st.DeletePendingConfig(key); err != nil {
+			return fmt.Errorf("failed to delete stale pending config: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown retained config source %q", source)
 	}
 	if err := st.DeleteHealthStatesForVIP(key); err != nil {
 		return fmt.Errorf("failed to delete stale health states: %w", err)
@@ -484,7 +526,7 @@ func rolloutKeyForCleanup(key string, vip *v1alpha1.VirtualIP) string {
 	return "virtualip/" + key
 }
 
-func virtualIPFromLastConfig(key string, data []byte) (*v1alpha1.VirtualIP, error) {
+func virtualIPFromRetainedConfig(key string, data []byte, source retainedConfigSource) (*v1alpha1.VirtualIP, error) {
 	namespace, name, ok := strings.Cut(key, "/")
 	if !ok || namespace == "" || name == "" {
 		return nil, fmt.Errorf("invalid namespaced VIP key %q", key)
@@ -492,7 +534,7 @@ func virtualIPFromLastConfig(key string, data []byte) (*v1alpha1.VirtualIP, erro
 
 	var spec v1alpha1.VirtualIPSpec
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return nil, fmt.Errorf("failed to decode last-applied config for %s: %w", key, err)
+		return nil, fmt.Errorf("failed to decode %s config for %s: %w", source, key, err)
 	}
 
 	return &v1alpha1.VirtualIP{

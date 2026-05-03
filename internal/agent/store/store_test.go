@@ -308,3 +308,67 @@ func TestDeleteLastConfig(t *testing.T) {
 		t.Fatal("expected nil after delete")
 	}
 }
+
+func TestPendingConfigCommitPromotesLastConfigAndClearsPending(t *testing.T) {
+	st := tempStore(t)
+
+	pending := []byte(`{"address":"203.0.113.20"}`)
+	applied := []byte(`{"address":"203.0.113.30"}`)
+	if err := st.SavePendingConfig("team-a/web", pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CommitLastConfig("team-a/web", applied); err != nil {
+		t.Fatal(err)
+	}
+
+	last, err := st.LoadLastConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(last) != string(applied) {
+		t.Fatalf("last config = %q, want %q", last, applied)
+	}
+	pendingAfterCommit, err := st.LoadPendingConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingAfterCommit != nil {
+		t.Fatalf("pending config = %q, want nil", pendingAfterCommit)
+	}
+}
+
+func TestLoadAllPendingConfigs(t *testing.T) {
+	st := tempStore(t)
+
+	configs := map[string][]byte{
+		"team-a/web": []byte(`{"address":"203.0.113.10"}`),
+		"team-b/api": []byte(`{"address":"203.0.113.20"}`),
+	}
+	for key, config := range configs {
+		if err := st.SavePendingConfig(key, config); err != nil {
+			t.Fatalf("SavePendingConfig(%s): %v", key, err)
+		}
+	}
+
+	loaded, err := st.LoadAllPendingConfigs()
+	if err != nil {
+		t.Fatalf("LoadAllPendingConfigs: %v", err)
+	}
+	if len(loaded) != len(configs) {
+		t.Fatalf("LoadAllPendingConfigs count = %d, want %d", len(loaded), len(configs))
+	}
+	for key, want := range configs {
+		if string(loaded[key]) != string(want) {
+			t.Fatalf("LoadAllPendingConfigs[%s] = %q, want %q", key, loaded[key], want)
+		}
+	}
+
+	loaded["team-a/web"][0] = 'x'
+	again, err := st.LoadAllPendingConfigs()
+	if err != nil {
+		t.Fatalf("LoadAllPendingConfigs second read: %v", err)
+	}
+	if string(again["team-a/web"]) != string(configs["team-a/web"]) {
+		t.Fatal("LoadAllPendingConfigs did not return a copy")
+	}
+}

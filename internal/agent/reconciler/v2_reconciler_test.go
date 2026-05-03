@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -40,6 +41,50 @@ func TestV2ManagerRecreatesVIPAfterDelete(t *testing.T) {
 	recreated := newV2TestVIP("default", "web", "uid-2")
 	mgr.OnVIPUpdate(recreated)
 	waitFor(t, func() bool { return dp.applyCount() == 2 }, "recreated VIP apply")
+}
+
+func TestV2ManagerQueuesRecreateUntilDeleteCleanupSucceeds(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.setRemoveErr(errors.New("vpp remove failed"))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, routing.NewNoop(), nil, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return dp.applyCount() == 1 }, "initial VIP apply")
+
+	mgr.mu.Lock()
+	mgr.vips[vipKey].deleteRetryInterval = 10 * time.Millisecond
+	mgr.mu.Unlock()
+
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return dp.removeCount() >= 1 }, "failed delete cleanup")
+
+	recreated := newV2TestVIP("default", "web", "uid-2")
+	recreated.Generation = 2
+	recreated.Spec.Port = 443
+	mgr.OnVIPUpdate(recreated)
+
+	time.Sleep(50 * time.Millisecond)
+	if got := dp.applyCount(); got != 1 {
+		t.Fatalf("apply count = %d, want recreated VIP queued until delete cleanup succeeds", got)
+	}
+
+	dp.setRemoveErr(nil)
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.removeCount() >= 2 &&
+			dp.applyCount() == 2 &&
+			last != nil &&
+			last.UID == "uid-2" &&
+			last.Spec.Port == 443
+	}, "queued recreated VIP apply after delete cleanup retry")
 }
 
 func TestV2ReconcilerReportsStatusAndWithdrawsRouteWhenDataPlaneFails(t *testing.T) {
@@ -165,6 +210,51 @@ func TestV2ReconcilerSkipsExternalEffectsWhenLastConfigPersistFails(t *testing.T
 	}
 	if serving.Reason != "LastConfigPersistFailed" {
 		t.Fatalf("Serving reason = %q, want LastConfigPersistFailed", serving.Reason)
+	}
+}
+
+func TestV2ReconcilerKeepsLastConfigWhenDataplaneApplyFails(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.applyErr = errors.New("apply failed")
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, routing.NewNoop(), st, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vipKey := "default/web"
+	oldConfig := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP"}`)
+	if err := st.SaveLastConfig(vipKey, oldConfig); err != nil {
+		t.Fatalf("SaveLastConfig: %v", err)
+	}
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vip.Spec.Address = "203.0.113.20"
+	vip.Spec.Port = 443
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return dp.applyCount() == 1 }, "failed VIP apply")
+
+	last, err := st.LoadLastConfig(vipKey)
+	if err != nil {
+		t.Fatalf("LoadLastConfig: %v", err)
+	}
+	if string(last) != string(oldConfig) {
+		t.Fatalf("last config = %q, want previous applied config %q", last, oldConfig)
+	}
+
+	pending, err := st.LoadPendingConfig(vipKey)
+	if err != nil {
+		t.Fatalf("LoadPendingConfig: %v", err)
+	}
+	var pendingSpec v1alpha1.VirtualIPSpec
+	if err := json.Unmarshal(pending, &pendingSpec); err != nil {
+		t.Fatalf("decode pending config: %v", err)
+	}
+	if pendingSpec.Address != "203.0.113.20" || pendingSpec.Port != 443 {
+		t.Fatalf("pending config = %#v, want new desired address and port", pendingSpec)
 	}
 }
 

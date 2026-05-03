@@ -2484,6 +2484,58 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(spec["healthCheck"]["type"], "http")
         self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
 
+    def test_health_monitor_update_retries_conflict_with_latest_spec(self):
+        stale_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+            resource_version="1",
+        )
+        latest_backends = [
+            {"address": "10.0.1.1", "weight": 100},
+            {"address": "10.0.1.2", "weight": 50},
+        ]
+        latest_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": latest_backends},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+            resource_version="2",
+        )
+        self.mock_k8s.find_by_pool.return_value = stale_vip
+        self.mock_k8s.get_virtualip.return_value = latest_vip
+        self.mock_k8s.update_virtualip.side_effect = [
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            ),
+            None,
+        ]
+
+        hm = FakeObj({
+            "healthmonitor_id": "hm-1111",
+            "pool_id": "pool-1111",
+            "type": "HTTP",
+            "delay": 10,
+            "timeout": 5,
+            "max_retries": 3,
+            "max_retries_down": 2,
+            "http_method": "GET",
+            "url_path": "/healthz",
+            "expected_codes": "200",
+        })
+        self.driver.health_monitor_update(FakeObj({}), hm)
+
+        self.assertEqual(self.mock_k8s.update_virtualip.call_count, 2)
+        second_call = self.mock_k8s.update_virtualip.call_args_list[1]
+        spec = second_call[0][1]
+        annotations = second_call[1]["annotations"]
+        self.assertEqual(spec["backends"], latest_backends)
+        self.assertEqual(spec["healthCheck"]["type"], "http")
+        self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
+        self.assertEqual(second_call[1]["resource_version"], "2")
+        self.assertIs(second_call[1]["current"], latest_vip)
+
     def test_health_monitor_update_without_associated_virtualip_raises(self):
         self.mock_k8s.find_by_pool.return_value = None
         self.mock_driver_lib.get_pool.return_value = FakeObj({

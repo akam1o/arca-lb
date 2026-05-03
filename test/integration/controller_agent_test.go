@@ -70,5 +70,7 @@ func TestControllerAgentCommunication(t *testing.T) {
 	assert.Greater(t, len(config.VIPs), 0)
 
 	// Cleanup
-	grpcServer.Stop()
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	require.NoError(t, grpcServer.Stop(stopCtx))
 }

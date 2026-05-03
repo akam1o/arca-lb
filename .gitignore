@@ -1,5 +1,7 @@
 # Binaries
 bin/
+/agent
+/operator
 *.exe
 *.exe~
 *.dll

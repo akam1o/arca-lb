@@ -182,6 +182,48 @@ func TestEngineUpdateVIPFailurePreservesExistingState(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsZeroHealthCheckTimingAndThresholds(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{WorkerCount: 1, MaxConcurrentChecks: 1}, nil, nil, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := engine.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer engine.Stop()
+
+	tests := map[string]*v1alpha1.HealthCheckSpec{
+		"interval": {Type: v1alpha1.HCTypePing, TimeoutSeconds: 1, RiseCount: 1, FallCount: 1},
+		"timeout":  {Type: v1alpha1.HCTypePing, IntervalSeconds: 5, RiseCount: 1, FallCount: 1},
+		"rise":     {Type: v1alpha1.HCTypePing, IntervalSeconds: 5, TimeoutSeconds: 3, FallCount: 1},
+		"fall":     {Type: v1alpha1.HCTypePing, IntervalSeconds: 5, TimeoutSeconds: 3, RiseCount: 1},
+	}
+
+	for name, hc := range tests {
+		t.Run(name, func(t *testing.T) {
+			vip := &v1alpha1.VirtualIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default",
+					Name:      "vip-" + name,
+				},
+				Spec: v1alpha1.VirtualIPSpec{
+					Backends:    []v1alpha1.BackendSpec{{Address: "10.0.0.1", Weight: 100}},
+					HealthCheck: hc,
+				},
+			}
+
+			if err := engine.UpdateVIP(vip); err == nil {
+				t.Fatal("expected zero-value health check field to be rejected")
+			}
+			if _, ok := engine.vips["default/vip-"+name]; ok {
+				t.Fatal("invalid health check started a VIP scheduler")
+			}
+		})
+	}
+}
+
 func TestEngineUsesNamespacedVIPKeys(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(EngineConfig{}, nil, nil, logger)

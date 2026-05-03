@@ -42,6 +42,12 @@ dataplane:
 	if cfg.Metrics.Address != ":9090" {
 		t.Errorf("Metrics.Address = %q, want :9090", cfg.Metrics.Address)
 	}
+	if cfg.Rollout.LeaseDuration == 0 {
+		t.Error("Rollout.LeaseDuration should default")
+	}
+	if cfg.Rollout.RetryInterval == 0 {
+		t.Error("Rollout.RetryInterval should default")
+	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("Log.Level = %q, want info", cfg.Log.Level)
 	}
@@ -66,6 +72,8 @@ dataplane:
 
 	t.Setenv("ARCA_AGENT_ID", "env-override-id")
 	t.Setenv("ARCA_DATAPLANE_TYPE", "vpp")
+	t.Setenv("ARCA_ROLLOUT_ENABLED", "true")
+	t.Setenv("ARCA_ROLLOUT_LEASE_NAMESPACE", "rollout-ns")
 
 	cfg, err := LoadV2Config(cfgPath)
 	if err != nil {
@@ -77,6 +85,12 @@ dataplane:
 	}
 	if cfg.DataPlane.Type != "vpp" {
 		t.Errorf("DataPlane.Type = %q, want vpp", cfg.DataPlane.Type)
+	}
+	if !cfg.Rollout.Enabled {
+		t.Error("Rollout.Enabled = false, want true")
+	}
+	if cfg.Rollout.LeaseNamespace != "rollout-ns" {
+		t.Errorf("Rollout.LeaseNamespace = %q, want rollout-ns", cfg.Rollout.LeaseNamespace)
 	}
 }
 

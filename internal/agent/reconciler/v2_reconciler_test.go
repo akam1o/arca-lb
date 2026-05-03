@@ -205,6 +205,133 @@ func TestV2ManagerKeepsSharedAddressAdvertisedForHealthySibling(t *testing.T) {
 	}
 }
 
+func TestV2ReconcilerDrainsPreviousAddressBeforeDataplaneUpdateAndRetries(t *testing.T) {
+	dp := newRecordingDataPlane()
+	router := newRecordingRouter(nil)
+	statusUpdater := &recordingStatusUpdater{}
+	rollouts := &recordingRolloutCoordinator{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
+	mgr.SetRolloutCoordinator(rollouts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return router.IsAnnounced("203.0.113.10") && statusUpdater.updateCount() == 1
+	}, "initial route announcement")
+
+	router.withdrawErr = errors.New("vtysh withdraw failed")
+	updated := vip.DeepCopy()
+	updated.Generation = 2
+	updated.Spec.Address = "203.0.113.20"
+	mgr.OnVIPUpdate(updated)
+
+	waitFor(t, func() bool { return statusUpdater.updateCount() == 2 }, "status update after previous route withdraw failure")
+	if got := dp.applyCount(); got != 1 {
+		t.Fatalf("apply count = %d, want no dataplane update after previous address withdraw failure", got)
+	}
+	if got := dp.lastAppliedVIP().Spec.Address; got != "203.0.113.10" {
+		t.Fatalf("last applied VIP address = %s, want old address", got)
+	}
+	if got := router.announceCount(); got != 1 {
+		t.Fatalf("announce count = %d, want only the initial route announcement", got)
+	}
+	if got := router.withdrawCount(); got != 1 {
+		t.Fatalf("withdraw count = %d, want one failed previous address withdraw", got)
+	}
+	if got := rollouts.callCount(); got != 1 {
+		t.Fatalf("rollout lock calls = %d, want one failed address rollout attempt", got)
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("old VIP address should remain tracked as announced after withdraw failure")
+	}
+	if router.IsAnnounced("203.0.113.20") {
+		t.Fatal("new VIP address should not be announced until previous address withdraw succeeds")
+	}
+
+	route := findTestCondition(statusUpdater.lastConditions(), agentstatus.ConditionRouteAdvertised)
+	if route == nil {
+		t.Fatal("RouteAdvertised condition missing")
+	}
+	if route.Status != metav1.ConditionUnknown {
+		t.Fatalf("RouteAdvertised status = %s, want Unknown", route.Status)
+	}
+	if route.Reason != "RouteUpdateFailed" {
+		t.Fatalf("RouteAdvertised reason = %q, want RouteUpdateFailed", route.Reason)
+	}
+
+	router.withdrawErr = nil
+	if err := mgr.Reconcile("default/web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	waitFor(t, func() bool {
+		return dp.applyCount() == 2 && router.withdrawCount() == 2 && router.IsAnnounced("203.0.113.20")
+	}, "previous route withdraw retry and new route announcement")
+
+	if router.IsAnnounced("203.0.113.10") {
+		t.Fatal("old VIP address should be withdrawn after retry succeeds")
+	}
+	if got := dp.lastAppliedVIP().Spec.Address; got != "203.0.113.20" {
+		t.Fatalf("last applied VIP address = %s, want new address", got)
+	}
+	if got := rollouts.callCount(); got != 2 {
+		t.Fatalf("rollout lock calls = %d, want failed attempt and retry", got)
+	}
+	if got := rollouts.lastKey(); got != "virtualip/default/web" {
+		t.Fatalf("rollout key = %q, want virtualip/default/web", got)
+	}
+}
+
+func TestV2ReconcilerSkipsStaleAddressRolloutAfterWaitingForLock(t *testing.T) {
+	dp := newRecordingDataPlane()
+	router := newRecordingRouter(nil)
+	rollouts := newBlockingRolloutCoordinator()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetRolloutCoordinator(rollouts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return router.IsAnnounced("203.0.113.10") && dp.applyCount() == 1
+	}, "initial route announcement")
+
+	stale := vip.DeepCopy()
+	stale.Generation = 2
+	stale.Spec.Address = "203.0.113.20"
+	mgr.OnVIPUpdate(stale)
+	rollouts.waitForFirstCall(t)
+
+	current := vip.DeepCopy()
+	current.Generation = 3
+	current.Spec.Address = "203.0.113.30"
+	mgr.OnVIPUpdate(current)
+	rollouts.releaseFirst()
+
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.applyCount() == 2 && last != nil && last.Spec.Address == "203.0.113.30"
+	}, "latest address rollout")
+
+	if router.IsAnnounced("203.0.113.20") {
+		t.Fatal("stale desired address should not be announced after rollout lock wait")
+	}
+	if got := rollouts.callCount(); got != 2 {
+		t.Fatalf("rollout lock calls = %d, want stale attempt and latest retry", got)
+	}
+}
+
 func TestV2ReconcilerCoalescesBurstUpdatesToLatestSpec(t *testing.T) {
 	dp := newRecordingDataPlane()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -213,6 +340,7 @@ func TestV2ReconcilerCoalescesBurstUpdatesToLatestSpec(t *testing.T) {
 		"default/web",
 		dp,
 		newRouteCoordinator(router, logger),
+		nil,
 		nil,
 		nil,
 		nil,
@@ -481,4 +609,79 @@ func (r *recordingStatusUpdater) lastConditions() []metav1.Condition {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]metav1.Condition(nil), r.conditions...)
+}
+
+type recordingRolloutCoordinator struct {
+	mu    sync.Mutex
+	keys  []string
+	calls int
+}
+
+func (r *recordingRolloutCoordinator) RunExclusive(ctx context.Context, key string, fn func(context.Context) error) error {
+	r.mu.Lock()
+	r.calls++
+	r.keys = append(r.keys, key)
+	r.mu.Unlock()
+	return fn(ctx)
+}
+
+func (r *recordingRolloutCoordinator) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+func (r *recordingRolloutCoordinator) lastKey() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.keys) == 0 {
+		return ""
+	}
+	return r.keys[len(r.keys)-1]
+}
+
+type blockingRolloutCoordinator struct {
+	recordingRolloutCoordinator
+
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newBlockingRolloutCoordinator() *blockingRolloutCoordinator {
+	return &blockingRolloutCoordinator{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (r *blockingRolloutCoordinator) RunExclusive(ctx context.Context, key string, fn func(context.Context) error) error {
+	r.mu.Lock()
+	r.calls++
+	r.keys = append(r.keys, key)
+	call := r.calls
+	r.mu.Unlock()
+
+	if call == 1 {
+		r.once.Do(func() { close(r.entered) })
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return fn(ctx)
+}
+
+func (r *blockingRolloutCoordinator) waitForFirstCall(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rollout lock call")
+	}
+}
+
+func (r *blockingRolloutCoordinator) releaseFirst() {
+	close(r.release)
 }

@@ -26,6 +26,15 @@ rules:
       - update
       - patch
   - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - create
+      - update
+      - patch
+  - apiGroups:
       - arca.io
     resources:
       - virtualips/finalizers

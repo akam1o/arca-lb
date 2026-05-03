@@ -199,7 +199,7 @@ func TestCleanupStaleLastConfigsRemovesOnlyMissingVIPs(t *testing.T) {
 		},
 	}}
 
-	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, current, logger); err != nil {
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
 		t.Fatalf("cleanupStaleLastConfigs: %v", err)
 	}
 

@@ -35,6 +35,11 @@ data:
       type: frr
       vtyshPath: /usr/bin/vtysh
       routeTag: 10000
+    rollout:
+      enabled: true
+      leaseNamespace: arca-lb-system
+      leaseDuration: 2m
+      retryInterval: 1s
     healthCheck:
       workerCount: 4
       maxConcurrentChecks: 64
@@ -87,6 +92,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: metrics
               containerPort: 9090

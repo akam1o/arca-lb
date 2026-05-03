@@ -31,6 +31,12 @@ routing:
   routeTag: 100
   cmdTimeout: "5s"
 
+rollout:
+  enabled: true
+  leaseNamespace: "arca-lb-system"
+  leaseDuration: "2m"
+  retryInterval: "1s"
+
 healthCheck:
   workerCount: 4
   maxConcurrentChecks: 100
@@ -85,6 +91,17 @@ log:
 | `routing.vtyshPath` | vtysh コマンドのパス | `/usr/bin/vtysh` |
 | `routing.routeTag` | Static Route のタグ値 | `100` |
 | `routing.cmdTimeout` | vtysh コマンドのタイムアウト | `5s` |
+
+### Rollout 設定
+
+有効な場合、Agent は Kubernetes `Lease` を使い、VIP address 変更や retained VIP の rolling recreate などの disruptive な変更をクラスター全体で直列化します。
+
+| パラメータ | 説明 | デフォルト |
+|-----------|------|-----------|
+| `rollout.enabled` | クラスター全体の rollout 直列化を有効化 | `false` |
+| `rollout.leaseNamespace` | rollout Lease を作成する namespace | Pod namespace、その後 `arca-lb-system` |
+| `rollout.leaseDuration` | 他 Agent が Lease を引き継げるまでの時間 | `2m` |
+| `rollout.retryInterval` | 他 Agent が Lease を保持している間の待機間隔 | `1s` |
 
 ### HealthCheck 設定
 

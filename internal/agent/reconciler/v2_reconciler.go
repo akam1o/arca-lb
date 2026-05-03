@@ -56,12 +56,18 @@ type StatusUpdater interface {
 	UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec, conditions ...metav1.Condition) error
 }
 
+// RolloutCoordinator serializes disruptive VIP changes across agents.
+type RolloutCoordinator interface {
+	RunExclusive(ctx context.Context, key string, fn func(context.Context) error) error
+}
+
 // Manager manages per-VIP reconciler goroutines.
 type Manager struct {
 	dp            dataplane.DataPlane
 	store         *store.Store
 	healthTracker HealthTracker
 	statusUpdater StatusUpdater
+	rollouts      RolloutCoordinator
 	routes        *routeCoordinator
 	logger        *slog.Logger
 
@@ -121,6 +127,17 @@ func (m *Manager) SetTuningDriftConfig(cfg TuningDriftConfig) {
 	}
 }
 
+// SetRolloutCoordinator wires cluster-wide serialization for disruptive VIP changes.
+func (m *Manager) SetRolloutCoordinator(coordinator RolloutCoordinator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.rollouts = coordinator
+	for _, vr := range m.vips {
+		vr.rollouts = coordinator
+	}
+}
+
 func normalizeTuningDriftConfig(cfg TuningDriftConfig) TuningDriftConfig {
 	switch cfg.Policy {
 	case TuningDriftPolicyPreserve, TuningDriftPolicyRollingRecreate:
@@ -170,10 +187,7 @@ func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address strin
 
 	if previousAddress := c.vipAddresses[vipKey]; previousAddress != "" && previousAddress != address {
 		if err := c.removeVIPLocked(ctx, vipKey, previousAddress); err != nil {
-			c.logger.Warn("failed to reconcile previous VIP address route",
-				"vip", vipKey,
-				"address", previousAddress,
-				"error", err)
+			return false, fmt.Errorf("failed to withdraw previous VIP address %s for %s: %w", previousAddress, vipKey, err)
 		}
 	}
 
@@ -188,6 +202,45 @@ func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address strin
 	state.serving[vipKey] = serving
 
 	return c.reconcileLocked(ctx, address, state)
+}
+
+func (c *routeCoordinator) addressChangePending(vipKey, address string) bool {
+	if c == nil || c.router == nil || address == "" {
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	previousAddress := c.vipAddresses[vipKey]
+	return previousAddress != "" && previousAddress != address
+}
+
+func (c *routeCoordinator) prepareAddressChange(ctx context.Context, vipKey, address string) (bool, error) {
+	if c == nil || c.router == nil || address == "" {
+		return false, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	previousAddress := c.vipAddresses[vipKey]
+	if previousAddress == "" || previousAddress == address {
+		if state := c.addresses[address]; state != nil {
+			return state.advertised, nil
+		}
+		return false, nil
+	}
+
+	if err := c.removeVIPLocked(ctx, vipKey, previousAddress); err != nil {
+		advertised := false
+		if state := c.addresses[previousAddress]; state != nil {
+			advertised = state.advertised
+		}
+		return advertised, fmt.Errorf("failed to withdraw previous VIP address %s for %s: %w", previousAddress, vipKey, err)
+	}
+	delete(c.vipAddresses, vipKey)
+	return false, nil
 }
 
 func (c *routeCoordinator) Delete(ctx context.Context, vipKey, address string) (bool, error) {
@@ -289,7 +342,7 @@ func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 
 	vr, exists := m.vips[key]
 	if !exists {
-		vr = newVIPReconciler(key, m.dp, m.routes, m.store, m.healthTracker, m.statusUpdater, m.safetyInterval, m.tuningDrift, m.logger, m.onVIPReconcilerStopped)
+		vr = newVIPReconciler(key, m.dp, m.routes, m.store, m.healthTracker, m.statusUpdater, m.rollouts, m.safetyInterval, m.tuningDrift, m.logger, m.onVIPReconcilerStopped)
 		m.vips[key] = vr
 		go vr.run(m.ctx)
 	}
@@ -363,6 +416,7 @@ type vipReconciler struct {
 	store          *store.Store
 	healthTracker  HealthTracker
 	statusUpdater  StatusUpdater
+	rollouts       RolloutCoordinator
 	safetyInterval time.Duration
 	logger         *slog.Logger
 
@@ -385,6 +439,7 @@ func newVIPReconciler(
 	st *store.Store,
 	ht HealthTracker,
 	statusUpdater StatusUpdater,
+	rollouts RolloutCoordinator,
 	safetyInterval time.Duration,
 	tuningDrift TuningDriftConfig,
 	logger *slog.Logger,
@@ -397,6 +452,7 @@ func newVIPReconciler(
 		store:          st,
 		healthTracker:  ht,
 		statusUpdater:  statusUpdater,
+		rollouts:       rollouts,
 		safetyInterval: safetyInterval,
 		tuningDrift:    normalizeTuningDriftConfig(tuningDrift),
 		logger:         logger.With("vip", key),
@@ -512,6 +568,49 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	}
 	hasHealthy := len(healthyBackends) > 0
 
+	if vr.rollouts != nil && vr.routes.addressChangePending(vr.key, vip.Spec.Address) {
+		key := rolloutKeyForVIP(vip)
+		if err := vr.rollouts.RunExclusive(ctx, key, func(ctx context.Context) error {
+			if !vr.isCurrent(vip) {
+				vr.logger.Debug("skipping stale VIP address rollout", "generation", vip.Generation)
+				return nil
+			}
+			vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, true)
+			return nil
+		}); err != nil {
+			vr.logger.Error("failed to coordinate VIP address rollout", "error", err, "rollout", key)
+			span.RecordError(err)
+		}
+		return
+	}
+
+	vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, false)
+}
+
+func (vr *vipReconciler) reconcileApplied(
+	ctx context.Context,
+	span trace.Span,
+	vip *v1alpha1.VirtualIP,
+	healthyBackends []v1alpha1.BackendSpec,
+	hasHealthy bool,
+	rolloutHeld bool,
+) {
+	routeAdvertised, routeErr := vr.routes.prepareAddressChange(ctx, vr.key, vip.Spec.Address)
+	if routeErr != nil {
+		vr.logger.Error("failed to prepare VIP address route change", "error", routeErr)
+		span.RecordError(routeErr)
+		if vr.statusUpdater != nil {
+			if err := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+				servingCondition(vip, len(healthyBackends)),
+				routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+			); err != nil {
+				vr.logger.Warn("failed to update VirtualIP status", "error", err)
+				span.RecordError(err)
+			}
+		}
+		return
+	}
+
 	// Apply to data plane
 	if err := vr.dp.ApplyVIP(ctx, vip, healthyBackends); err != nil {
 		vr.logger.Error("failed to apply VIP to data plane", "error", err)
@@ -520,14 +619,14 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	}
 
 	if drifts := dataplaneTuningDrifts(vr.dp, vr.key); len(drifts) > 0 {
-		if err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts); err != nil {
+		if err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, rolloutHeld); err != nil {
 			vr.logger.Error("failed to repair retained VIP tuning drift", "error", err, "drifts", drifts)
 			span.RecordError(err)
 			return
 		}
 	}
 
-	routeAdvertised, routeErr := vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, hasHealthy)
+	routeAdvertised, routeErr = vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, hasHealthy)
 	if routeErr != nil {
 		vr.logger.Error("failed to reconcile VIP address route", "error", routeErr)
 		span.RecordError(routeErr)
@@ -558,6 +657,23 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 		"total", len(vip.Spec.Backends),
 		"serving", hasHealthy,
 		"route_advertised", routeAdvertised)
+}
+
+func rolloutKeyForVIP(vip *v1alpha1.VirtualIP) string {
+	if vip == nil {
+		return "virtualip/"
+	}
+	return "virtualip/" + vip.Namespace + "/" + vip.Name
+}
+
+func (vr *vipReconciler) isCurrent(vip *v1alpha1.VirtualIP) bool {
+	vr.mu.RLock()
+	defer vr.mu.RUnlock()
+
+	return vr.current != nil &&
+		vip != nil &&
+		vr.current.UID == vip.UID &&
+		vr.current.Generation == vip.Generation
 }
 
 func servingCondition(vip *v1alpha1.VirtualIP, healthyBackends int) metav1.Condition {
@@ -623,11 +739,22 @@ func (vr *vipReconciler) repairTuningDrift(
 	healthyBackends []v1alpha1.BackendSpec,
 	hasHealthy bool,
 	drifts []dataplane.VIPTuningDrift,
+	rolloutHeld bool,
 ) error {
 	cfg := normalizeTuningDriftConfig(vr.tuningDrift)
 	if cfg.Policy == TuningDriftPolicyPreserve {
 		vr.logger.Warn("retained VIP tuning drift preserved", "drifts", drifts)
 		return nil
+	}
+
+	if vr.rollouts != nil && !rolloutHeld {
+		return vr.rollouts.RunExclusive(ctx, rolloutKeyForVIP(vip), func(ctx context.Context) error {
+			if !vr.isCurrent(vip) {
+				vr.logger.Debug("skipping stale retained VIP tuning drift repair", "generation", vip.Generation)
+				return nil
+			}
+			return vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, true)
+		})
 	}
 
 	recreator, ok := vr.dp.(dataplane.VIPRecreator)

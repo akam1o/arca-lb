@@ -265,11 +265,13 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if pool_id:
             annotations[constants.ANNOTATION_POOL_ID] = pool_id
 
-        created, restore_vip = self._create_or_update_listener_virtualip(
-            name, spec, annotations, lb_id, listener_id
+        created, restore_vip, restore_pool_id = (
+            self._create_or_update_listener_virtualip(
+                name, spec, annotations, lb_id, listener_id
+            )
         )
         self._remember_loadbalancer_vip(lb_id, vip_address)
-        if pool_id:
+        if pool_id and restore_pool_id == pool_id:
             try:
                 self._restore_virtualip_backends([restore_vip])
             except Exception:
@@ -292,6 +294,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     LOG.exception("Failed to push Octavia ERROR status for "
                                   "listener %s", listener_id)
                 raise
+        elif pool_id:
+            LOG.info(
+                "Skipping restore of pool %s for listener %s because "
+                "VirtualIP %s is associated with pool %s",
+                pool_id, listener_id, name, restore_pool_id,
+            )
         LOG.info("Created VirtualIP %s for listener %s (LB %s)",
                  name, listener_id, lb_id)
 
@@ -683,8 +691,15 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         member_id = self._member_id(m)
         name = vip["metadata"]["name"]
-        deleted_member_ids = []
-        status_annotations = {}
+        initial_annotations = copy.deepcopy(
+            vip.get("metadata", {}).get("annotations", {}) or {}
+        )
+        status_annotations = copy.deepcopy(initial_annotations)
+        if pool_id:
+            status_annotations[constants.ANNOTATION_POOL_ID] = pool_id
+        deleted_member_ids = self._member_delete_status_ids(
+            initial_annotations, m
+        )
 
         def mutate(current_vip, spec, annotations):
             nonlocal deleted_member_ids, status_annotations
@@ -1147,8 +1162,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 name, spec, annotations=annotations
             )
             if isinstance(created_vip, dict):
-                return True, created_vip
-            return True, desired_vip
+                return True, created_vip, self._virtualip_pool_id(created_vip)
+            return True, desired_vip, self._virtualip_pool_id(desired_vip)
         except k8s_client.exceptions.ApiException as exc:
             if exc.status != 409:
                 raise
@@ -1253,8 +1268,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             name, mutate, initial_vip=existing
         )
         if isinstance(updated_vip, dict):
-            return False, updated_vip
-        return False, patched_vip or desired_vip
+            restore_vip = updated_vip
+        else:
+            restore_vip = patched_vip or desired_vip
+        return False, restore_vip, self._virtualip_pool_id(restore_vip)
 
     @staticmethod
     def _virtualip_snapshot(name, spec, annotations, current=None):
@@ -1268,6 +1285,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         snapshot["metadata"] = metadata
         snapshot["spec"] = copy.deepcopy(spec)
         return snapshot
+
+    @staticmethod
+    def _virtualip_pool_id(vip):
+        return (
+            (vip or {}).get("metadata", {}).get("annotations", {}) or {}
+        ).get(constants.ANNOTATION_POOL_ID)
 
     @staticmethod
     def _virtualip_has_pool_state(spec, annotations):
@@ -1727,6 +1750,22 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if removed:
             self._set_member_map_annotation(annotations, member_map)
         return removed
+
+    def _member_delete_status_ids(self, annotations, member):
+        member_id = self._member_id(member)
+        if member_id:
+            return [member_id]
+
+        address = member.get("address")
+        if not address:
+            return []
+
+        member_map = self._member_map_from_annotations(annotations)
+        return sorted(
+            mapped_id
+            for mapped_id, mapped_address in member_map.items()
+            if mapped_address == address
+        )
 
     def _member_delete_address(self, annotations, member):
         address = member.get("address")

@@ -37,13 +37,18 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 	indexKey := ds.backendIndexKey(backend.ID)
 
 	txn := ds.client.Txn(ctx)
-	_, err = txn.Then(
+	txnResp, err := txn.If(
+		clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0),
+	).Then(
 		clientv3.OpPut(key, string(data)),
 		clientv3.OpPut(indexKey, backend.VIPID), // Store VIP ID for reverse lookup
 	).Commit()
 
 	if err != nil {
 		return fmt.Errorf("failed to put backend to etcd: %w", err)
+	}
+	if !txnResp.Succeeded {
+		return datastore.ErrNotFound
 	}
 
 	// Increment revision

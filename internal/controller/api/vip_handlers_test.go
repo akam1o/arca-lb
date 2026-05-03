@@ -96,6 +96,74 @@ func TestCreateVIP(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
+			name: "sub-second health check interval",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "500ms",
+					"timeout":  "1s",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "sub-second health check timeout",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "2s",
+					"timeout":  "500ms",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check timeout equals interval",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "10s",
+					"timeout":  "10s",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check timeout exceeds interval",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "10s",
+					"timeout":  "11s",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "default LB method",
 			requestBody: map[string]interface{}{
 				"vip":      "192.168.1.100",
@@ -188,6 +256,14 @@ func TestCreateVIP(t *testing.T) {
 				// Check default LB method
 				if tt.name == "default LB method" {
 					assert.Equal(t, models.LBMethodMaglev, vip.LBMethod)
+				}
+				if tt.name == "with health check" {
+					require.NotNil(t, vip.HealthCheck)
+					assert.Equal(t, models.HCTypeHTTP, vip.HealthCheck.Type)
+					assert.Equal(t, 10, vip.HealthCheck.IntervalSec)
+					assert.Equal(t, 5, vip.HealthCheck.TimeoutSec)
+					assert.Equal(t, 2, vip.HealthCheck.RiseCount)
+					assert.Equal(t, 4, vip.HealthCheck.FallCount)
 				}
 			}
 		})

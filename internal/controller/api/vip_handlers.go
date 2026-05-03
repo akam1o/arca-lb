@@ -126,6 +126,17 @@ func validateHealthCheckRequest(req *HealthCheckRequest) error {
 	return nil
 }
 
+func parseHealthCheckDuration(value, field string) (time.Duration, error) {
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 0, badRequestError("invalid health check " + field)
+	}
+	if duration%time.Second != 0 {
+		return 0, badRequestError("health check " + field + " must be a whole number of seconds")
+	}
+	return duration, nil
+}
+
 // createVIP handles POST /api/v1/vips
 func (s *Server) createVIP(c *gin.Context) {
 	var req CreateVIPRequest
@@ -162,15 +173,19 @@ func (s *Server) createVIP(c *gin.Context) {
 	if req.HealthCheck != nil {
 		hcType := models.HCType(strings.ToLower(req.HealthCheck.Type))
 
-		interval, err := time.ParseDuration(req.HealthCheck.Interval)
-		if err != nil || interval <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid health check interval"})
+		interval, err := parseHealthCheckDuration(req.HealthCheck.Interval, "interval")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 
-		timeout, err := time.ParseDuration(req.HealthCheck.Timeout)
-		if err != nil || timeout <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid health check timeout"})
+		timeout, err := parseHealthCheckDuration(req.HealthCheck.Timeout, "timeout")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if timeout >= interval {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "health check timeout must be less than interval"})
 			return
 		}
 
@@ -185,8 +200,8 @@ func (s *Server) createVIP(c *gin.Context) {
 
 		vip.HealthCheck = &models.HealthCheck{
 			Type:        hcType,
-			IntervalSec: int(interval.Seconds()),
-			TimeoutSec:  int(timeout.Seconds()),
+			IntervalSec: int(interval / time.Second),
+			TimeoutSec:  int(timeout / time.Second),
 			RiseCount:   riseCount,
 			FallCount:   fallCount,
 			Config:      req.HealthCheck.Config,

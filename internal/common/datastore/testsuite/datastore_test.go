@@ -110,6 +110,17 @@ func testBackendCRUD(t *testing.T, factory DataStoreFactory) {
 	ds, cleanup := factory(ctx, t)
 	defer cleanup()
 
+	// Backend cannot be created without its parent VIP.
+	missingParentBackend := &models.Backend{
+		VIPID:  "missing-vip-id",
+		IP:     "10.0.0.254",
+		Weight: 1,
+	}
+	err := ds.AddBackend(ctx, missingParentBackend)
+	require.ErrorIs(t, err, datastore.ErrNotFound)
+	_, err = ds.GetBackend(ctx, missingParentBackend.ID)
+	require.ErrorIs(t, err, datastore.ErrNotFound)
+
 	// Create VIP first
 	vip := &models.VIP{
 		VIP:      "192.168.1.200",
@@ -117,7 +128,7 @@ func testBackendCRUD(t *testing.T, factory DataStoreFactory) {
 		Protocol: models.ProtocolTCP,
 		LBMethod: models.LBMethodMaglev,
 	}
-	err := ds.CreateVIP(ctx, vip)
+	err = ds.CreateVIP(ctx, vip)
 	require.NoError(t, err)
 
 	// Add Backend

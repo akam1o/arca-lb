@@ -213,6 +213,8 @@ spec:
 | `http` | HTTP/HTTPS probe settings | No |
 | `tcp` | TCP probe settings | No |
 
+Health check timing fields are currently second-granularity fields. Millisecond-granularity intervals and timeouts are planned for a future API/model revision; use whole-second values in the current version.
+
 ## Environment Variables
 
 ### Agent (v2)

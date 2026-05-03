@@ -115,6 +115,8 @@ status:
 | `http` | HTTPHealthCheck | いいえ | HTTP/HTTPS 固有の設定 |
 | `tcp` | TCPHealthCheck | いいえ | TCP/TLS-HELLO 固有の設定 |
 
+注: ヘルスチェックの時間設定は、現在は秒単位の整数として保存・検証されます。現行 API/model では秒未満の interval/timeout は受け付けません。将来の API/model revision でミリ秒単位のヘルスチェック時間設定に対応する予定です。それまでは秒単位の値を指定してください。
+
 #### HTTPHealthCheck
 
 | フィールド | 型 | 必須 | 説明 |

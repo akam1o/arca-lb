@@ -37,6 +37,10 @@ func RunDataStoreTests(t *testing.T, factory DataStoreFactory) {
 		testWatch(t, factory)
 	})
 
+	t.Run("Watch Does Not Replay Existing Changes", func(t *testing.T) {
+		testWatchDoesNotReplayExistingChanges(t, factory)
+	})
+
 	t.Run("GetConfig", func(t *testing.T) {
 		testGetConfig(t, factory)
 	})
@@ -523,6 +527,46 @@ func testWatch(t *testing.T, factory DataStoreFactory) {
 	case event := <-events:
 		assert.NotNil(t, event)
 		assert.Equal(t, datastore.EventTypeVIPDeleted, event.Type)
+		assert.NotNil(t, event.VIP)
+		assert.Equal(t, vip.ID, event.VIP.ID)
+	case <-ctx.Done():
+		t.Fatal("Timeout waiting for watch event")
+	}
+}
+
+func testWatchDoesNotReplayExistingChanges(t *testing.T, factory DataStoreFactory) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ds, cleanup := factory(ctx, t)
+	defer cleanup()
+
+	vip := &models.VIP{
+		VIP:      "192.168.1.510",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err := ds.CreateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	events, err := ds.Watch(ctx)
+	require.NoError(t, err)
+
+	select {
+	case event := <-events:
+		t.Fatalf("watch replayed existing event: %v", event.Type)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	vip.Port = 443
+	err = ds.UpdateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	select {
+	case event := <-events:
+		assert.NotNil(t, event)
+		assert.Equal(t, datastore.EventTypeVIPUpdated, event.Type)
 		assert.NotNil(t, event.VIP)
 		assert.Equal(t, vip.ID, event.VIP.ID)
 	case <-ctx.Done():

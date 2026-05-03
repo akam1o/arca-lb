@@ -116,13 +116,56 @@ func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 	}
 }
 
+func TestV2ManagerKeepsSharedAddressAdvertisedForHealthySibling(t *testing.T) {
+	dp := newRecordingDataPlane()
+	router := newRecordingRouter(nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	web80 := newV2TestVIP("default", "web-80", "uid-80")
+	web80.Spec.Port = 80
+	mgr.OnVIPUpdate(web80)
+	waitFor(t, func() bool { return router.announceCount() == 1 }, "shared VIP route announcement")
+
+	web443 := newV2TestVIP("default", "web-443", "uid-443")
+	web443.Spec.Port = 443
+	web443.Spec.Backends = nil
+	mgr.OnVIPUpdate(web443)
+	waitFor(t, func() bool { return dp.applyCount() == 2 }, "unhealthy sibling VIP apply")
+
+	if got := router.withdrawCount(); got != 0 {
+		t.Fatalf("withdraw count = %d, want 0 while web-80 is serving", got)
+	}
+	if !router.IsAnnounced(web80.Spec.Address) {
+		t.Fatal("shared VIP address route should remain advertised while web-80 is serving")
+	}
+
+	mgr.OnVIPDelete(web443)
+	waitFor(t, func() bool { return dp.removeCount() == 1 }, "unhealthy sibling VIP removal")
+	if got := router.withdrawCount(); got != 0 {
+		t.Fatalf("withdraw count = %d, want 0 after deleting non-serving sibling", got)
+	}
+
+	mgr.OnVIPDelete(web80)
+	waitFor(t, func() bool { return router.withdrawCount() == 1 }, "shared VIP route withdrawal after last serving VIP")
+	if router.IsAnnounced(web80.Spec.Address) {
+		t.Fatal("shared VIP address route should be withdrawn after last serving VIP is deleted")
+	}
+}
+
 func TestV2ReconcilerCoalescesBurstUpdatesToLatestSpec(t *testing.T) {
 	dp := newRecordingDataPlane()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := routing.NewNoop()
 	vr := newVIPReconciler(
 		"default/web",
 		dp,
-		routing.NewNoop(),
+		newRouteCoordinator(router, logger),
 		nil,
 		nil,
 		nil,
@@ -342,12 +385,18 @@ func (r *recordingRouter) announceCount() int {
 	return r.announces
 }
 
+func (r *recordingRouter) withdrawCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.withdraws
+}
+
 type recordingStatusUpdater struct {
 	mu      sync.Mutex
 	updates int
 }
 
-func (r *recordingStatusUpdater) UpdateVIPStatus(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec) error {
+func (r *recordingStatusUpdater) UpdateVIPStatus(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec, _ ...metav1.Condition) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.updates++

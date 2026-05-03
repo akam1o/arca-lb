@@ -15,11 +15,13 @@ import (
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	"github.com/akam1o/arca-lb/internal/agent/dataplane"
 	"github.com/akam1o/arca-lb/internal/agent/routing"
+	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
 	"github.com/akam1o/arca-lb/internal/agent/store"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var tracer = otel.Tracer("arca-lb/agent/reconciler")
@@ -51,16 +53,16 @@ type HealthTracker interface {
 
 // StatusUpdater updates VirtualIP status with the agent's observed backend health.
 type StatusUpdater interface {
-	UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error
+	UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec, conditions ...metav1.Condition) error
 }
 
 // Manager manages per-VIP reconciler goroutines.
 type Manager struct {
 	dp            dataplane.DataPlane
-	router        routing.Router
 	store         *store.Store
 	healthTracker HealthTracker
 	statusUpdater StatusUpdater
+	routes        *routeCoordinator
 	logger        *slog.Logger
 
 	safetyInterval time.Duration
@@ -86,9 +88,9 @@ func NewManager(
 	}
 	return &Manager{
 		dp:             dp,
-		router:         router,
 		store:          st,
 		healthTracker:  ht,
+		routes:         newRouteCoordinator(router, logger),
 		logger:         logger,
 		safetyInterval: safetyInterval,
 		tuningDrift:    normalizeTuningDriftConfig(TuningDriftConfig{}),
@@ -131,6 +133,127 @@ func normalizeTuningDriftConfig(cfg TuningDriftConfig) TuningDriftConfig {
 	return cfg
 }
 
+type routeCoordinator struct {
+	router routing.Router
+	logger *slog.Logger
+
+	mu           sync.Mutex
+	addresses    map[string]*routeAddressState // key: VIP address
+	vipAddresses map[string]string             // key: namespace/name
+}
+
+type routeAddressState struct {
+	serving    map[string]bool // key: namespace/name
+	advertised bool
+	reconciled bool
+}
+
+func newRouteCoordinator(router routing.Router, logger *slog.Logger) *routeCoordinator {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &routeCoordinator{
+		router:       router,
+		logger:       logger.With("component", "route-coordinator"),
+		addresses:    make(map[string]*routeAddressState),
+		vipAddresses: make(map[string]string),
+	}
+}
+
+func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address string, serving bool) (bool, error) {
+	if c == nil || c.router == nil || address == "" {
+		return false, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if previousAddress := c.vipAddresses[vipKey]; previousAddress != "" && previousAddress != address {
+		if err := c.removeVIPLocked(ctx, vipKey, previousAddress); err != nil {
+			c.logger.Warn("failed to reconcile previous VIP address route",
+				"vip", vipKey,
+				"address", previousAddress,
+				"error", err)
+		}
+	}
+
+	c.vipAddresses[vipKey] = address
+	state := c.addresses[address]
+	if state == nil {
+		state = &routeAddressState{
+			serving: make(map[string]bool),
+		}
+		c.addresses[address] = state
+	}
+	state.serving[vipKey] = serving
+
+	return c.reconcileLocked(ctx, address, state)
+}
+
+func (c *routeCoordinator) Delete(ctx context.Context, vipKey, address string) (bool, error) {
+	if c == nil || c.router == nil {
+		return false, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if trackedAddress := c.vipAddresses[vipKey]; trackedAddress != "" {
+		address = trackedAddress
+	}
+	delete(c.vipAddresses, vipKey)
+	if address == "" {
+		return false, nil
+	}
+
+	return false, c.removeVIPLocked(ctx, vipKey, address)
+}
+
+func (c *routeCoordinator) removeVIPLocked(ctx context.Context, vipKey, address string) error {
+	state := c.addresses[address]
+	if state == nil {
+		return nil
+	}
+
+	delete(state.serving, vipKey)
+	_, err := c.reconcileLocked(ctx, address, state)
+	if len(state.serving) == 0 && !state.advertised {
+		delete(c.addresses, address)
+	}
+	return err
+}
+
+func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, state *routeAddressState) (bool, error) {
+	shouldAdvertise := false
+	for _, serving := range state.serving {
+		if serving {
+			shouldAdvertise = true
+			break
+		}
+	}
+
+	if shouldAdvertise {
+		if state.advertised {
+			return true, nil
+		}
+		if err := c.router.AnnounceVIP(ctx, address); err != nil {
+			return state.advertised, err
+		}
+		state.advertised = true
+		state.reconciled = true
+		return true, nil
+	}
+
+	if state.advertised || !state.reconciled {
+		if err := c.router.WithdrawVIP(ctx, address); err != nil {
+			return state.advertised, err
+		}
+		state.advertised = false
+		state.reconciled = true
+	}
+	return false, nil
+}
+
 // Start starts the manager.
 func (m *Manager) Start(ctx context.Context) {
 	m.ctx, m.cancel = context.WithCancel(ctx)
@@ -166,7 +289,7 @@ func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 
 	vr, exists := m.vips[key]
 	if !exists {
-		vr = newVIPReconciler(key, m.dp, m.router, m.store, m.healthTracker, m.statusUpdater, m.safetyInterval, m.tuningDrift, m.logger, m.onVIPReconcilerStopped)
+		vr = newVIPReconciler(key, m.dp, m.routes, m.store, m.healthTracker, m.statusUpdater, m.safetyInterval, m.tuningDrift, m.logger, m.onVIPReconcilerStopped)
 		m.vips[key] = vr
 		go vr.run(m.ctx)
 	}
@@ -236,7 +359,7 @@ type vipEvent struct {
 type vipReconciler struct {
 	key            string
 	dp             dataplane.DataPlane
-	router         routing.Router
+	routes         *routeCoordinator
 	store          *store.Store
 	healthTracker  HealthTracker
 	statusUpdater  StatusUpdater
@@ -258,7 +381,7 @@ type vipReconciler struct {
 func newVIPReconciler(
 	key string,
 	dp dataplane.DataPlane,
-	router routing.Router,
+	routes *routeCoordinator,
 	st *store.Store,
 	ht HealthTracker,
 	statusUpdater StatusUpdater,
@@ -270,7 +393,7 @@ func newVIPReconciler(
 	return &vipReconciler{
 		key:            key,
 		dp:             dp,
-		router:         router,
+		routes:         routes,
 		store:          st,
 		healthTracker:  ht,
 		statusUpdater:  statusUpdater,
@@ -404,22 +527,18 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 		}
 	}
 
-	if vr.statusUpdater != nil {
-		if err := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends); err != nil {
-			vr.logger.Warn("failed to update VirtualIP status", "error", err)
-			span.RecordError(err)
-		}
+	routeAdvertised, routeErr := vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, hasHealthy)
+	if routeErr != nil {
+		vr.logger.Error("failed to reconcile VIP address route", "error", routeErr)
+		span.RecordError(routeErr)
 	}
 
-	// Manage BGP route
-	if hasHealthy {
-		if err := vr.router.AnnounceVIP(ctx, vip.Spec.Address); err != nil {
-			vr.logger.Error("failed to announce route", "error", err)
-			span.RecordError(err)
-		}
-	} else {
-		if err := vr.router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
-			vr.logger.Error("failed to withdraw route", "error", err)
+	if vr.statusUpdater != nil {
+		if err := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+			servingCondition(vip, len(healthyBackends)),
+			routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+		); err != nil {
+			vr.logger.Warn("failed to update VirtualIP status", "error", err)
 			span.RecordError(err)
 		}
 	}
@@ -437,7 +556,57 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	vr.logger.Info("VIP reconciled",
 		"healthy", len(healthyBackends),
 		"total", len(vip.Spec.Backends),
-		"route_announced", hasHealthy)
+		"serving", hasHealthy,
+		"route_advertised", routeAdvertised)
+}
+
+func servingCondition(vip *v1alpha1.VirtualIP, healthyBackends int) metav1.Condition {
+	condition := metav1.Condition{
+		Type: agentstatus.ConditionServing,
+	}
+	if healthyBackends > 0 {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "BackendsHealthy"
+		condition.Message = fmt.Sprintf("%d healthy backend(s) available for %s:%d/%s",
+			healthyBackends, vip.Spec.Address, vip.Spec.Port, vip.Spec.Protocol)
+		return condition
+	}
+
+	condition.Status = metav1.ConditionFalse
+	if len(vip.Spec.Backends) == 0 {
+		condition.Reason = "NoBackends"
+		condition.Message = fmt.Sprintf("No backends configured for %s:%d/%s",
+			vip.Spec.Address, vip.Spec.Port, vip.Spec.Protocol)
+		return condition
+	}
+
+	condition.Reason = "NoHealthyBackends"
+	condition.Message = fmt.Sprintf("No healthy backends available for %s:%d/%s",
+		vip.Spec.Address, vip.Spec.Port, vip.Spec.Protocol)
+	return condition
+}
+
+func routeAdvertisedCondition(vip *v1alpha1.VirtualIP, advertised bool, routeErr error) metav1.Condition {
+	condition := metav1.Condition{
+		Type: agentstatus.ConditionRouteAdvertised,
+	}
+	if routeErr != nil {
+		condition.Status = metav1.ConditionUnknown
+		condition.Reason = "RouteUpdateFailed"
+		condition.Message = routeErr.Error()
+		return condition
+	}
+	if advertised {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "Advertised"
+		condition.Message = fmt.Sprintf("VIP address %s is advertised by this node", vip.Spec.Address)
+		return condition
+	}
+
+	condition.Status = metav1.ConditionFalse
+	condition.Reason = "NotAdvertised"
+	condition.Message = fmt.Sprintf("VIP address %s is not advertised by this node", vip.Spec.Address)
+	return condition
 }
 
 func dataplaneTuningDrifts(dp dataplane.DataPlane, vipKey string) []dataplane.VIPTuningDrift {
@@ -467,8 +636,8 @@ func (vr *vipReconciler) repairTuningDrift(
 	}
 
 	vr.logger.Info("repairing retained VIP tuning drift", "policy", cfg.Policy, "drain", cfg.DrainDuration, "drifts", drifts)
-	if err := vr.router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
-		return fmt.Errorf("failed to withdraw route before VIP recreate: %w", err)
+	if _, err := vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, false); err != nil {
+		return fmt.Errorf("failed to drain route before VIP recreate: %w", err)
 	}
 	if hasHealthy {
 		if err := sleepContext(ctx, cfg.DrainDuration); err != nil {
@@ -514,9 +683,9 @@ func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.Virtual
 		span.RecordError(err)
 	}
 
-	// Withdraw BGP route
-	if err := vr.router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
-		vr.logger.Error("failed to withdraw route on delete", "error", err)
+	// Reconcile the shared VIP address route after this listener is removed.
+	if _, err := vr.routes.Delete(ctx, vr.key, vip.Spec.Address); err != nil {
+		vr.logger.Error("failed to reconcile route on delete", "error", err)
 		span.RecordError(err)
 	}
 

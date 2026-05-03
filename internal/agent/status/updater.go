@@ -23,6 +23,14 @@ const (
 	// ConditionHealthCheckReady reports whether the agent accepted the current
 	// health check configuration.
 	ConditionHealthCheckReady = "HealthCheckReady"
+
+	// ConditionServing reports whether this VirtualIP address:port/protocol has
+	// at least one backend that can currently receive traffic on this node.
+	ConditionServing = "Serving"
+
+	// ConditionRouteAdvertised reports whether the shared VIP address route is
+	// currently advertised by this node.
+	ConditionRouteAdvertised = "RouteAdvertised"
 )
 
 // Config configures Kubernetes API access for status updates.
@@ -64,8 +72,9 @@ func NewUpdater(cfg Config, logger *slog.Logger) (*Updater, error) {
 	}, nil
 }
 
-// UpdateVIPStatus updates backend health fields in the VirtualIP status subresource.
-func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error {
+// UpdateVIPStatus updates backend health fields in the VirtualIP status
+// subresource and optionally records additional agent-owned conditions.
+func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec, conditions ...metav1.Condition) error {
 	if u == nil || u.client == nil || vip == nil {
 		return nil
 	}
@@ -98,6 +107,10 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 		current.Status.TotalBackends = len(vip.Spec.Backends)
 		current.Status.HealthyBackends = len(healthyBackends)
 		current.Status.Backends = buildBackendStatuses(vip.Spec.Backends, healthySet)
+		for _, condition := range conditions {
+			condition.ObservedGeneration = vip.Generation
+			meta.SetStatusCondition(&current.Status.Conditions, condition)
+		}
 
 		return u.client.Status().Update(ctx, &current)
 	})

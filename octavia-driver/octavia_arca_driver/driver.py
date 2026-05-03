@@ -18,6 +18,7 @@ import json
 import logging
 import threading
 
+from kubernetes import client as k8s_client
 from oslo_config import cfg
 from octavia_lib.api.drivers import driver_lib
 from octavia_lib.api.drivers import exceptions as driver_exc
@@ -254,7 +255,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if pool_id:
             annotations[constants.ANNOTATION_POOL_ID] = pool_id
 
-        self._k8s.create_virtualip(name, spec, annotations=annotations)
+        created = self._create_or_update_listener_virtualip(
+            name, spec, annotations, lb_id, listener_id
+        )
         self._remember_loadbalancer_vip(lb_id, vip_address)
         if pool_id:
             created_vip = {
@@ -272,11 +275,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     "deleting VirtualIP %s",
                     pool_id, listener_id, name,
                 )
-                try:
-                    self._k8s.delete_virtualip(name)
-                except Exception:
-                    LOG.exception("Failed to delete VirtualIP %s after "
-                                  "listener_create restore failure", name)
+                if created:
+                    try:
+                        self._k8s.delete_virtualip(name)
+                    except Exception:
+                        LOG.exception("Failed to delete VirtualIP %s after "
+                                      "listener_create restore failure", name)
                 try:
                     self._push_pool_restore_error_status(
                         name, lb_id, listener_id, pool_id
@@ -1026,6 +1030,54 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 ),
             )
         return mapped_type
+
+    def _create_or_update_listener_virtualip(self, name, spec, annotations,
+                                             lb_id, listener_id):
+        try:
+            self._k8s.create_virtualip(name, spec, annotations=annotations)
+            return True
+        except k8s_client.exceptions.ApiException as exc:
+            if exc.status != 409:
+                raise
+
+        existing = self._k8s.get_virtualip(name)
+        if not existing:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "VirtualIP already exists but could not be read."
+                ),
+                operator_fault_string=(
+                    f"Conflict creating VirtualIP {name}, but get returned "
+                    "no object"
+                ),
+            )
+
+        existing_annotations = (
+            existing.get("metadata", {}).get("annotations", {}) or {}
+        )
+        existing_lb_id = existing_annotations.get(constants.ANNOTATION_LB_ID)
+        existing_listener_id = existing_annotations.get(
+            constants.ANNOTATION_LISTENER_ID
+        )
+        if existing_lb_id != lb_id or existing_listener_id != listener_id:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "A conflicting VirtualIP already exists for this listener."
+                ),
+                operator_fault_string=(
+                    f"VirtualIP {name} exists for lb/listener "
+                    f"{existing_lb_id}/{existing_listener_id}, not "
+                    f"{lb_id}/{listener_id}"
+                ),
+            )
+
+        LOG.info(
+            "VirtualIP %s already exists for listener %s; patching desired "
+            "state",
+            name, listener_id,
+        )
+        self._k8s.update_virtualip(name, spec, annotations=annotations)
+        return False
 
     def _associate_pool_with_virtualip(self, vip, pool_id):
         if not vip or not pool_id:

@@ -7,6 +7,7 @@ import json
 import unittest
 from unittest import mock
 
+from kubernetes import client as k8s_client
 from octavia_lib.api.drivers import data_models as octavia_data_models
 from octavia_lib.api.drivers import exceptions as driver_exc
 
@@ -321,6 +322,72 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(
             annotations[constants.ANNOTATION_POOL_ID], "pool-1111"
         )
+
+    def test_listener_create_patches_existing_virtualip_on_conflict(self):
+        listener_id = "aaaaaaaa-1111-2222-3333-444444444444"
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        listener = FakeObj({
+            "listener_id": listener_id,
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "vip_address": "203.0.113.10",
+            "project_id": "test-project",
+        })
+        self.mock_k8s.create_virtualip.side_effect = (
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            )
+        )
+        self.mock_k8s.get_virtualip.return_value = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            {
+                constants.ANNOTATION_LB_ID: lb_id,
+                constants.ANNOTATION_LISTENER_ID: listener_id,
+            },
+        )
+
+        self.driver.listener_create(listener)
+
+        self.mock_k8s.update_virtualip.assert_called_once()
+        name, spec = self.mock_k8s.update_virtualip.call_args[0]
+        annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
+        self.assertEqual(name, "octavia-bbbbbbbb-aaaaaaaa")
+        self.assertEqual(spec["address"], "203.0.113.10")
+        self.assertEqual(spec["port"], 80)
+        self.assertEqual(annotations[constants.ANNOTATION_LB_ID], lb_id)
+        self.assertEqual(
+            annotations[constants.ANNOTATION_LISTENER_ID], listener_id
+        )
+
+    def test_listener_create_rejects_conflicting_virtualip_owner(self):
+        listener = FakeObj({
+            "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "loadbalancer_id": "bbbbbbbb-1111-2222-3333-444444444444",
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "vip_address": "203.0.113.10",
+            "project_id": "test-project",
+        })
+        self.mock_k8s.create_virtualip.side_effect = (
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            )
+        )
+        self.mock_k8s.get_virtualip.return_value = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            {
+                constants.ANNOTATION_LB_ID: "other-lb",
+                constants.ANNOTATION_LISTENER_ID: "other-listener",
+            },
+        )
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.listener_create(listener)
+
+        self.mock_k8s.update_virtualip.assert_not_called()
 
     def test_listener_create_rejects_terminated_https(self):
         from octavia_lib.api.drivers import exceptions as driver_exc
@@ -687,6 +754,47 @@ class TestDriverLifecycle(unittest.TestCase):
             "id": "member-1111",
             "provisioning_status": "ERROR",
         }])
+
+    def test_listener_create_keeps_existing_virtualip_when_restore_fails(self):
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        listener_id = "aaaaaaaa-1111-2222-3333-444444444444"
+        self.mock_k8s.create_virtualip.side_effect = (
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            )
+        )
+        self.mock_k8s.get_virtualip.return_value = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            {
+                constants.ANNOTATION_LB_ID: lb_id,
+                constants.ANNOTATION_LISTENER_ID: listener_id,
+            },
+        )
+        self.mock_driver_lib.get_pool.return_value = FakeObj({
+            "pool_id": "pool-1111",
+            "loadbalancer_id": lb_id,
+            "members": [{
+                "member_id": "member-1111",
+                "address": "10.0.1.1",
+                "protocol_port": 80,
+                "weight": 100,
+                "backup": True,
+            }],
+        })
+
+        with mock.patch("octavia_arca_driver.driver.LOG.exception"):
+            with self.assertRaises(driver_exc.UnsupportedOptionError):
+                self.driver.listener_create(FakeObj({
+                    "listener_id": listener_id,
+                    "loadbalancer_id": lb_id,
+                    "protocol": "TCP",
+                    "protocol_port": 80,
+                    "vip_address": "203.0.113.10",
+                    "default_pool_id": "pool-1111",
+                }))
+
+        self.mock_k8s.delete_virtualip.assert_not_called()
 
     def test_loadbalancer_update_reports_active_status(self):
         lb_id = "lb-1111"

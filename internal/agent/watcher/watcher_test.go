@@ -90,6 +90,89 @@ func TestEventHandlerOnUpdateHandlesGenerationChange(t *testing.T) {
 	}
 }
 
+func TestInitialSyncEventGateCoalescesAddUpdateUntilRelease(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	gate := newInitialSyncEventGate(eh)
+	addedVIP := newWatcherTestVIP()
+	updatedVIP := addedVIP.DeepCopy()
+	updatedVIP.Spec.Port = 443
+
+	gate.OnAdd(addedVIP, true)
+	gate.OnUpdate(addedVIP, updatedVIP)
+
+	if len(handler.updated) != 0 {
+		t.Fatalf("expected no updates before release, got %d", len(handler.updated))
+	}
+
+	gate.Release()
+
+	if len(handler.updated) != 1 {
+		t.Fatalf("expected 1 update after release, got %d", len(handler.updated))
+	}
+	if handler.updated[0] != updatedVIP {
+		t.Fatalf("released VIP = %#v, want latest updated VIP", handler.updated[0])
+	}
+}
+
+func TestInitialSyncEventGateDeliversAddAfterStatusOnlyUpdate(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	gate := newInitialSyncEventGate(eh)
+	addedVIP := newWatcherTestVIP()
+	statusOnlyVIP := addedVIP.DeepCopy()
+	statusOnlyVIP.Status.HealthyBackends = 1
+
+	gate.OnAdd(addedVIP, true)
+	gate.OnUpdate(addedVIP, statusOnlyVIP)
+	gate.Release()
+
+	if len(handler.updated) != 1 {
+		t.Fatalf("expected 1 update after release, got %d", len(handler.updated))
+	}
+	if handler.updated[0] != statusOnlyVIP {
+		t.Fatalf("released VIP = %#v, want status-only updated VIP", handler.updated[0])
+	}
+}
+
+func TestInitialSyncEventGateCoalescesAddDeleteUntilRelease(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	gate := newInitialSyncEventGate(eh)
+	vip := newWatcherTestVIP()
+
+	gate.OnAdd(vip, true)
+	gate.OnDelete(vip)
+	gate.Release()
+
+	if len(handler.updated) != 0 {
+		t.Fatalf("expected no updates after add/delete coalesce, got %d", len(handler.updated))
+	}
+	if len(handler.deleted) != 1 {
+		t.Fatalf("expected 1 delete after release, got %d", len(handler.deleted))
+	}
+	if handler.deleted[0] != vip {
+		t.Fatalf("deleted VIP = %#v, want original VIP", handler.deleted[0])
+	}
+}
+
+func TestInitialSyncEventGateDeliversAfterRelease(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	gate := newInitialSyncEventGate(eh)
+	vip := newWatcherTestVIP()
+
+	gate.Release()
+	gate.OnAdd(vip, false)
+
+	if len(handler.updated) != 1 {
+		t.Fatalf("expected 1 update after release, got %d", len(handler.updated))
+	}
+	if handler.updated[0] != vip {
+		t.Fatalf("updated VIP = %#v, want VIP", handler.updated[0])
+	}
+}
+
 func TestEventHandlerOnDeleteHandlesVirtualIP(t *testing.T) {
 	handler := &recordingHandler{}
 	eh := &eventHandler{handler: handler, logger: newTestLogger()}

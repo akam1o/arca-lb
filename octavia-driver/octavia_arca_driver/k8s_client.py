@@ -191,6 +191,8 @@ class VirtualIPStatusWatcher:
         self._api = k8s_client.CustomObjectsApi()
         self._stop_event = threading.Event()
         self._thread = None
+        self._watch = None
+        self._watch_lock = threading.Lock()
 
     def start(self, callback):
         """Start watching VirtualIP status changes in a background thread.
@@ -212,17 +214,28 @@ class VirtualIPStatusWatcher:
     def stop(self):
         """Stop the status watcher."""
         self._stop_event.set()
+        with self._watch_lock:
+            watch = self._watch
+        if watch is not None:
+            watch.stop()
         if self._thread:
             self._thread.join(timeout=5)
-            self._thread = None
+            if self._thread.is_alive():
+                LOG.warning(
+                    "VirtualIP status watcher did not stop within timeout"
+                )
+            else:
+                self._thread = None
         LOG.info("VirtualIP status watcher stopped")
 
     def _watch_loop(self, callback):
-        w = k8s_watch.Watch()
         selector = (
             f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}"
         )
         while not self._stop_event.is_set():
+            w = k8s_watch.Watch()
+            with self._watch_lock:
+                self._watch = w
             try:
                 stream = w.stream(
                     self._api.list_namespaced_custom_object,
@@ -251,3 +264,8 @@ class VirtualIPStatusWatcher:
                         "VirtualIP watch stream error, reconnecting..."
                     )
                     self._stop_event.wait(timeout=5)
+            finally:
+                w.stop()
+                with self._watch_lock:
+                    if self._watch is w:
+                        self._watch = None

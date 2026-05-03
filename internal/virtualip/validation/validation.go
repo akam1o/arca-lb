@@ -14,7 +14,7 @@ func Validate(vip *v1alpha1.VirtualIP) error {
 	if err := ValidateDataPlane(vip); err != nil {
 		return err
 	}
-	return validateHealthCheckSpec(vip.Spec.HealthCheck)
+	return ValidateHealthCheckSpec(vip.Spec.HealthCheck)
 }
 
 // ValidateDataPlane validates the fields the agent may apply to the data plane
@@ -47,7 +47,31 @@ func ValidateSpec(spec *v1alpha1.VirtualIPSpec) error {
 	if err := validateDataPlaneSpec(spec); err != nil {
 		return err
 	}
-	return validateHealthCheckSpec(spec.HealthCheck)
+	return ValidateHealthCheckSpec(spec.HealthCheck)
+}
+
+// ValidateHealthCheckSpec validates health-check-specific VirtualIP fields.
+func ValidateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
+	return validateHealthCheckSpec(hc)
+}
+
+// ValidateHealthCheckRuntimeSpec validates fields required before a health
+// check scheduler is started. It expects CRD-defaulted fields to be materialized.
+func ValidateHealthCheckRuntimeSpec(hc *v1alpha1.HealthCheckSpec) error {
+	if err := validateHealthCheckSpec(hc); err != nil {
+		return err
+	}
+	if hc == nil {
+		return nil
+	}
+	if hc.RiseCount < 1 {
+		return fmt.Errorf("spec.healthCheck.riseCount must be >= 1")
+	}
+	if hc.FallCount < 1 {
+		return fmt.Errorf("spec.healthCheck.fallCount must be >= 1")
+	}
+
+	return nil
 }
 
 func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
@@ -216,6 +217,15 @@ func validateV2(cfg *V2Config) error {
 	if cfg.Agent.StatusTTL <= 0 {
 		return fmt.Errorf("agent.statusTTL must be positive")
 	}
+	if cfg.HealthCheck.WorkerCount <= 0 {
+		return fmt.Errorf("healthCheck.workerCount must be positive")
+	}
+	if cfg.HealthCheck.MaxConcurrentChecks <= 0 {
+		return fmt.Errorf("healthCheck.maxConcurrentChecks must be positive")
+	}
+	if cfg.HealthCheck.DefaultTimeout <= 0 {
+		return fmt.Errorf("healthCheck.defaultTimeout must be positive")
+	}
 
 	switch cfg.DataPlane.Type {
 	case "vpp", "noop":
@@ -232,6 +242,15 @@ func validateV2(cfg *V2Config) error {
 	case "frr", "noop":
 	default:
 		return fmt.Errorf("unsupported routing.type: %s", cfg.Routing.Type)
+	}
+
+	if cfg.Metrics.Enabled {
+		if !strings.HasPrefix(cfg.Metrics.Path, "/") {
+			return fmt.Errorf("metrics.path must be an absolute HTTP path")
+		}
+		if cfg.Metrics.Path == "/health" {
+			return fmt.Errorf("metrics.path must not be /health")
+		}
 	}
 
 	return nil

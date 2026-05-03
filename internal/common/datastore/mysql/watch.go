@@ -26,13 +26,16 @@ func (ChangeLogRecord) TableName() string {
 
 // Watch watches for changes in VIPs and Backends using polling
 func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEvent, error) {
+	lastID, err := ds.latestChangeLogID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	eventChan := make(chan datastore.WatchEvent, 100)
 
 	go func() {
 		defer close(eventChan)
 
-		// Track last processed change log ID
-		var lastID int64 = 0
 		pollInterval := 100 * time.Millisecond
 
 		ticker := time.NewTicker(pollInterval)
@@ -46,7 +49,7 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 			case <-ticker.C:
 				// Poll for new changes
 				var changes []ChangeLogRecord
-				if err := ds.db.Where("id > ?", lastID).
+				if err := ds.db.WithContext(ctx).Where("id > ?", lastID).
 					Order("id ASC").
 					Limit(100).
 					Find(&changes).Error; err != nil {
@@ -80,6 +83,16 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 	}()
 
 	return eventChan, nil
+}
+
+func (ds *MySQLDataStore) latestChangeLogID(ctx context.Context) (int64, error) {
+	var lastID int64
+	if err := ds.db.WithContext(ctx).
+		Raw("SELECT COALESCE(MAX(id), 0) FROM change_log").
+		Scan(&lastID).Error; err != nil {
+		return 0, fmt.Errorf("failed to get latest change log id: %w", err)
+	}
+	return lastID, nil
 }
 
 // buildWatchEvent builds a WatchEvent from a ChangeLogRecord

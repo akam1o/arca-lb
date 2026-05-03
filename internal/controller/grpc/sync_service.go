@@ -59,6 +59,14 @@ func (s *ConfigSyncService) WatchConfig(req *pb.WatchConfigRequest, stream pb.Co
 		"current_revision": req.CurrentRevision,
 	}).Info("WatchConfig called")
 
+	// Start watching before reading the initial config so updates that arrive
+	// during the initial snapshot are still delivered.
+	events, err := s.datastore.Watch(stream.Context())
+	if err != nil {
+		s.logger.WithError(err).Error("Failed to start watch")
+		return status.Errorf(codes.Internal, "failed to start watch: %v", err)
+	}
+
 	// Get current config first
 	config, err := s.datastore.GetConfig(stream.Context())
 	if err != nil {
@@ -80,13 +88,6 @@ func (s *ConfigSyncService) WatchConfig(req *pb.WatchConfigRequest, stream pb.Co
 			s.logger.WithError(err).Error("Failed to send initial config")
 			return err
 		}
-	}
-
-	// Watch for changes
-	events, err := s.datastore.Watch(stream.Context())
-	if err != nil {
-		s.logger.WithError(err).Error("Failed to start watch")
-		return status.Errorf(codes.Internal, "failed to start watch: %v", err)
 	}
 
 	for {

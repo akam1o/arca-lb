@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
@@ -61,6 +62,10 @@ type Watcher struct {
 	scheme  *runtime.Scheme
 }
 
+// InitialSyncHandler runs after the informer cache has synced and receives the
+// VirtualIPs from that synced cache.
+type InitialSyncHandler func(context.Context, []v1alpha1.VirtualIP) error
+
 // New creates a new CRD watcher.
 func New(cfg Config, handler Handler, logger *slog.Logger) (*Watcher, error) {
 	if cfg.ResyncInterval == 0 {
@@ -95,12 +100,16 @@ func ListCurrent(ctx context.Context, cfg Config) ([]v1alpha1.VirtualIP, error) 
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
+	return listCurrent(ctx, k8sClient, cfg.Namespace)
+}
+
+func listCurrent(ctx context.Context, reader client.Reader, namespace string) ([]v1alpha1.VirtualIP, error) {
 	var list v1alpha1.VirtualIPList
 	var opts []client.ListOption
-	if cfg.Namespace != "" {
-		opts = append(opts, client.InNamespace(cfg.Namespace))
+	if namespace != "" {
+		opts = append(opts, client.InNamespace(namespace))
 	}
-	if err := k8sClient.List(ctx, &list, opts...); err != nil {
+	if err := reader.List(ctx, &list, opts...); err != nil {
 		return nil, fmt.Errorf("failed to list VirtualIPs: %w", err)
 	}
 	return list.Items, nil
@@ -108,6 +117,13 @@ func ListCurrent(ctx context.Context, cfg Config) ([]v1alpha1.VirtualIP, error) 
 
 // Start starts watching VirtualIP CRDs. Blocks until ctx is cancelled.
 func (w *Watcher) Start(ctx context.Context) error {
+	return w.StartWithInitialSync(ctx, nil)
+}
+
+// StartWithInitialSync starts watching VirtualIP CRDs, waits for the informer
+// cache to sync, runs afterSync with the cache-backed current list, then blocks
+// until ctx is cancelled.
+func (w *Watcher) StartWithInitialSync(ctx context.Context, afterSync InitialSyncHandler) error {
 	restCfg, err := w.buildRESTConfig()
 	if err != nil {
 		return fmt.Errorf("failed to build REST config: %w", err)
@@ -146,10 +162,17 @@ func (w *Watcher) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to get informer: %w", err)
 	}
 
-	reg, err := informer.AddEventHandler(&eventHandler{
+	vipHandler := k8scache.ResourceEventHandler(&eventHandler{
 		handler: w.handler,
 		logger:  w.logger,
 	})
+	var initialSyncGate *initialSyncEventGate
+	if afterSync != nil {
+		initialSyncGate = newInitialSyncEventGate(vipHandler)
+		vipHandler = initialSyncGate
+	}
+
+	reg, err := informer.AddEventHandler(vipHandler)
 	if err != nil {
 		return fmt.Errorf("failed to add event handler: %w", err)
 	}
@@ -161,8 +184,45 @@ func (w *Watcher) Start(ctx context.Context) error {
 
 	w.logger.Info("starting VirtualIP watcher", "namespace", w.config.Namespace)
 
-	// Start cache (blocks until context is cancelled)
-	return c.Start(ctx)
+	cacheCtx, cancelCache := context.WithCancel(ctx)
+	defer cancelCache()
+
+	cacheErrCh := make(chan error, 1)
+	go func() {
+		cacheErrCh <- c.Start(cacheCtx)
+	}()
+
+	if afterSync != nil {
+		if !c.WaitForCacheSync(cacheCtx) {
+			cancelCache()
+			select {
+			case err := <-cacheErrCh:
+				if err != nil {
+					return err
+				}
+			default:
+			}
+			if err := cacheCtx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("VirtualIP watcher cache did not sync")
+		}
+
+		currentVIPs, err := listCurrent(cacheCtx, c, w.config.Namespace)
+		if err != nil {
+			cancelCache()
+			<-cacheErrCh
+			return err
+		}
+		if err := afterSync(cacheCtx, currentVIPs); err != nil {
+			cancelCache()
+			<-cacheErrCh
+			return err
+		}
+		initialSyncGate.Release()
+	}
+
+	return <-cacheErrCh
 }
 
 // GetClient returns a read-only client for querying VirtualIP resources.
@@ -199,6 +259,168 @@ func newScheme() (*runtime.Scheme, error) {
 type eventHandler struct {
 	handler Handler
 	logger  *slog.Logger
+}
+
+type initialSyncEventGate struct {
+	handler k8scache.ResourceEventHandler
+
+	mu             sync.Mutex
+	released       bool
+	pendingOrder   []string
+	pendingByKey   map[string]pendingSyncEvent
+	pendingUnkeyed []pendingSyncEvent
+}
+
+func newInitialSyncEventGate(handler k8scache.ResourceEventHandler) *initialSyncEventGate {
+	return &initialSyncEventGate{
+		handler:      handler,
+		pendingByKey: make(map[string]pendingSyncEvent),
+	}
+}
+
+func (h *initialSyncEventGate) Release() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.released {
+		return
+	}
+	h.released = true
+	// Hold the lock while replaying so post-sync events cannot overtake
+	// buffered initial-list events.
+	for _, key := range h.pendingOrder {
+		event, ok := h.pendingByKey[key]
+		if !ok {
+			continue
+		}
+		event.deliver(h.handler)
+		delete(h.pendingByKey, key)
+	}
+	for _, event := range h.pendingUnkeyed {
+		event.deliver(h.handler)
+	}
+	h.pendingOrder = nil
+	h.pendingByKey = nil
+	h.pendingUnkeyed = nil
+}
+
+func (h *initialSyncEventGate) enqueue(event pendingSyncEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.released {
+		event.deliver(h.handler)
+		return
+	}
+	if event.key == "" {
+		h.pendingUnkeyed = append(h.pendingUnkeyed, event)
+		return
+	}
+	if _, ok := h.pendingByKey[event.key]; !ok {
+		h.pendingOrder = append(h.pendingOrder, event.key)
+	}
+	h.pendingByKey[event.key] = coalescePendingEvent(h.pendingByKey[event.key], event)
+}
+
+func (h *initialSyncEventGate) OnAdd(obj interface{}, isInInitialList bool) {
+	h.enqueue(newPendingAdd(obj, isInInitialList))
+}
+
+func (h *initialSyncEventGate) OnUpdate(oldObj, newObj interface{}) {
+	h.enqueue(newPendingUpdate(oldObj, newObj))
+}
+
+func (h *initialSyncEventGate) OnDelete(obj interface{}) {
+	h.enqueue(newPendingDelete(obj))
+}
+
+type pendingEventType int
+
+const (
+	pendingEventAdd pendingEventType = iota
+	pendingEventUpdate
+	pendingEventDelete
+)
+
+type pendingSyncEvent struct {
+	key             string
+	eventType       pendingEventType
+	obj             interface{}
+	oldObj          interface{}
+	isInInitialList bool
+}
+
+func newPendingAdd(obj interface{}, isInInitialList bool) pendingSyncEvent {
+	key, _ := virtualIPEventKey(obj)
+	return pendingSyncEvent{
+		key:             key,
+		eventType:       pendingEventAdd,
+		obj:             obj,
+		isInInitialList: isInInitialList,
+	}
+}
+
+func newPendingUpdate(oldObj, newObj interface{}) pendingSyncEvent {
+	key, _ := virtualIPEventKey(newObj)
+	return pendingSyncEvent{
+		key:       key,
+		eventType: pendingEventUpdate,
+		obj:       newObj,
+		oldObj:    oldObj,
+	}
+}
+
+func newPendingDelete(obj interface{}) pendingSyncEvent {
+	key, _ := virtualIPEventKey(obj)
+	return pendingSyncEvent{
+		key:       key,
+		eventType: pendingEventDelete,
+		obj:       obj,
+	}
+}
+
+func coalescePendingEvent(existing, next pendingSyncEvent) pendingSyncEvent {
+	if existing.key == "" {
+		return next
+	}
+	if existing.eventType == pendingEventAdd && next.eventType == pendingEventUpdate {
+		existing.obj = next.obj
+		return existing
+	}
+	if existing.eventType == pendingEventUpdate && next.eventType == pendingEventUpdate {
+		existing.obj = next.obj
+		return existing
+	}
+	return next
+}
+
+func (e pendingSyncEvent) deliver(handler k8scache.ResourceEventHandler) {
+	switch e.eventType {
+	case pendingEventAdd:
+		handler.OnAdd(e.obj, e.isInInitialList)
+	case pendingEventUpdate:
+		handler.OnUpdate(e.oldObj, e.obj)
+	case pendingEventDelete:
+		handler.OnDelete(e.obj)
+	}
+}
+
+func virtualIPEventKey(obj interface{}) (string, bool) {
+	vip, ok := obj.(*v1alpha1.VirtualIP)
+	if !ok {
+		tombstone, ok := obj.(k8scache.DeletedFinalStateUnknown)
+		if !ok {
+			return "", false
+		}
+		vip, ok = tombstone.Obj.(*v1alpha1.VirtualIP)
+		if !ok {
+			return "", false
+		}
+	}
+	if vip == nil || vip.Namespace == "" || vip.Name == "" {
+		return "", false
+	}
+	return vip.Namespace + "/" + vip.Name, true
 }
 
 func (h *eventHandler) OnAdd(obj interface{}, _ bool) {

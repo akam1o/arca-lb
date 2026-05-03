@@ -432,7 +432,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if not vip:
             LOG.warning("No VirtualIP found for listener %s (pool %s)",
                         listener_id, pool_id)
-            return
+            self._push_missing_virtualip_error_status(
+                f"pool/{pool_id}",
+                pool_id=pool_id,
+                lb_id=lb_id,
+                listener_id=listener_id,
+            )
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "Listener is not associated with a VirtualIP."
+                ),
+                operator_fault_string=(
+                    f"No VirtualIP for listener {listener_id}, pool {pool_id}"
+                ),
+            )
 
         associated = self._associate_pool_with_virtualip(vip, pool_id)
         if not associated:
@@ -575,9 +588,18 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
-            deferred_context = self._deferred_pool_context(pool_id)
+            pool = {}
+            try:
+                pool = self._pool_from_octavia(pool_id)
+            except Exception:
+                LOG.exception(
+                    "Failed to fetch Octavia pool %s while deleting member",
+                    pool_id,
+                )
+
+            deferred_context = self._deferred_pool_context(pool_id, pool=pool)
+            member_id = self._member_id(m)
             if deferred_context:
-                member_id = self._member_id(m)
                 self._push_resource_delete_status(
                     f"member/{member_id or address}",
                     lb_id=deferred_context["lb_id"],
@@ -586,23 +608,41 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 )
                 LOG.info("Deleted deferred member %s from listener-less pool %s",
                          member_id or address, pool_id)
+                return
+            self._push_resource_delete_status(
+                f"member/{member_id or address}",
+                lb_id=self._pool_loadbalancer_id(pool),
+                active_listener_ids=[self._pool_listener_id(pool)],
+                active_pool_ids=[pool_id],
+                deleted_member_ids=[member_id],
+            )
             return
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
         annotations = vip.get("metadata", {}).get("annotations", {})
+        delete_address = self._member_delete_address(annotations, m)
+        member_id = self._member_id(m)
+        if not delete_address:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Cannot determine member address for deletion.",
+                operator_fault_string=(
+                    "Octavia member delete payload and VirtualIP annotations "
+                    f"do not identify member {member_id or address}"
+                ),
+            )
         backends = [b for b in spec.get("backends", [])
-                    if b.get("address") != address]
+                    if b.get("address") != delete_address]
         spec["backends"] = backends
         deleted_member_ids = self._forget_member_mapping(annotations, m)
-        member_id = self._member_id(m)
         if member_id and member_id not in deleted_member_ids:
             deleted_member_ids.append(member_id)
         self._discard_draining_member_ids(annotations, deleted_member_ids)
         self._refresh_health_check_port(spec, pool_id, vip)
         self._k8s.update_virtualip(name, spec, annotations=annotations)
         self._push_deleted_member_statuses(vip, deleted_member_ids)
-        LOG.info("Removed member %s from VirtualIP %s", address, name)
+        LOG.info("Removed member %s from VirtualIP %s",
+                 delete_address or address, name)
 
     def member_update(self, old_member, new_member):
         """Update a backend's weight in the VirtualIP."""
@@ -698,7 +738,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             annotations, draining_member_ids
         )
         self._refresh_health_check_port(
-            spec, pool_id, vip, extra_members=member_dicts
+            spec, pool_id, vip, extra_members=member_dicts, pool={}
         )
         self._k8s.update_virtualip(name, spec, annotations=annotations)
         self._push_deleted_member_statuses(
@@ -806,7 +846,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     active_pool_ids=[pool_id],
                     active_hm_ids=[hm.get("healthmonitor_id")],
                 )
-            return
+                return
+            hm_id = hm.get("healthmonitor_id")
+            self._push_missing_virtualip_error_status(
+                f"healthmonitor/{hm_id}",
+                pool_id=pool_id,
+                hm_id=hm_id,
+            )
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Pool not associated with a VirtualIP.",
+                operator_fault_string=f"No VirtualIP for pool {pool_id}",
+            )
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
@@ -936,8 +986,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._remember_loadbalancer_vip(lb_id, vip_address)
         return vip_address
 
-    def _deferred_pool_context(self, pool_id):
-        pool = self._pool_from_octavia(pool_id)
+    def _deferred_pool_context(self, pool_id, pool=None):
+        if pool is None:
+            pool = self._pool_from_octavia(pool_id)
         if not pool or self._pool_listener_id(pool):
             return None
 
@@ -1122,7 +1173,15 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
     def _push_pool_restore_error_status(self, vip_name, lb_id, listener_id,
                                         pool_id):
-        member_ids, hm_ids = self._pool_dependent_resource_ids(pool_id)
+        member_ids = []
+        hm_ids = []
+        try:
+            member_ids, hm_ids = self._pool_dependent_resource_ids(pool_id)
+        except Exception:
+            LOG.exception(
+                "Failed to resolve Octavia dependents for pool %s error status",
+                pool_id,
+            )
         self._push_resource_error_status(
             vip_name,
             lb_id=lb_id,
@@ -1130,6 +1189,29 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             error_pool_ids=[pool_id],
             error_hm_ids=hm_ids,
             error_member_ids=member_ids,
+        )
+
+    def _push_missing_virtualip_error_status(self, vip_name, pool_id=None,
+                                             lb_id=None, listener_id=None,
+                                             hm_id=None):
+        pool = {}
+        if pool_id and (not lb_id or not listener_id):
+            try:
+                pool = self._pool_from_octavia(pool_id)
+            except Exception:
+                LOG.exception(
+                    "Failed to fetch Octavia pool %s for missing VirtualIP "
+                    "error status", pool_id
+                )
+
+        self._push_resource_error_status(
+            vip_name,
+            lb_id=lb_id or self._pool_loadbalancer_id(pool),
+            error_listener_ids=[
+                listener_id or self._pool_listener_id(pool)
+            ],
+            error_pool_ids=[pool_id],
+            error_hm_ids=[hm_id],
         )
 
     def _pool_dependent_resource_ids(self, pool_id):
@@ -1266,6 +1348,23 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if removed:
             self._set_member_map_annotation(annotations, member_map)
         return removed
+
+    def _member_delete_address(self, annotations, member):
+        address = member.get("address")
+        if address:
+            return address
+
+        member_id = self._member_id(member)
+        if not member_id:
+            return None
+
+        member_map = self._member_map_from_annotations(annotations)
+        mapped_address = member_map.get(member_id)
+        if mapped_address:
+            return mapped_address
+
+        fetched = self._member_from_octavia(member_id)
+        return fetched.get("address")
 
     def _discard_draining_member_ids(self, annotations, member_ids):
         draining_member_ids = self._draining_member_ids_from_annotations(
@@ -1479,7 +1578,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return hc
 
     def _refresh_health_check_port(self, spec, pool_id, vip,
-                                   extra_members=None):
+                                   extra_members=None, pool=None):
         """Keep an existing health check pointed at Octavia member ports."""
         hc = spec.get("healthCheck")
         if not hc:
@@ -1490,14 +1589,15 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return
 
         port = self._resolve_health_check_port(
-            {"pool_id": pool_id}, vip, extra_members=extra_members
+            {"pool_id": pool_id}, vip, extra_members=extra_members, pool=pool
         )
         if hc_type in ("http", "https"):
             hc.setdefault("http", {})["port"] = port
         else:
             hc.setdefault("tcp", {})["port"] = port
 
-    def _resolve_health_check_port(self, hm, vip=None, extra_members=None):
+    def _resolve_health_check_port(self, hm, vip=None, extra_members=None,
+                                   pool=None):
         """Resolve the single probe port representable by VirtualIP.
 
         Octavia health monitors do not carry their own port. The probe port is
@@ -1506,7 +1606,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         rejected instead of silently probing the wrong target.
         """
         pool_id = hm.get("pool_id")
-        member_ports = self._member_probe_ports(pool_id, extra_members)
+        member_ports = self._member_probe_ports(
+            pool_id, extra_members, pool=pool
+        )
         if len(member_ports) == 1:
             return next(iter(member_ports))
         if len(member_ports) > 1:
@@ -1533,9 +1635,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             ),
         )
 
-    def _member_probe_ports(self, pool_id, extra_members=None):
+    def _member_probe_ports(self, pool_id, extra_members=None, pool=None):
         ports = set()
-        for member in self._pool_members(pool_id, extra_members):
+        for member in self._pool_members(pool_id, extra_members, pool=pool):
             port = self._member_probe_port(member)
             if port is not None:
                 ports.add(port)
@@ -1616,18 +1718,24 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return {}
         try:
             return self._as_dict(self._driver_lib.get_pool(pool_id))
+        except driver_exc.NotFound:
+            LOG.warning("Octavia pool %s not found", pool_id)
+            return {}
         except Exception:
             LOG.exception("Failed to fetch Octavia pool %s", pool_id)
-            return {}
+            raise
 
     def _member_from_octavia(self, member_id):
         if not member_id:
             return {}
         try:
             return self._as_dict(self._driver_lib.get_member(member_id))
+        except driver_exc.NotFound:
+            LOG.warning("Octavia member %s not found", member_id)
+            return {}
         except Exception:
             LOG.exception("Failed to fetch Octavia member %s", member_id)
-            return {}
+            raise
 
     def _health_monitor_from_octavia(self, healthmonitor_id):
         if not healthmonitor_id:
@@ -1636,10 +1744,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return self._as_dict(
                 self._driver_lib.get_healthmonitor(healthmonitor_id)
             )
+        except driver_exc.NotFound:
+            LOG.warning("Octavia health monitor %s not found",
+                        healthmonitor_id)
+            return {}
         except Exception:
             LOG.exception("Failed to fetch Octavia health monitor %s",
                           healthmonitor_id)
-            return {}
+            raise
 
     @staticmethod
     def _as_dict(value):
@@ -1794,10 +1906,17 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             conditions, CONDITION_ROUTE_ADVERTISED
         )
         serving_condition = self._condition(conditions, CONDITION_SERVING)
-        if not self._status_matches_generation(metadata, status,
-                                               ready_condition,
-                                               serving_condition,
-                                               route_condition):
+        ready_status = ready_condition.get("status")
+        if ready_status == "False":
+            status_is_current = self._condition_matches_generation(
+                metadata, ready_condition
+            )
+        else:
+            status_is_current = self._status_matches_generation(
+                metadata, status, ready_condition,
+                serving_condition, route_condition,
+            )
+        if not status_is_current:
             LOG.debug(
                 "VirtualIP %s status is stale for generation %s; skipping "
                 "Octavia status update",
@@ -1805,7 +1924,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
             return None
 
-        is_ready = ready_condition.get("status") == "True"
+        is_ready = ready_status == "True"
         is_no_backends = (
             ready_condition.get("status") == "False" and
             ready_condition.get("reason") == "NoBackends"
@@ -1910,6 +2029,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 condition.get("observedGeneration"), generation
             )
             for condition in conditions
+        )
+
+    @classmethod
+    def _condition_matches_generation(cls, metadata, condition):
+        if condition is None:
+            return False
+        return cls._generation_matches(
+            condition.get("observedGeneration"), metadata.get("generation")
         )
 
     @staticmethod

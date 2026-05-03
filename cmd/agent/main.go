@@ -208,43 +208,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	currentVIPs, err := watcher.ListCurrent(ctx, watcherCfg)
-	if err != nil {
-		logger.Warn("failed to list current VirtualIPs for stale dataplane cleanup", "error", err)
-	} else if err := cleanupStaleLastConfigs(ctx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
-		logger.Warn("stale dataplane cleanup completed with errors", "error", err)
-	}
-
-	// Start metrics server
-	var metricsServer *http.Server
-	if cfg.Metrics.Enabled {
-		mux := http.NewServeMux()
-		mux.Handle(cfg.Metrics.Path, promhttp.Handler())
-		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte("ok")); err != nil {
-				logger.Error("failed to write health response", "error", err)
-			}
-		})
-		metricsServer = &http.Server{
-			Addr:         cfg.Metrics.Address,
-			Handler:      mux,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 10 * time.Second,
-		}
-		go func() {
-			logger.Info("metrics server starting", "address", cfg.Metrics.Address)
-			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error("metrics server error", "error", err)
-			}
-		}()
-	}
-
-	// Start watcher in background
-	watcherErrCh := make(chan error, 1)
+	// Start HTTP server for the container healthcheck and optional metrics before
+	// initial sync so liveness does not depend on stale dataplane cleanup time.
+	metricsServer := newAgentHTTPServer(cfg.Metrics, logger)
 	go func() {
-		watcherErrCh <- w.Start(ctx)
+		logger.Info("agent HTTP server starting", "address", cfg.Metrics.Address, "metrics_enabled", cfg.Metrics.Enabled)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("agent HTTP server error", "error", err)
+		}
 	}()
+
+	watcherErrCh := make(chan error, 1)
+	watcherSyncedCh := make(chan struct{})
+	go func() {
+		watcherErrCh <- w.StartWithInitialSync(ctx, func(syncCtx context.Context, currentVIPs []v1alpha1.VirtualIP) error {
+			if err := cleanupStaleLastConfigs(syncCtx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
+				return fmt.Errorf("stale dataplane cleanup failed: %w", err)
+			}
+			close(watcherSyncedCh)
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-watcherErrCh:
+		if err != nil {
+			logger.Error("watcher exited before initial sync", "error", err)
+			os.Exit(1)
+		}
+	case <-watcherSyncedCh:
+	}
 
 	// Wait for signal
 	sigCh := make(chan os.Signal, 1)
@@ -264,15 +257,36 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	if metricsServer != nil {
-		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("failed to shutdown metrics server", "error", err)
-		}
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("failed to shutdown agent HTTP server", "error", err)
 	}
 	reconMgr.Stop()
 	hcEngine.Stop()
 
 	logger.Info("agent shutdown complete")
+}
+
+func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {
+	return &http.Server{
+		Addr:         cfg.Address,
+		Handler:      newAgentHTTPMux(cfg, logger),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+}
+
+func newAgentHTTPMux(cfg agentconfig.MetricsSettings, logger *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	if cfg.Enabled {
+		mux.Handle(cfg.Path, promhttp.Handler())
+	}
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("ok")); err != nil {
+			logger.Error("failed to write health response", "error", err)
+		}
+	})
+	return mux
 }
 
 // vipEventHandler bridges watcher events to the reconciler and health check engine.

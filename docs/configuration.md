@@ -6,6 +6,8 @@ This document explains how to configure arca-lb.
 
 The Agent reads its configuration from a YAML file. The path is specified via the `--config` flag or the `ARCA_AGENT_CONFIG` environment variable (default: `/etc/arca-lb/agent.yaml`).
 
+The example below explicitly enables the production VPP data plane and FRR routing. When omitted, those backends default to `noop`.
+
 ```yaml
 agent:
   id: "agent-01"
@@ -14,7 +16,7 @@ agent:
 
 kubernetes:
   kubeconfig: ""           # empty = in-cluster config
-  namespace: "default"
+  namespace: ""            # empty = watch all namespaces
   resyncInterval: "30s"
 
 dataplane:
@@ -28,8 +30,8 @@ routing:
   enabled: true
   type: "frr"              # "frr" or "noop"
   vtyshPath: "/usr/bin/vtysh"
-  routeTag: 100
-  cmdTimeout: "5s"
+  routeTag: 10000
+  cmdTimeout: "10s"
 
 rollout:
   enabled: true
@@ -39,12 +41,12 @@ rollout:
 
 healthCheck:
   workerCount: 4
-  maxConcurrentChecks: 100
+  maxConcurrentChecks: 64
   defaultTimeout: "3s"
 
 metrics:
   enabled: true
-  address: "0.0.0.0:9090"
+  address: ":9090"
   path: "/metrics"
 
 telemetry:
@@ -68,14 +70,14 @@ log:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `kubernetes.kubeconfig` | Path to kubeconfig file (empty = in-cluster) | `""` |
-| `kubernetes.namespace` | Namespace to watch for VirtualIP resources | `default` |
+| `kubernetes.namespace` | Namespace to watch for VirtualIP resources (empty watches all namespaces) | `""` |
 | `kubernetes.resyncInterval` | Informer resync interval | `30s` |
 
 ### DataPlane settings
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `dataplane.type` | Data plane backend (`vpp` or `noop`) | `vpp` |
+| `dataplane.type` | Data plane backend (`vpp` or `noop`) | `noop` |
 | `dataplane.vpp.socket_path` | VPP API socket path | `/run/vpp/api.sock` |
 | `dataplane.vpp.retained_vip_tuning_drift_policy` | Handling for retained VIP tuning drift (`rolling_recreate` or `preserve`) | `rolling_recreate` |
 | `dataplane.vpp.retained_vip_tuning_drift_drain` | Drain time before recreating a retained VIP with tuning drift | `30s` |
@@ -90,10 +92,10 @@ configure BGP peers.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `routing.enabled` | Enable BGP route management | `false` |
-| `routing.type` | Router backend (`frr` or `noop`) | `frr` |
+| `routing.type` | Router backend (`frr` or `noop`) | `noop` |
 | `routing.vtyshPath` | Path to `vtysh` command | `/usr/bin/vtysh` |
-| `routing.routeTag` | Tag value for static routes | `100` |
-| `routing.cmdTimeout` | Timeout for vtysh commands | `5s` |
+| `routing.routeTag` | Tag value for static routes | `10000` |
+| `routing.cmdTimeout` | Timeout for vtysh commands | `10s` |
 
 ### Rollout settings
 
@@ -113,7 +115,7 @@ the cluster.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `healthCheck.workerCount` | Number of health check worker goroutines | `4` |
-| `healthCheck.maxConcurrentChecks` | Max concurrent checks per worker | `100` |
+| `healthCheck.maxConcurrentChecks` | Max concurrent checks per worker | `64` |
 | `healthCheck.defaultTimeout` | Default probe timeout | `3s` |
 
 ### Metrics settings
@@ -121,7 +123,7 @@ the cluster.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `metrics.enabled` | Enable Prometheus metrics endpoint | `false` |
-| `metrics.address` | Listen address for the metrics server | `0.0.0.0:9090` |
+| `metrics.address` | Listen address for the metrics server | `:9090` |
 | `metrics.path` | HTTP path for the metrics endpoint | `/metrics` |
 
 ### Telemetry settings

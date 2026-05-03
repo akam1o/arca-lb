@@ -6,6 +6,8 @@
 
 Agent は YAML 設定ファイルから設定を読み込みます。パスは `--config` フラグまたは `ARCA_AGENT_CONFIG` 環境変数で指定します（デフォルト: `/etc/arca-lb/agent.yaml`）。
 
+以下の例では、本番向けの VPP データプレーンと FRR routing を明示的に有効化しています。省略時、これらのバックエンドは `noop` になります。
+
 ```yaml
 agent:
   id: "agent-01"
@@ -14,7 +16,7 @@ agent:
 
 kubernetes:
   kubeconfig: ""           # 空 = クラスター内設定を使用
-  namespace: "default"
+  namespace: ""            # 空 = すべての namespace を監視
   resyncInterval: "30s"
 
 dataplane:
@@ -28,8 +30,8 @@ routing:
   enabled: true
   type: "frr"              # "frr" または "noop"
   vtyshPath: "/usr/bin/vtysh"
-  routeTag: 100
-  cmdTimeout: "5s"
+  routeTag: 10000
+  cmdTimeout: "10s"
 
 rollout:
   enabled: true
@@ -39,12 +41,12 @@ rollout:
 
 healthCheck:
   workerCount: 4
-  maxConcurrentChecks: 100
+  maxConcurrentChecks: 64
   defaultTimeout: "3s"
 
 metrics:
   enabled: true
-  address: "0.0.0.0:9090"
+  address: ":9090"
   path: "/metrics"
 
 telemetry:
@@ -68,14 +70,14 @@ log:
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `kubernetes.kubeconfig` | kubeconfig ファイルのパス（空 = クラスター内設定） | `""` |
-| `kubernetes.namespace` | VirtualIP リソースを監視するネームスペース | `default` |
+| `kubernetes.namespace` | VirtualIP リソースを監視するネームスペース（空の場合はすべての namespace を監視） | `""` |
 | `kubernetes.resyncInterval` | Informer の再同期間隔 | `30s` |
 
 ### DataPlane 設定
 
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
-| `dataplane.type` | データプレーンバックエンド (`vpp` または `noop`) | `vpp` |
+| `dataplane.type` | データプレーンバックエンド (`vpp` または `noop`) | `noop` |
 | `dataplane.vpp.socket_path` | VPP API ソケットパス | `/run/vpp/api.sock` |
 | `dataplane.vpp.retained_vip_tuning_drift_policy` | retained VIP の tuning drift の扱い (`rolling_recreate` または `preserve`) | `rolling_recreate` |
 | `dataplane.vpp.retained_vip_tuning_drift_drain` | tuning drift がある retained VIP を再作成する前の drain 時間 | `30s` |
@@ -87,10 +89,10 @@ log:
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `routing.enabled` | BGP 経路管理を有効化 | `false` |
-| `routing.type` | Router バックエンド (`frr` または `noop`) | `frr` |
+| `routing.type` | Router バックエンド (`frr` または `noop`) | `noop` |
 | `routing.vtyshPath` | vtysh コマンドのパス | `/usr/bin/vtysh` |
-| `routing.routeTag` | Static Route のタグ値 | `100` |
-| `routing.cmdTimeout` | vtysh コマンドのタイムアウト | `5s` |
+| `routing.routeTag` | Static Route のタグ値 | `10000` |
+| `routing.cmdTimeout` | vtysh コマンドのタイムアウト | `10s` |
 
 ### Rollout 設定
 
@@ -108,7 +110,7 @@ log:
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `healthCheck.workerCount` | ヘルスチェックワーカー goroutine 数 | `4` |
-| `healthCheck.maxConcurrentChecks` | ワーカーあたりの最大並行チェック数 | `100` |
+| `healthCheck.maxConcurrentChecks` | ワーカーあたりの最大並行チェック数 | `64` |
 | `healthCheck.defaultTimeout` | デフォルトのプローブタイムアウト | `3s` |
 
 ### Metrics 設定
@@ -116,7 +118,7 @@ log:
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `metrics.enabled` | Prometheus メトリクスエンドポイントを有効化 | `false` |
-| `metrics.address` | メトリクスサーバーのリスンアドレス | `0.0.0.0:9090` |
+| `metrics.address` | メトリクスサーバーのリスンアドレス | `:9090` |
 | `metrics.path` | メトリクスエンドポイントの HTTP パス | `/metrics` |
 
 ### Telemetry 設定

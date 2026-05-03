@@ -951,25 +951,30 @@ func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.Virtual
 
 	vr.logger.Info("handling VIP deletion")
 
-	// Remove from data plane
-	if err := vr.dp.RemoveVIP(ctx, vip); err != nil {
-		vr.logger.Error("failed to remove VIP from data plane", "error", err)
-		span.RecordError(err)
-	}
+	cleanupFailed := false
 
-	// Reconcile the shared VIP address route after this listener is removed.
+	// Reconcile the shared VIP address route before removing dataplane state.
 	if _, err := vr.routes.Delete(ctx, vr.key, vip.Spec.Address); err != nil {
 		vr.logger.Error("failed to reconcile route on delete", "error", err)
 		span.RecordError(err)
+		cleanupFailed = true
+	} else if err := vr.dp.RemoveVIP(ctx, vip); err != nil {
+		vr.logger.Error("failed to remove VIP from data plane", "error", err)
+		span.RecordError(err)
+		cleanupFailed = true
 	}
 
 	// Clean up local state
 	if vr.store != nil {
-		if err := vr.store.DeleteLastConfig(vr.key); err != nil {
-			vr.logger.Warn("failed to delete last config", "error", err)
-		}
-		if err := vr.store.DeleteHealthStatesForVIP(vr.key); err != nil {
-			vr.logger.Warn("failed to delete health states", "error", err)
+		if cleanupFailed {
+			vr.logger.Warn("preserving local state for delete cleanup retry")
+		} else {
+			if err := vr.store.DeleteLastConfig(vr.key); err != nil {
+				vr.logger.Warn("failed to delete last config", "error", err)
+			}
+			if err := vr.store.DeleteHealthStatesForVIP(vr.key); err != nil {
+				vr.logger.Warn("failed to delete health states", "error", err)
+			}
 		}
 	}
 

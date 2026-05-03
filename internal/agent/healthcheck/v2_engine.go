@@ -12,6 +12,7 @@ import (
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	"github.com/akam1o/arca-lb/internal/agent/store"
+	vipvalidation "github.com/akam1o/arca-lb/internal/virtualip/validation"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -235,6 +236,10 @@ func (e *Engine) StartVIP(vip *v1alpha1.VirtualIP) error {
 }
 
 func (e *Engine) startVIPLocked(vipKey string, vip *v1alpha1.VirtualIP) error {
+	if err := vipvalidation.ValidateHealthCheckRuntimeSpec(vip.Spec.HealthCheck); err != nil {
+		return fmt.Errorf("invalid health check spec for VIP %s: %w", vipKey, err)
+	}
+
 	prober, err := newProberFromSpec(vip.Spec.HealthCheck)
 	if err != nil {
 		return fmt.Errorf("failed to create prober for VIP %s: %w", vipKey, err)

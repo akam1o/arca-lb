@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/dataplane"
 	"github.com/akam1o/arca-lb/internal/agent/routing"
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
+	"github.com/akam1o/arca-lb/internal/agent/store"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -343,6 +345,77 @@ func TestV2ManagerKeepsSharedAddressAdvertisedForHealthySibling(t *testing.T) {
 	}
 }
 
+func TestV2DeletePreservesStateAndDataplaneWhenRouteCleanupFails(t *testing.T) {
+	dp := newRecordingDataPlane()
+	router := newRecordingRouter(nil)
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		data, err := st.LoadLastConfig(vipKey)
+		return err == nil && len(data) > 0 && router.IsAnnounced(vip.Spec.Address)
+	}, "initial VIP apply and last config persistence")
+	if err := st.SaveHealthState(vipKey, "10.0.0.1", &store.BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatalf("SaveHealthState: %v", err)
+	}
+
+	router.withdrawErr = errors.New("vtysh withdraw failed")
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return router.withdrawCount() == 1 }, "failed route withdrawal")
+
+	if got := dp.removeCount(); got != 0 {
+		t.Fatalf("dataplane removals = %d, want 0 when route cleanup fails", got)
+	}
+	if !router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should remain advertised when withdrawal fails")
+	}
+	assertLastConfigPresent(t, st, vipKey)
+	assertHealthStatePresent(t, st, vipKey, "10.0.0.1")
+}
+
+func TestV2DeletePreservesStateWhenDataplaneCleanupFails(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.removeErr = errors.New("vpp remove failed")
+	router := newRecordingRouter(nil)
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		data, err := st.LoadLastConfig(vipKey)
+		return err == nil && len(data) > 0 && router.IsAnnounced(vip.Spec.Address)
+	}, "initial VIP apply and last config persistence")
+	if err := st.SaveHealthState(vipKey, "10.0.0.1", &store.BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatalf("SaveHealthState: %v", err)
+	}
+
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return dp.removeCount() == 1 }, "failed dataplane removal")
+
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should be withdrawn before dataplane removal")
+	}
+	assertLastConfigPresent(t, st, vipKey)
+	assertHealthStatePresent(t, st, vipKey, "10.0.0.1")
+}
+
 func TestV2ReconcilerDrainsPreviousAddressBeforeDataplaneUpdateAndRetries(t *testing.T) {
 	dp := newRecordingDataPlane()
 	router := newRecordingRouter(nil)
@@ -583,11 +656,51 @@ func sameStringSlice(a, b []string) bool {
 	return true
 }
 
+func openTestStore(t *testing.T) *store.Store {
+	t.Helper()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("store.Close: %v", err)
+		}
+	})
+	return st
+}
+
+func assertLastConfigPresent(t *testing.T, st *store.Store, vipKey string) {
+	t.Helper()
+
+	data, err := st.LoadLastConfig(vipKey)
+	if err != nil {
+		t.Fatalf("LoadLastConfig: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatalf("last config for %s was deleted", vipKey)
+	}
+}
+
+func assertHealthStatePresent(t *testing.T, st *store.Store, vipKey, backendAddr string) {
+	t.Helper()
+
+	rec, err := st.LoadHealthState(vipKey, backendAddr)
+	if err != nil {
+		t.Fatalf("LoadHealthState: %v", err)
+	}
+	if rec == nil {
+		t.Fatalf("health state for %s/%s was deleted", vipKey, backendAddr)
+	}
+}
+
 type recordingDataPlane struct {
 	mu        sync.Mutex
 	applies   int
 	removals  int
 	applyErr  error
+	removeErr error
 	recreates int
 	drifts    []dataplane.VIPTuningDrift
 	events    *eventRecorder
@@ -610,7 +723,7 @@ func (r *recordingDataPlane) RemoveVIP(_ context.Context, _ *v1alpha1.VirtualIP)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.removals++
-	return nil
+	return r.removeErr
 }
 
 func (r *recordingDataPlane) SetBackends(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec) error {

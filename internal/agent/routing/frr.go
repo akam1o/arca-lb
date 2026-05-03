@@ -50,13 +50,6 @@ func NewFRR(cfg FRRConfig) (*FRR, error) {
 }
 
 func (f *FRR) AnnounceVIP(ctx context.Context, vipAddress string) error {
-	f.mu.Lock()
-	if f.announced[vipAddress] {
-		f.mu.Unlock()
-		return nil // already announced
-	}
-	f.mu.Unlock()
-
 	commands, err := f.addRouteCmd(vipAddress)
 	if err != nil {
 		return err

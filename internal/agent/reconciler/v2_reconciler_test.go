@@ -732,7 +732,7 @@ func TestRouteCoordinatorSuppressesAnnouncementsDuringAddressDrain(t *testing.T)
 	events := &eventRecorder{}
 	router := newRecordingRouter(events)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	routes := newRouteCoordinator(router, logger)
+	routes := newRouteCoordinator(router, logger, time.Hour)
 	ctx := context.Background()
 
 	advertised, err := routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
@@ -786,6 +786,59 @@ func TestRouteCoordinatorSuppressesAnnouncementsDuringAddressDrain(t *testing.T)
 		if got[i] != want[i] {
 			t.Fatalf("events = %#v, want %#v", got, want)
 		}
+	}
+}
+
+func TestRouteCoordinatorReplaysAdvertisedRouteAfterVerificationInterval(t *testing.T) {
+	now := time.Unix(100, 0)
+	router := newRecordingRouter(nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	routes := newRouteCoordinator(router, logger, 30*time.Second)
+	routes.now = func() time.Time {
+		return now
+	}
+	ctx := context.Background()
+
+	advertised, err := routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing: %v", err)
+	}
+	if !advertised {
+		t.Fatal("initial serving VIP should advertise the address route")
+	}
+	if got := router.announceCount(); got != 1 {
+		t.Fatalf("announce count = %d, want 1", got)
+	}
+
+	router.dropAnnounced("203.0.113.10")
+	now = now.Add(29 * time.Second)
+	advertised, err = routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing before verification interval: %v", err)
+	}
+	if !advertised {
+		t.Fatal("cached route state should still report advertised before verification interval")
+	}
+	if got := router.announceCount(); got != 1 {
+		t.Fatalf("announce count before verification interval = %d, want 1", got)
+	}
+	if router.IsAnnounced("203.0.113.10") {
+		t.Fatal("router should still simulate an out-of-band route loss before verification interval")
+	}
+
+	now = now.Add(2 * time.Second)
+	advertised, err = routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing after verification interval: %v", err)
+	}
+	if !advertised {
+		t.Fatal("route should remain advertised after replay")
+	}
+	if got := router.announceCount(); got != 2 {
+		t.Fatalf("announce count after verification interval = %d, want 2", got)
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("route should be re-announced after verification interval")
 	}
 }
 
@@ -1122,7 +1175,7 @@ func TestV2ReconcilerCoalescesBurstUpdatesToLatestSpec(t *testing.T) {
 	vr := newVIPReconciler(
 		"default/web",
 		dp,
-		newRouteCoordinator(router, logger),
+		newRouteCoordinator(router, logger, time.Hour),
 		nil,
 		nil,
 		nil,
@@ -1497,6 +1550,12 @@ func (r *recordingRouter) IsAnnounced(vipAddress string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.announced[vipAddress]
+}
+
+func (r *recordingRouter) dropAnnounced(vipAddress string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.announced, vipAddress)
 }
 
 func (r *recordingRouter) Close() error {

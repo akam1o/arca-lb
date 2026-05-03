@@ -7,7 +7,8 @@ import "context"
 // When at least one backend is healthy, the VIP route is announced.
 // When all backends are unhealthy, the route is withdrawn to prevent black-holing.
 type Router interface {
-	// AnnounceVIP announces a route for the given VIP address.
+	// AnnounceVIP ensures a route for the given VIP address is announced.
+	// Implementations should replay the desired route even when it was tracked locally.
 	AnnounceVIP(ctx context.Context, vipAddress string) error
 
 	// WithdrawVIP withdraws the route for the given VIP address.

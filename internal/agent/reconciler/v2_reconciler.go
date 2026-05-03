@@ -101,7 +101,7 @@ func NewManager(
 		dp:               dp,
 		store:            st,
 		healthTracker:    ht,
-		routes:           newRouteCoordinator(router, logger),
+		routes:           newRouteCoordinator(router, logger, safetyInterval),
 		logger:           logger,
 		safetyInterval:   safetyInterval,
 		tuningDrift:      normalizeTuningDriftConfig(TuningDriftConfig{}),
@@ -158,8 +158,10 @@ func normalizeTuningDriftConfig(cfg TuningDriftConfig) TuningDriftConfig {
 }
 
 type routeCoordinator struct {
-	router routing.Router
-	logger *slog.Logger
+	router                    routing.Router
+	logger                    *slog.Logger
+	routeVerificationInterval time.Duration
+	now                       func() time.Time
 
 	mu           sync.Mutex
 	addresses    map[string]*routeAddressState // key: VIP address
@@ -167,22 +169,39 @@ type routeCoordinator struct {
 }
 
 type routeAddressState struct {
-	serving    map[string]bool // key: namespace/name
-	advertised bool
-	reconciled bool
-	drainOwner string
+	serving      map[string]bool // key: namespace/name
+	advertised   bool
+	reconciled   bool
+	drainOwner   string
+	lastVerified time.Time
 }
 
-func newRouteCoordinator(router routing.Router, logger *slog.Logger) *routeCoordinator {
+func newRouteCoordinator(router routing.Router, logger *slog.Logger, routeVerificationInterval time.Duration) *routeCoordinator {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &routeCoordinator{
-		router:       router,
-		logger:       logger.With("component", "route-coordinator"),
-		addresses:    make(map[string]*routeAddressState),
-		vipAddresses: make(map[string]string),
+	if routeVerificationInterval <= 0 {
+		routeVerificationInterval = 30 * time.Second
 	}
+	return &routeCoordinator{
+		router:                    router,
+		logger:                    logger.With("component", "route-coordinator"),
+		routeVerificationInterval: routeVerificationInterval,
+		addresses:                 make(map[string]*routeAddressState),
+		vipAddresses:              make(map[string]string),
+	}
+}
+
+func (c *routeCoordinator) currentTime() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *routeCoordinator) shouldVerifyAdvertisedRoute(state *routeAddressState, now time.Time) bool {
+	return state.lastVerified.IsZero() ||
+		!now.Before(state.lastVerified.Add(c.routeVerificationInterval))
 }
 
 func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address string, serving bool) (bool, error) {
@@ -364,6 +383,7 @@ func (c *routeCoordinator) removeVIPLocked(ctx context.Context, vipKey, address 
 }
 
 func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, state *routeAddressState) (bool, error) {
+	now := c.currentTime()
 	shouldAdvertise := false
 	if state.drainOwner == "" {
 		for _, serving := range state.serving {
@@ -375,7 +395,7 @@ func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, 
 	}
 
 	if shouldAdvertise {
-		if state.advertised {
+		if state.advertised && !c.shouldVerifyAdvertisedRoute(state, now) {
 			return true, nil
 		}
 		if err := c.router.AnnounceVIP(ctx, address); err != nil {
@@ -383,6 +403,7 @@ func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, 
 		}
 		state.advertised = true
 		state.reconciled = true
+		state.lastVerified = now
 		return true, nil
 	}
 
@@ -392,6 +413,7 @@ func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, 
 		}
 		state.advertised = false
 		state.reconciled = true
+		state.lastVerified = time.Time{}
 	}
 	return false, nil
 }

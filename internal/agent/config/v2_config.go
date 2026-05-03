@@ -216,6 +216,15 @@ func validateV2(cfg *V2Config) error {
 	if cfg.Agent.StatusTTL <= 0 {
 		return fmt.Errorf("agent.statusTTL must be positive")
 	}
+	if cfg.HealthCheck.WorkerCount <= 0 {
+		return fmt.Errorf("healthCheck.workerCount must be positive")
+	}
+	if cfg.HealthCheck.MaxConcurrentChecks <= 0 {
+		return fmt.Errorf("healthCheck.maxConcurrentChecks must be positive")
+	}
+	if cfg.HealthCheck.DefaultTimeout <= 0 {
+		return fmt.Errorf("healthCheck.defaultTimeout must be positive")
+	}
 
 	switch cfg.DataPlane.Type {
 	case "vpp", "noop":

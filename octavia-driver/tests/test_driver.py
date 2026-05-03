@@ -3462,6 +3462,63 @@ class TestDriverLifecycle(unittest.TestCase):
             status["pools"][0]["operating_status"], "ERROR"
         )
 
+    def test_virtualip_status_change_reports_degraded_for_retained_old_vip(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                    "member-2222": "10.0.1.2",
+                }),
+            },
+            status={
+                "healthyBackends": 2,
+                "totalBackends": 2,
+                "backends": [
+                    {"address": "10.0.1.1", "healthy": True},
+                    {"address": "10.0.1.2", "healthy": True},
+                ],
+                "conditions": [
+                    {"type": "Ready", "status": "True"},
+                    {
+                        "type": "Serving",
+                        "status": "Unknown",
+                        "reason": "RetainedOldVIP",
+                    },
+                    {
+                        "type": "RouteAdvertised",
+                        "status": "True",
+                        "reason": "Advertised",
+                    },
+                    {
+                        "type": "DataPlaneReady",
+                        "status": "False",
+                        "reason": "RetainedOldVIP",
+                    },
+                ],
+            },
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(
+            status["loadbalancers"][0]["provisioning_status"], "ACTIVE"
+        )
+        self.assertEqual(
+            status["loadbalancers"][0]["operating_status"], "DEGRADED"
+        )
+        self.assertEqual(
+            status["listeners"][0]["operating_status"], "DEGRADED"
+        )
+        self.assertEqual(
+            status["pools"][0]["operating_status"], "DEGRADED"
+        )
+
     def test_virtualip_status_change_reports_degraded_when_agent_status_expired(self):
         vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",

@@ -250,6 +250,76 @@ func TestUpdateVIPStatusAggregatesPerAgentStatus(t *testing.T) {
 	}
 }
 
+func TestUpdateVIPStatusAggregatesRetainedOldVIPDataPlaneCondition(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 3,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	updater := &Updater{
+		client:  k8sClient,
+		agentID: "node-a",
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	if err := updater.UpdateVIPStatus(context.Background(), vip, []v1alpha1.BackendSpec{
+		{Address: "10.0.0.1", Weight: 100},
+	}, metav1.Condition{
+		Type:    ConditionServing,
+		Status:  metav1.ConditionUnknown,
+		Reason:  "RetainedOldVIP",
+		Message: "old VIP retained",
+	}, metav1.Condition{
+		Type:    ConditionDataPlaneReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "RetainedOldVIP",
+		Message: "desired VIP recreate is pending retry",
+	}, metav1.Condition{
+		Type:    ConditionRouteAdvertised,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Advertised",
+		Message: "old VIP route restored",
+	}); err != nil {
+		t.Fatalf("UpdateVIPStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	dataPlane := meta.FindStatusCondition(got.Status.Conditions, ConditionDataPlaneReady)
+	if dataPlane == nil || dataPlane.Status != metav1.ConditionFalse || dataPlane.Reason != "RetainedOldVIP" {
+		t.Fatalf("DataPlaneReady aggregate = %+v, want False RetainedOldVIP", dataPlane)
+	}
+	advertised := meta.FindStatusCondition(got.Status.Conditions, ConditionRouteAdvertised)
+	if advertised == nil || advertised.Status != metav1.ConditionTrue || advertised.Reason != "Advertised" {
+		t.Fatalf("RouteAdvertised aggregate = %+v, want True Advertised", advertised)
+	}
+}
+
 func TestUpdateVIPStatusTreatsExpiredAgentStatusAsUnknown(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {

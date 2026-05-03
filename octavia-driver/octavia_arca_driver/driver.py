@@ -45,6 +45,7 @@ K8S_UPDATE_MAX_ATTEMPTS = 5
 CONDITION_READY = "Ready"
 CONDITION_SERVING = "Serving"
 CONDITION_ROUTE_ADVERTISED = "RouteAdvertised"
+CONDITION_DATA_PLANE_READY = "DataPlaneReady"
 CONDITION_REASON_AGENT_STATUS_EXPIRED = "AgentStatusExpired"
 
 
@@ -2325,6 +2326,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             conditions, CONDITION_ROUTE_ADVERTISED
         )
         serving_condition = self._condition(conditions, CONDITION_SERVING)
+        data_plane_condition = self._condition(
+            conditions, CONDITION_DATA_PLANE_READY
+        )
         ready_status = ready_condition.get("status")
         if ready_status == "False":
             status_is_current = self._condition_matches_generation(
@@ -2333,7 +2337,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         else:
             status_is_current = self._status_matches_generation(
                 metadata, status, ready_condition,
-                serving_condition, route_condition,
+                serving_condition, route_condition, data_plane_condition,
             )
         if not status_is_current:
             LOG.debug(
@@ -2352,7 +2356,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         total = status.get("totalBackends", 0)
         route_advertised = self._route_advertised(route_condition)
         control_plane_stale = self._agent_status_expired(
-            serving_condition, route_condition
+            serving_condition, route_condition, data_plane_condition
+        )
+        data_plane_degraded = self._data_plane_degraded(
+            data_plane_condition
         )
         provisioning_status = (
             PROVISIONING_ACTIVE
@@ -2361,7 +2368,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         )
         operating_status = self._octavia_operating_status(
             is_ready, is_no_backends, healthy, total, route_advertised,
-            control_plane_stale,
+            control_plane_stale, data_plane_degraded,
         )
         return {
             "is_ready": is_ready,
@@ -2369,6 +2376,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             "total": total,
             "route_advertised": route_advertised,
             "control_plane_stale": control_plane_stale,
+            "data_plane_degraded": data_plane_degraded,
             "provisioning_status": provisioning_status,
             "operating_status": operating_status,
         }
@@ -2487,9 +2495,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         )
 
     @staticmethod
+    def _data_plane_degraded(data_plane_condition):
+        if data_plane_condition is None:
+            return False
+        return data_plane_condition.get("status") != "True"
+
+    @staticmethod
     def _octavia_operating_status(is_ready, is_no_backends, healthy, total,
                                   route_advertised=None,
-                                  control_plane_stale=False):
+                                  control_plane_stale=False,
+                                  data_plane_degraded=False):
         if not is_ready:
             if is_no_backends:
                 return OPERATING_OFFLINE
@@ -2502,6 +2517,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return OPERATING_ERROR
         if route_advertised is False:
             return OPERATING_ERROR
+        if data_plane_degraded:
+            return OPERATING_DEGRADED
         if healthy >= total:
             return OPERATING_ONLINE
         if healthy > 0:

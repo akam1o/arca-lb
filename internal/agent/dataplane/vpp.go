@@ -69,6 +69,7 @@ type VPP struct {
 	addBackendFn    func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error
 	removeBackendFn func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error
 	deleteVIPFn     func(context.Context, *v1alpha1.VirtualIP) error
+	vipExistsFn     func(context.Context, *v1alpha1.VirtualIP) (bool, error)
 
 	mu   sync.RWMutex
 	vips map[string]*vipEntry // key: namespace/name
@@ -259,14 +260,29 @@ func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyB
 	defer v.mu.Unlock()
 
 	key := v.vipKey(vip)
-	if err := v.deleteVIPLocked(ctx, vip); err != nil {
-		return fmt.Errorf("failed to delete VIP before recreate: %w", err)
+	deleteTarget := vip
+	if entry, ok := v.vips[key]; ok {
+		deleteTarget = entry.vip
+	}
+	if err := v.deleteVIP(ctx, deleteTarget); err != nil {
+		retained, inspectErr := v.vipExists(ctx, deleteTarget)
+		if inspectErr != nil {
+			retained = false
+		}
+		return &VIPRecreateError{
+			Stage:              VIPRecreateStageDelete,
+			RouteSafeToRestore: retained,
+			Err:                fmt.Errorf("failed to delete VIP before recreate: %w", err),
+		}
 	}
 	delete(v.vips, key)
 
 	if err := v.addVIPLocked(ctx, vip); err != nil {
 		v.clearTuningDriftsLocked(key)
-		return fmt.Errorf("failed to add VIP during recreate: %w", err)
+		return &VIPRecreateError{
+			Stage: VIPRecreateStageAdd,
+			Err:   fmt.Errorf("failed to add VIP during recreate: %w", err),
+		}
 	}
 
 	entry := &vipEntry{
@@ -276,7 +292,10 @@ func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyB
 	v.vips[key] = entry
 	v.clearTuningDriftsLocked(key)
 	if err := v.reconcileBackendsLocked(ctx, key, entry, vip, healthyBackends); err != nil {
-		return err
+		return &VIPRecreateError{
+			Stage: VIPRecreateStageBackends,
+			Err:   err,
+		}
 	}
 
 	return nil
@@ -378,6 +397,13 @@ func (v *VPP) deleteVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 		return v.deleteVIPFn(ctx, vip)
 	}
 	return v.deleteVIPLocked(ctx, vip)
+}
+
+func (v *VPP) vipExists(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error) {
+	if v.vipExistsFn != nil {
+		return v.vipExistsFn(ctx, vip)
+	}
+	return v.vipExistsLocked(ctx, vip)
 }
 
 func (v *VPP) AddBackend(ctx context.Context, vip *v1alpha1.VirtualIP, backend v1alpha1.BackendSpec) error {

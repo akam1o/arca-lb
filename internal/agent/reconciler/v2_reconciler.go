@@ -911,7 +911,8 @@ func (vr *vipReconciler) reconcileApplied(
 				}
 				if vr.statusUpdater != nil {
 					if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
-						dataplaneApplyFailedCondition(err),
+						servingDataPlaneApplyFailedCondition(err),
+						dataPlaneApplyFailedCondition(err),
 						routeAdvertisedCondition(vip, routeAdvertised, routeErr),
 					); statusErr != nil {
 						vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
@@ -938,7 +939,8 @@ func (vr *vipReconciler) reconcileApplied(
 		}
 		if vr.statusUpdater != nil {
 			if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
-				dataplaneApplyFailedCondition(err),
+				servingDataPlaneApplyFailedCondition(err),
+				dataPlaneApplyFailedCondition(err),
 				routeAdvertisedCondition(vip, routeAdvertised, routeErr),
 			); statusErr != nil {
 				vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
@@ -980,7 +982,7 @@ func (vr *vipReconciler) reconcileApplied(
 				routeAdvertised = repairResult.routeAdvertised
 				routeErr = repairResult.routeErr
 			}
-			if drainHeld {
+			if drainHeld && !repairResult.drainReleased {
 				routeAdvertised, routeErr = vr.releaseUpdateDrain(ctx, vip, false)
 				if routeErr != nil {
 					vr.logger.Error("failed to release VIP address drain after tuning drift repair failure", "error", routeErr)
@@ -991,8 +993,15 @@ func (vr *vipReconciler) reconcileApplied(
 				span.RecordError(routeErr)
 			}
 			if vr.statusUpdater != nil {
+				serving := servingDataPlaneApplyFailedCondition(err)
+				dataPlane := dataPlaneApplyFailedCondition(err)
+				if repairResult.retainedOldVIP {
+					serving = retainedOldVIPServingCondition(err)
+					dataPlane = retainedOldVIPDataPlaneCondition(err)
+				}
 				if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
-					dataplaneApplyFailedCondition(err),
+					serving,
+					dataPlane,
 					routeAdvertisedCondition(vip, routeAdvertised, routeErr),
 				); statusErr != nil {
 					vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
@@ -1015,6 +1024,7 @@ func (vr *vipReconciler) reconcileApplied(
 	if vr.statusUpdater != nil {
 		if err := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
 			servingCondition(vip, len(healthyBackends)),
+			dataPlaneAppliedCondition(),
 			routeAdvertisedCondition(vip, routeAdvertised, routeErr),
 		); err != nil {
 			vr.logger.Warn("failed to update VirtualIP status", "error", err)
@@ -1144,7 +1154,7 @@ func servingCondition(vip *v1alpha1.VirtualIP, healthyBackends int) metav1.Condi
 	return condition
 }
 
-func dataplaneApplyFailedCondition(applyErr error) metav1.Condition {
+func servingDataPlaneApplyFailedCondition(applyErr error) metav1.Condition {
 	message := "Failed to apply VIP to data plane"
 	if applyErr != nil {
 		message = applyErr.Error()
@@ -1153,6 +1163,54 @@ func dataplaneApplyFailedCondition(applyErr error) metav1.Condition {
 		Type:    agentstatus.ConditionServing,
 		Status:  metav1.ConditionUnknown,
 		Reason:  "DataPlaneApplyFailed",
+		Message: message,
+	}
+}
+
+func dataPlaneAppliedCondition() metav1.Condition {
+	return metav1.Condition{
+		Type:    agentstatus.ConditionDataPlaneReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Applied",
+		Message: "Desired VIP is applied to the data plane",
+	}
+}
+
+func dataPlaneApplyFailedCondition(applyErr error) metav1.Condition {
+	message := "Failed to apply desired VIP to data plane"
+	if applyErr != nil {
+		message = applyErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionDataPlaneReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "DataPlaneApplyFailed",
+		Message: message,
+	}
+}
+
+func retainedOldVIPServingCondition(repairErr error) metav1.Condition {
+	message := "Retained old VIP remains active after failed recreate"
+	if repairErr != nil {
+		message = repairErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionServing,
+		Status:  metav1.ConditionUnknown,
+		Reason:  "RetainedOldVIP",
+		Message: message,
+	}
+}
+
+func retainedOldVIPDataPlaneCondition(repairErr error) metav1.Condition {
+	message := "Old VIP is still active; desired VIP recreate is pending retry"
+	if repairErr != nil {
+		message = repairErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionDataPlaneReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "RetainedOldVIP",
 		Message: message,
 	}
 }
@@ -1205,6 +1263,8 @@ type tuningDriftRepairResult struct {
 	routeAdvertised bool
 	routeErr        error
 	routeStateKnown bool
+	retainedOldVIP  bool
+	drainReleased   bool
 }
 
 func (vr *vipReconciler) repairTuningDrift(
@@ -1258,6 +1318,7 @@ func (vr *vipReconciler) repairTuningDrift(
 			routeAdvertised: advertised,
 			routeErr:        releaseErr,
 			routeStateKnown: true,
+			drainReleased:   true,
 		}
 		if releaseErr != nil {
 			if retErr != nil {
@@ -1273,13 +1334,17 @@ func (vr *vipReconciler) repairTuningDrift(
 		}
 	}
 	if err := recreator.RecreateVIP(ctx, vip, healthyBackends); err != nil {
-		return releaseDrain(false, fmt.Errorf("failed to recreate VIP: %w", err))
+		restoreRoute := hasHealthy && dataplane.RouteSafeToRestoreAfterVIPRecreate(err)
+		result, retErr := releaseDrain(restoreRoute, fmt.Errorf("failed to recreate VIP: %w", err))
+		result.retainedOldVIP = restoreRoute && result.routeErr == nil && result.routeAdvertised
+		return result, retErr
 	}
 	advertised, releaseErr := vr.routes.FinishDrain(ctx, vr.key, vip.Spec.Address)
 	result := tuningDriftRepairResult{
 		routeAdvertised: advertised,
 		routeErr:        releaseErr,
 		routeStateKnown: true,
+		drainReleased:   true,
 	}
 	if releaseErr != nil {
 		return result, fmt.Errorf("failed to release route drain after VIP recreate: %w", releaseErr)

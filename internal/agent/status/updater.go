@@ -42,6 +42,10 @@ const (
 	// currently advertised by this node.
 	ConditionRouteAdvertised = "RouteAdvertised"
 
+	// ConditionDataPlaneReady reports whether the desired VIP generation is
+	// applied to the local data plane.
+	ConditionDataPlaneReady = "DataPlaneReady"
+
 	reasonAgentStatusExpired = "AgentStatusExpired"
 )
 
@@ -324,6 +328,9 @@ func applyAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, freshStatus
 	conditions := preserveNonAgentConditions(vip.Status.Conditions)
 	meta.SetStatusCondition(&conditions, aggregateServingCondition(vip, freshStatuses, expiredStatuses))
 	meta.SetStatusCondition(&conditions, aggregateRouteAdvertisedCondition(vip, freshStatuses, expiredStatuses))
+	if dataPlane, ok := aggregateDataPlaneReadyCondition(vip, freshStatuses, expiredStatuses); ok {
+		meta.SetStatusCondition(&conditions, dataPlane)
+	}
 	vip.Status.Conditions = conditions
 }
 
@@ -331,7 +338,7 @@ func preserveNonAgentConditions(conditions []metav1.Condition) []metav1.Conditio
 	out := make([]metav1.Condition, 0, len(conditions))
 	for _, condition := range conditions {
 		switch condition.Type {
-		case ConditionServing, ConditionRouteAdvertised:
+		case ConditionServing, ConditionRouteAdvertised, ConditionDataPlaneReady:
 			continue
 		default:
 			out = append(out, condition)
@@ -405,6 +412,48 @@ func aggregateServingCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.Agen
 	condition.Reason = "NoAgentServing"
 	condition.Message = fmt.Sprintf("No agent is serving %s:%d/%s", vip.Spec.Address, vip.Spec.Port, vip.Spec.Protocol)
 	return condition
+}
+
+func aggregateDataPlaneReadyCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.AgentStatus, expiredStatuses []v1alpha1.AgentStatus) (metav1.Condition, bool) {
+	condition := metav1.Condition{
+		Type:               ConditionDataPlaneReady,
+		ObservedGeneration: vip.Generation,
+	}
+
+	hasFreshDataPlaneCondition := false
+	for _, status := range statuses {
+		dataPlane := meta.FindStatusCondition(status.Conditions, ConditionDataPlaneReady)
+		if dataPlane == nil {
+			continue
+		}
+		hasFreshDataPlaneCondition = true
+		if dataPlane.Status != metav1.ConditionTrue {
+			condition.Status = dataPlane.Status
+			condition.Reason = dataPlane.Reason
+			condition.Message = dataPlane.Message
+			return condition, true
+		}
+	}
+
+	if hasFreshDataPlaneCondition {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "Applied"
+		condition.Message = "Desired VIP is applied to the data plane by all reporting agents"
+		return condition, true
+	}
+
+	if len(statuses) == 0 {
+		for _, status := range expiredStatuses {
+			if dataPlane := meta.FindStatusCondition(status.Conditions, ConditionDataPlaneReady); dataPlane != nil {
+				condition.Status = metav1.ConditionUnknown
+				condition.Reason = reasonAgentStatusExpired
+				condition.Message = "Only expired agent observations are available; data plane apply state is unknown"
+				return condition, true
+			}
+		}
+	}
+
+	return metav1.Condition{}, false
 }
 
 func aggregateRouteAdvertisedCondition(vip *v1alpha1.VirtualIP, statuses []v1alpha1.AgentStatus, expiredStatuses []v1alpha1.AgentStatus) metav1.Condition {

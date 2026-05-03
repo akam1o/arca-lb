@@ -292,6 +292,66 @@ func TestVPPRemoveVIPUsesTrackedAppliedSpec(t *testing.T) {
 	}
 }
 
+func TestVPPRecreateVIPMarksRouteSafeWhenDeleteFailsAndVIPIsRetained(t *testing.T) {
+	deleteErr := errors.New("delete failed")
+	var deleted *v1alpha1.VirtualIP
+	inspected := false
+	vpp := &VPP{
+		vips:         make(map[string]*vipEntry),
+		tuningDrifts: map[string][]VIPTuningDrift{},
+		deleteVIPFn: func(_ context.Context, vip *v1alpha1.VirtualIP) error {
+			deleted = vip.DeepCopy()
+			return deleteErr
+		},
+		vipExistsFn: func(_ context.Context, _ *v1alpha1.VirtualIP) (bool, error) {
+			inspected = true
+			return true, nil
+		},
+	}
+
+	applied := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(applied)
+	vpp.vips[key] = &vipEntry{
+		vip:      applied.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{},
+	}
+	vpp.tuningDrifts[key] = []VIPTuningDrift{{
+		Field:   "new_flows_table_length",
+		Current: "1024",
+		Desired: "2048",
+	}}
+
+	err := vpp.RecreateVIP(context.Background(), applied.DeepCopy(), nil)
+	if err == nil {
+		t.Fatal("expected recreate delete failure")
+	}
+	if !errors.Is(err, deleteErr) {
+		t.Fatalf("RecreateVIP error = %v, want wrapped delete error", err)
+	}
+	if !RouteSafeToRestoreAfterVIPRecreate(err) {
+		t.Fatal("delete failure with retained VIP should be route-safe to restore")
+	}
+	var recreateErr *VIPRecreateError
+	if !errors.As(err, &recreateErr) {
+		t.Fatalf("RecreateVIP error = %T, want VIPRecreateError", err)
+	}
+	if recreateErr.Stage != VIPRecreateStageDelete {
+		t.Fatalf("recreate stage = %s, want delete", recreateErr.Stage)
+	}
+	if deleted == nil || deleted.Spec.Port != applied.Spec.Port {
+		t.Fatalf("deleted VIP = %+v, want tracked applied VIP", deleted)
+	}
+	if !inspected {
+		t.Fatal("retained VIP was not inspected after delete failure")
+	}
+	if _, ok := vpp.vips[key]; !ok {
+		t.Fatal("tracked VIP should remain after delete failure")
+	}
+	if drifts := vpp.TuningDrifts(key); len(drifts) != 1 {
+		t.Fatalf("tuning drifts = %+v, want retained drift for retry", drifts)
+	}
+}
+
 func TestVPPDetectsFlowTableLengthTuningDrift(t *testing.T) {
 	vpp := &VPP{
 		config: VPPConfig{

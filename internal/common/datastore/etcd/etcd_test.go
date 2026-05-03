@@ -181,3 +181,149 @@ func TestEtcdDataStore_DeleteVIPDeletesBackendIndex(t *testing.T) {
 	_, err = ds.GetBackend(ctx, backend.ID)
 	assert.ErrorIs(t, err, datastore.ErrNotFound)
 }
+
+func TestEtcdDataStore_DeleteVIPMissingCleansStaleBackendIndex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	cfg := &datastore.Config{
+		Type:          "etcd",
+		EtcdEndpoints: []string{"http://localhost:2379"},
+		EtcdKeyPrefix: "/arca-lb-test-delete-missing-cleans-index",
+	}
+
+	dsIface, err := NewEtcdDataStore(ctx, cfg)
+	require.NoError(t, err)
+	ds := dsIface.(*EtcdDataStore)
+	defer func() {
+		_, _ = ds.client.Delete(context.Background(), ds.keyPrefix, clientv3.WithPrefix())
+		_ = ds.Close()
+	}()
+
+	vipID := "missing-vip-with-stale-index"
+	backendID := "stale-backend"
+	indexKey := ds.backendIndexKey(backendID)
+	_, err = ds.client.Put(ctx, indexKey, vipID)
+	require.NoError(t, err)
+
+	err = ds.DeleteVIP(ctx, vipID)
+	assert.ErrorIs(t, err, datastore.ErrNotFound)
+
+	resp, err := ds.client.Get(ctx, indexKey)
+	require.NoError(t, err)
+	assert.Empty(t, resp.Kvs)
+}
+
+func TestEtcdTransaction_DeleteVIPMissingCleansStaleBackendIndex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	cfg := &datastore.Config{
+		Type:          "etcd",
+		EtcdEndpoints: []string{"http://localhost:2379"},
+		EtcdKeyPrefix: "/arca-lb-test-tx-delete-missing-cleans-index",
+	}
+
+	dsIface, err := NewEtcdDataStore(ctx, cfg)
+	require.NoError(t, err)
+	ds := dsIface.(*EtcdDataStore)
+	defer func() {
+		_, _ = ds.client.Delete(context.Background(), ds.keyPrefix, clientv3.WithPrefix())
+		_ = ds.Close()
+	}()
+
+	vipID := "missing-tx-vip-with-stale-index"
+	backendID := "stale-tx-backend"
+	indexKey := ds.backendIndexKey(backendID)
+	_, err = ds.client.Put(ctx, indexKey, vipID)
+	require.NoError(t, err)
+
+	tx, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	err = tx.DeleteVIP(ctx, vipID)
+	assert.ErrorIs(t, err, datastore.ErrNotFound)
+
+	resp, err := ds.client.Get(ctx, indexKey)
+	require.NoError(t, err)
+	assert.Empty(t, resp.Kvs)
+}
+
+func TestEtcdDataStore_BackendIndexCleanupPreservesLiveBackend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	cfg := &datastore.Config{
+		Type:          "etcd",
+		EtcdEndpoints: []string{"http://localhost:2379"},
+		EtcdKeyPrefix: "/arca-lb-test-cleanup-preserves-live-index",
+	}
+
+	dsIface, err := NewEtcdDataStore(ctx, cfg)
+	require.NoError(t, err)
+	ds := dsIface.(*EtcdDataStore)
+	defer func() {
+		_, _ = ds.client.Delete(context.Background(), ds.keyPrefix, clientv3.WithPrefix())
+		_ = ds.Close()
+	}()
+
+	vip := &models.VIP{
+		VIP:      "192.168.1.901",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	backend := &models.Backend{
+		VIPID:  vip.ID,
+		IP:     "10.0.0.10",
+		Weight: 10,
+	}
+	err = ds.AddBackend(ctx, backend)
+	require.NoError(t, err)
+
+	err = ds.deleteBackendIndexesForVIP(ctx, vip.ID)
+	require.NoError(t, err)
+
+	retrieved, err := ds.GetBackend(ctx, backend.ID)
+	require.NoError(t, err)
+	assert.Equal(t, backend.ID, retrieved.ID)
+}
+
+func TestEtcdDataStore_InitRevisionDoesNotOverwriteExistingRevision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	cfg := &datastore.Config{
+		Type:          "etcd",
+		EtcdEndpoints: []string{"http://localhost:2379"},
+		EtcdKeyPrefix: "/arca-lb-test-init-revision-preserves-existing",
+	}
+
+	dsIface, err := NewEtcdDataStore(ctx, cfg)
+	require.NoError(t, err)
+	ds := dsIface.(*EtcdDataStore)
+	defer func() {
+		_, _ = ds.client.Delete(context.Background(), ds.keyPrefix, clientv3.WithPrefix())
+		_ = ds.Close()
+	}()
+
+	_, err = ds.client.Put(ctx, ds.revisionKey(), "42")
+	require.NoError(t, err)
+
+	err = ds.initRevision(ctx)
+	require.NoError(t, err)
+
+	revision, err := ds.GetRevision(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), revision)
+}

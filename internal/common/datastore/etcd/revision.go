@@ -16,17 +16,14 @@ type etcdTxnCheck struct {
 // initRevision initializes the revision counter in etcd if it doesn't exist
 func (ds *EtcdDataStore) initRevision(ctx context.Context) error {
 	key := ds.revisionKey()
-	resp, err := ds.client.Get(ctx, key)
-	if err != nil {
-		return fmt.Errorf("failed to get revision from etcd: %w", err)
-	}
 
-	// If revision doesn't exist, initialize it to 1
-	if len(resp.Kvs) == 0 {
-		_, err = ds.client.Put(ctx, key, "1")
-		if err != nil {
-			return fmt.Errorf("failed to initialize revision in etcd: %w", err)
-		}
+	_, err := ds.client.Txn(ctx).If(
+		clientv3.Compare(clientv3.Version(key), "=", 0),
+	).Then(
+		clientv3.OpPut(key, "1"),
+	).Commit()
+	if err != nil {
+		return fmt.Errorf("failed to initialize revision in etcd: %w", err)
 	}
 
 	return nil

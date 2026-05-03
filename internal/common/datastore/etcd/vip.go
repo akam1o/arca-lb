@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -176,6 +177,11 @@ func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
 		ops...,
 	)
 	if err != nil {
+		if errors.Is(err, datastore.ErrNotFound) {
+			if cleanupErr := ds.deleteBackendIndexesForVIP(ctx, id); cleanupErr != nil {
+				return cleanupErr
+			}
+		}
 		return fmt.Errorf("failed to delete VIP from etcd: %w", err)
 	}
 

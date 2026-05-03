@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -183,6 +184,11 @@ func (tx *EtcdTransaction) DeleteVIP(ctx context.Context, id string) error {
 	vipKey := tx.ds.vipKey(id)
 	if _, created := tx.createdVIPIDs[id]; !created {
 		if _, err := tx.ds.GetVIP(ctx, id); err != nil {
+			if errors.Is(err, datastore.ErrNotFound) {
+				if cleanupErr := tx.ds.deleteBackendIndexesForVIP(ctx, id); cleanupErr != nil {
+					return cleanupErr
+				}
+			}
 			return fmt.Errorf("failed to verify VIP: %w", err)
 		}
 		tx.checks = append(tx.checks, etcdTxnCheck{
@@ -192,8 +198,8 @@ func (tx *EtcdTransaction) DeleteVIP(ctx context.Context, id string) error {
 	}
 
 	// Add delete VIP and associated backends operations. Reverse indexes are
-	// cleaned up in batches after commit so large VIPs do not exceed etcd's
-	// transaction operation limit.
+	// cleaned up after commit so large VIPs do not exceed etcd's transaction
+	// operation limit.
 	backendPrefix := tx.ds.backendPrefix(id)
 	tx.ops = append(
 		tx.ops,

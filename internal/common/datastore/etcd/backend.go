@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
@@ -11,8 +12,6 @@ import (
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
-
-const backendIndexDeleteBatchSize = 64
 
 // AddBackend adds a new backend to etcd
 func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend) error {
@@ -77,23 +76,25 @@ func (ds *EtcdDataStore) deleteBackendIndexesForVIP(ctx context.Context, vipID s
 	if err != nil {
 		return err
 	}
-	if len(indexKeys) == 0 {
-		return nil
-	}
 
-	for start := 0; start < len(indexKeys); start += backendIndexDeleteBatchSize {
-		end := start + backendIndexDeleteBatchSize
-		if end > len(indexKeys) {
-			end = len(indexKeys)
+	indexPrefix := ds.backendIndexPrefix()
+	for _, indexKey := range indexKeys {
+		if !strings.HasPrefix(indexKey, indexPrefix) {
+			continue
 		}
 
-		ops := make([]clientv3.Op, 0, end-start)
-		for _, key := range indexKeys[start:end] {
-			ops = append(ops, clientv3.OpDelete(key))
-		}
-
-		if _, err := ds.client.Txn(ctx).Then(ops...).Commit(); err != nil {
+		backendID := strings.TrimPrefix(indexKey, indexPrefix)
+		txnResp, err := ds.client.Txn(ctx).If(
+			clientv3.Compare(clientv3.Value(indexKey), "=", vipID),
+			clientv3.Compare(clientv3.Version(ds.backendKey(vipID, backendID)), "=", 0),
+		).Then(
+			clientv3.OpDelete(indexKey),
+		).Commit()
+		if err != nil {
 			return fmt.Errorf("failed to delete backend indexes from etcd: %w", err)
+		}
+		if !txnResp.Succeeded {
+			continue
 		}
 	}
 

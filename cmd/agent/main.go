@@ -370,7 +370,7 @@ func cleanupStaleLastConfigs(
 		currentVIP := &currentVIPs[i]
 		key := healthcheck.KeyForVIP(currentVIP)
 		currentByKey[key] = currentVIP
-		if err := vipvalidation.ValidateDataPlane(currentVIP); err != nil {
+		if err := vipvalidation.Validate(currentVIP); err != nil {
 			logger.Warn("ignoring invalid current VirtualIP for stale route protection", "vip", key, "error", err)
 			continue
 		}

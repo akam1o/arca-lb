@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -50,6 +51,9 @@ func parseOptionalInt(v any) (int, bool) {
 	case int:
 		return typed, true
 	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) || typed != math.Trunc(typed) {
+			return 0, false
+		}
 		return int(typed), true
 	default:
 		return 0, false

@@ -128,6 +128,8 @@ type HTTPHealthCheck struct {
 
 	// ExpectedCodes is the set of HTTP status codes that indicate success.
 	// +optional
+	// +kubebuilder:validation:items:Minimum=100
+	// +kubebuilder:validation:items:Maximum=599
 	ExpectedCodes []int `json:"expectedCodes,omitempty"`
 
 	// SkipTLSVerify skips TLS certificate verification (HTTPS only).

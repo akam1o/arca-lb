@@ -126,6 +126,8 @@ spec:
                         description: ExpectedCodes is the set of HTTP status codes
                           that indicate success.
                         items:
+                          maximum: 599
+                          minimum: 100
                           type: integer
                         type: array
                       headers:

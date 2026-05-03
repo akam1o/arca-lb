@@ -98,8 +98,9 @@ func validateHealthCheckRequest(req *HealthCheckRequest) error {
 					return badRequestError("health_check.config.expected_codes must be an array of integers")
 				}
 				for _, code := range arr {
-					if _, ok := parseOptionalInt(code); !ok {
-						return badRequestError("health_check.config.expected_codes must be an array of integers")
+					parsedCode, ok := parseOptionalInt(code)
+					if !ok || parsedCode < 100 || parsedCode > 599 {
+						return badRequestError("health_check.config.expected_codes must be integers between 100 and 599")
 					}
 				}
 			}

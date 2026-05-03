@@ -131,6 +131,42 @@ func TestCreateVIP(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
+			name: "health check expected code below range",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"port":           8080,
+						"expected_codes": []int{99},
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check expected code above range",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"port":           8080,
+						"expected_codes": []int{600},
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "sub-second health check interval",
 			requestBody: map[string]interface{}{
 				"vip":      "192.168.1.101",

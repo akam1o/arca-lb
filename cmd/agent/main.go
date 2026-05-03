@@ -364,6 +364,7 @@ func cleanupStaleLastConfigs(
 	}
 
 	currentByKey := make(map[string]*v1alpha1.VirtualIP, len(currentVIPs))
+	currentValidByKey := make(map[string]bool, len(currentVIPs))
 	currentAddresses := make(map[string]struct{}, len(currentVIPs))
 	for i := range currentVIPs {
 		currentVIP := &currentVIPs[i]
@@ -373,6 +374,7 @@ func cleanupStaleLastConfigs(
 			logger.Warn("ignoring invalid current VirtualIP for stale route protection", "vip", key, "error", err)
 			continue
 		}
+		currentValidByKey[key] = true
 		currentAddresses[currentVIP.Spec.Address] = struct{}{}
 	}
 
@@ -386,8 +388,16 @@ func cleanupStaleLastConfigs(
 			}
 			continue
 		}
-		if currentVIP, ok := currentByKey[key]; ok && sameRetainedVIPIdentity(vip, currentVIP) {
-			continue
+		if currentVIP, ok := currentByKey[key]; ok {
+			// Invalid current specs are ignored by the event handler; keep the
+			// last known good dataplane state for this key until a valid spec arrives.
+			if !currentValidByKey[key] {
+				logger.Warn("preserving retained VIP for invalid current VirtualIP", "vip", key)
+				continue
+			}
+			if sameRetainedVIPIdentity(vip, currentVIP) {
+				continue
+			}
 		}
 
 		_, addressInUse := currentAddresses[vip.Spec.Address]

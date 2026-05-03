@@ -377,6 +377,9 @@ func TestCleanupStaleLastConfigsKeepsPendingCurrentAndCleansPreviousLastApplied(
 	if err := st.SavePendingConfig("team-a/web", pendingSpec); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SaveHealthState("team-a/web", "10.0.0.2", &store.BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatal(err)
+	}
 
 	dp := &recordingDataPlane{}
 	router := routing.NewNoop()
@@ -417,6 +420,13 @@ func TestCleanupStaleLastConfigsKeepsPendingCurrentAndCleansPreviousLastApplied(
 	}
 	if string(pending) != string(pendingSpec) {
 		t.Fatalf("pending config = %q, want current pending config %q", pending, pendingSpec)
+	}
+	hc, err := st.LoadHealthState("team-a/web", "10.0.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hc == nil {
+		t.Fatal("current VIP health state should be preserved")
 	}
 	if router.IsAnnounced("203.0.113.10") {
 		t.Fatal("previous route should be withdrawn")

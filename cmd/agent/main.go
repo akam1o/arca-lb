@@ -461,8 +461,10 @@ func cleanupStaleLastConfigs(
 
 		_, addressInUse := currentAddresses[vip.Spec.Address]
 		withdrawRoute := !addressInUse
+		_, currentKeyExists := currentByKey[key]
+		deleteHealthStates := !currentKeyExists
 		cleanup := func(ctx context.Context) error {
-			return cleanupRetainedVIP(ctx, st, dp, router, key, retained.source, vip, withdrawRoute, logger)
+			return cleanupRetainedVIP(ctx, st, dp, router, key, retained.source, vip, withdrawRoute, deleteHealthStates, logger)
 		}
 		var cleanupErr error
 		if rollouts != nil {
@@ -490,6 +492,7 @@ func cleanupRetainedVIP(
 	source retainedConfigSource,
 	vip *v1alpha1.VirtualIP,
 	withdrawRoute bool,
+	deleteHealthStates bool,
 	logger *slog.Logger,
 ) error {
 	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "source", source, "address", vip.Spec.Address, "withdraw_route", withdrawRoute)
@@ -512,6 +515,9 @@ func cleanupRetainedVIP(
 		}
 	default:
 		return fmt.Errorf("unknown retained config source %q", source)
+	}
+	if !deleteHealthStates {
+		return nil
 	}
 	if err := st.DeleteHealthStatesForVIP(key); err != nil {
 		return fmt.Errorf("failed to delete stale health states: %w", err)

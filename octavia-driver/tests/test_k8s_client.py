@@ -108,6 +108,23 @@ class TestVirtualIPClient(unittest.TestCase):
         spec = api.patch_body["spec"]
         self.assertIsNone(spec["healthCheck"])
 
+    def test_update_virtualip_includes_resource_version_precondition(self):
+        api = FakeCustomObjectsApi({
+            "metadata": {"annotations": {}},
+        })
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+
+        client.update_virtualip(
+            "vip-1",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            resource_version="42",
+        )
+
+        metadata = api.patch_body["metadata"]
+        self.assertEqual(metadata["resourceVersion"], "42")
+
     def test_resource_name_uses_full_id_entropy(self):
         client = VirtualIPClient.__new__(VirtualIPClient)
 

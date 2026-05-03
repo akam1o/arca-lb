@@ -25,7 +25,8 @@ class FakeObj:
         return self._data
 
 
-def _make_vip(name, spec, annotations=None, status=None, generation=1):
+def _make_vip(name, spec, annotations=None, status=None, generation=1,
+              resource_version=None):
     """Build a fake VirtualIP dict as returned by the K8s API."""
     if status is None:
         normalized_status = {}
@@ -41,7 +42,7 @@ def _make_vip(name, spec, annotations=None, status=None, generation=1):
             for condition in normalized_status["conditions"]:
                 condition.setdefault("observedGeneration", generation)
 
-    return {
+    vip = {
         "apiVersion": "arca.io/v1alpha1",
         "kind": "VirtualIP",
         "metadata": {
@@ -56,6 +57,9 @@ def _make_vip(name, spec, annotations=None, status=None, generation=1):
         "spec": spec,
         "status": normalized_status,
     }
+    if resource_version is not None:
+        vip["metadata"]["resourceVersion"] = resource_version
+    return vip
 
 
 class TestParseExpectedCodes(unittest.TestCase):
@@ -1285,6 +1289,71 @@ class TestDriverLifecycle(unittest.TestCase):
             json.loads(annotations[constants.ANNOTATION_MEMBER_MAP]),
             {"member-1111": "10.0.1.1"},
         )
+
+    def test_member_create_retries_conflict_with_latest_backends(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+            resource_version="1",
+        )
+        latest_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [
+                 {"address": "10.0.1.1", "weight": 100},
+                 {"address": "10.0.1.9", "weight": 100},
+             ]},
+            annotations={
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                    "member-9999": "10.0.1.9",
+                }),
+            },
+            resource_version="2",
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+        self.mock_k8s.get_virtualip.return_value = latest_vip
+        self.mock_k8s.update_virtualip.side_effect = [
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            ),
+            {"ok": True},
+        ]
+
+        member = FakeObj({
+            "member_id": "member-2222",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.2",
+            "protocol_port": 80,
+            "weight": 100,
+        })
+        self.driver.member_create(member)
+
+        self.assertEqual(self.mock_k8s.update_virtualip.call_count, 2)
+        second_call = self.mock_k8s.update_virtualip.call_args_list[1]
+        spec = second_call[0][1]
+        self.assertEqual(
+            sorted(b["address"] for b in spec["backends"]),
+            ["10.0.1.1", "10.0.1.2", "10.0.1.9"],
+        )
+        annotations = second_call[1]["annotations"]
+        self.assertEqual(
+            json.loads(annotations[constants.ANNOTATION_MEMBER_MAP]),
+            {
+                "member-1111": "10.0.1.1",
+                "member-2222": "10.0.1.2",
+                "member-9999": "10.0.1.9",
+            },
+        )
+        self.assertEqual(second_call[1]["resource_version"], "2")
 
     def test_member_create_weight_zero_marks_draining(self):
         existing_vip = _make_vip(

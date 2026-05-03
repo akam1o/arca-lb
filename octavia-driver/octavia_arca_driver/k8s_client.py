@@ -61,13 +61,17 @@ class VirtualIPClient:
             body=body,
         )
 
-    def update_virtualip(self, name, spec, annotations=None, labels=None):
+    def update_virtualip(self, name, spec, annotations=None, labels=None,
+                         resource_version=None, current=None):
         """Update an existing VirtualIP custom resource (patch)."""
-        current = None
-        if annotations is not None:
+        if annotations is not None and current is None:
             current = self.get_virtualip(name) or {}
 
         patch = {"spec": self._merge_patch_spec(spec)}
+        if resource_version:
+            patch.setdefault("metadata", {})["resourceVersion"] = (
+                resource_version
+            )
         if annotations is not None:
             patch.setdefault("metadata", {})["annotations"] = (
                 self._merge_patch_annotations(current, annotations)

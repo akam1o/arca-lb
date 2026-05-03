@@ -14,6 +14,7 @@ Mapping:
     Octavia HealthMonitor →  VirtualIP.spec.healthCheck
 """
 
+import copy
 import json
 import logging
 import threading
@@ -40,6 +41,7 @@ OPERATING_ERROR = "ERROR"
 OPERATING_DRAINING = "DRAINING"
 DEFAULT_MEMBER_WEIGHT = 1
 OCTAVIA_MEMBER_WEIGHT_DRAINING = 0
+K8S_UPDATE_MAX_ATTEMPTS = 5
 CONDITION_READY = "Ready"
 CONDITION_SERVING = "Serving"
 CONDITION_ROUTE_ADVERTISED = "RouteAdvertised"
@@ -561,22 +563,23 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
 
         name = vip["metadata"]["name"]
-        spec = vip.get("spec", {})
-        backends = spec.get("backends", [])
-        annotations = vip.get("metadata", {}).get("annotations", {})
-        self._validate_member_dataplane_port(vip, m)
 
-        backends = self._backends_with_member_state(
-            backends, address, backend, is_draining
-        )
+        def mutate(current_vip, spec, annotations):
+            backends = spec.get("backends", [])
+            self._validate_member_dataplane_port(current_vip, m)
 
-        spec["backends"] = backends
-        self._remember_member_mapping(annotations, m)
-        self._set_member_draining_state(annotations, m, is_draining)
-        self._refresh_health_check_port(
-            spec, pool_id, vip, extra_members=[m]
-        )
-        self._k8s.update_virtualip(name, spec, annotations=annotations)
+            backends = self._backends_with_member_state(
+                backends, address, backend, is_draining
+            )
+
+            spec["backends"] = backends
+            self._remember_member_mapping(annotations, m)
+            self._set_member_draining_state(annotations, m, is_draining)
+            self._refresh_health_check_port(
+                spec, pool_id, current_vip, extra_members=[m]
+            )
+
+        self._update_virtualip_with_retry(name, mutate, initial_vip=vip)
         if is_draining:
             LOG.info("Marked member %s as DRAINING on VirtualIP %s",
                      address, name)
@@ -622,31 +625,42 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
             return
 
-        name = vip["metadata"]["name"]
-        spec = vip.get("spec", {})
-        annotations = vip.get("metadata", {}).get("annotations", {})
-        delete_address = self._member_delete_address(annotations, m)
         member_id = self._member_id(m)
-        if not delete_address:
-            raise driver_exc.UnsupportedOptionError(
-                user_fault_string="Cannot determine member address for deletion.",
-                operator_fault_string=(
-                    "Octavia member delete payload and VirtualIP annotations "
-                    f"do not identify member {member_id or address}"
-                ),
-            )
-        backends = [b for b in spec.get("backends", [])
-                    if b.get("address") != delete_address]
-        spec["backends"] = backends
-        deleted_member_ids = self._forget_member_mapping(annotations, m)
-        if member_id and member_id not in deleted_member_ids:
-            deleted_member_ids.append(member_id)
-        self._discard_draining_member_ids(annotations, deleted_member_ids)
-        self._refresh_health_check_port(spec, pool_id, vip)
-        self._k8s.update_virtualip(name, spec, annotations=annotations)
-        self._push_deleted_member_statuses(vip, deleted_member_ids)
+        name = vip["metadata"]["name"]
+        deleted_member_ids = []
+        status_annotations = {}
+
+        def mutate(current_vip, spec, annotations):
+            nonlocal deleted_member_ids, status_annotations
+            delete_address = self._member_delete_address(annotations, m)
+            if not delete_address:
+                raise driver_exc.UnsupportedOptionError(
+                    user_fault_string=(
+                        "Cannot determine member address for deletion."
+                    ),
+                    operator_fault_string=(
+                        "Octavia member delete payload and VirtualIP "
+                        "annotations do not identify member "
+                        f"{member_id or address}"
+                    ),
+                )
+            backends = [b for b in spec.get("backends", [])
+                        if b.get("address") != delete_address]
+            spec["backends"] = backends
+            deleted_member_ids = self._forget_member_mapping(annotations, m)
+            if member_id and member_id not in deleted_member_ids:
+                deleted_member_ids.append(member_id)
+            self._discard_draining_member_ids(annotations, deleted_member_ids)
+            self._refresh_health_check_port(spec, pool_id, current_vip)
+            status_annotations = dict(annotations)
+
+        self._update_virtualip_with_retry(name, mutate, initial_vip=vip)
+        self._push_deleted_member_statuses(
+            {"metadata": {"annotations": status_annotations}},
+            deleted_member_ids,
+        )
         LOG.info("Removed member %s from VirtualIP %s",
-                 delete_address or address, name)
+                 address or member_id, name)
 
     def member_update(self, old_member, new_member):
         """Update a backend's weight in the VirtualIP."""
@@ -654,7 +668,6 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._validate_member_supported(m)
         pool_id = m.get("pool_id")
         address = m.get("address")
-        weight = self._member_weight(m)
         is_draining = self._member_is_draining(m)
         backend = None if is_draining else self._backend_from_member(m)
 
@@ -674,20 +687,21 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
 
         name = vip["metadata"]["name"]
-        spec = vip.get("spec", {})
-        annotations = vip.get("metadata", {}).get("annotations", {})
-        self._validate_member_dataplane_port(vip, m)
-        backends = self._backends_with_member_state(
-            spec.get("backends", []), address, backend, is_draining
-        )
-        spec["backends"] = backends
 
-        self._remember_member_mapping(annotations, m)
-        self._set_member_draining_state(annotations, m, is_draining)
-        self._refresh_health_check_port(
-            spec, pool_id, vip, extra_members=[m]
-        )
-        self._k8s.update_virtualip(name, spec, annotations=annotations)
+        def mutate(current_vip, spec, annotations):
+            self._validate_member_dataplane_port(current_vip, m)
+            backends = self._backends_with_member_state(
+                spec.get("backends", []), address, backend, is_draining
+            )
+            spec["backends"] = backends
+
+            self._remember_member_mapping(annotations, m)
+            self._set_member_draining_state(annotations, m, is_draining)
+            self._refresh_health_check_port(
+                spec, pool_id, current_vip, extra_members=[m]
+            )
+
+        self._update_virtualip_with_retry(name, mutate, initial_vip=vip)
 
     def member_batch_update(self, pool_id, members):
         """Replace all members of a pool at once."""
@@ -712,10 +726,6 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 operator_fault_string=f"No VirtualIP for pool {pool_id}",
             )
 
-        name = vip["metadata"]["name"]
-        spec = vip.get("spec", {})
-        annotations = vip.get("metadata", {}).get("annotations", {})
-        old_member_map = self._member_map_from_annotations(annotations)
         member_dicts = [
             member.to_dict() if hasattr(member, 'to_dict') else member
             for member in members
@@ -724,32 +734,44 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             self._validate_member_supported(m)
             self._validate_member_dataplane_port(vip, m)
 
-        backends = []
-        new_member_map = {}
-        draining_member_ids = set()
-        for m in member_dicts:
-            is_draining = self._member_is_draining(m)
-            if not is_draining:
-                backends.append(self._backend_from_member(m))
-            member_id = self._member_id(m)
-            if member_id and m.get("address"):
-                new_member_map[member_id] = m.get("address")
-                if is_draining:
-                    draining_member_ids.add(member_id)
-        spec["backends"] = backends
-        self._set_member_map_annotation(annotations, new_member_map)
-        self._set_draining_member_ids_annotation(
-            annotations, draining_member_ids
-        )
-        self._refresh_health_check_port(
-            spec, pool_id, vip, extra_members=member_dicts, pool={}
-        )
-        self._k8s.update_virtualip(name, spec, annotations=annotations)
+        name = vip["metadata"]["name"]
+        deleted_member_ids = []
+        status_annotations = {}
+
+        def mutate(current_vip, spec, annotations):
+            nonlocal deleted_member_ids, status_annotations
+            old_member_map = self._member_map_from_annotations(annotations)
+            backends = []
+            new_member_map = {}
+            draining_member_ids = set()
+            for m in member_dicts:
+                self._validate_member_dataplane_port(current_vip, m)
+                is_draining = self._member_is_draining(m)
+                if not is_draining:
+                    backends.append(self._backend_from_member(m))
+                member_id = self._member_id(m)
+                if member_id and m.get("address"):
+                    new_member_map[member_id] = m.get("address")
+                    if is_draining:
+                        draining_member_ids.add(member_id)
+            spec["backends"] = backends
+            self._set_member_map_annotation(annotations, new_member_map)
+            self._set_draining_member_ids_annotation(
+                annotations, draining_member_ids
+            )
+            self._refresh_health_check_port(
+                spec, pool_id, current_vip, extra_members=member_dicts, pool={}
+            )
+            deleted_member_ids = sorted(set(old_member_map) - set(new_member_map))
+            status_annotations = dict(annotations)
+
+        self._update_virtualip_with_retry(name, mutate, initial_vip=vip)
         self._push_deleted_member_statuses(
-            vip, sorted(set(old_member_map) - set(new_member_map))
+            {"metadata": {"annotations": status_annotations}},
+            deleted_member_ids,
         )
         LOG.info("Batch updated %d members for VirtualIP %s",
-                 len(backends), name)
+                 len(member_dicts), name)
 
     # ------------------------------------------------------------------
     # Health Monitor operations
@@ -1080,6 +1102,55 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         )
         self._k8s.update_virtualip(name, spec, annotations=annotations)
         return False
+
+    def _update_virtualip_with_retry(self, name, mutate, initial_vip=None):
+        """Patch a VirtualIP from a freshly-read object, retrying conflicts."""
+        next_vip = initial_vip
+        for attempt in range(K8S_UPDATE_MAX_ATTEMPTS):
+            vip = next_vip
+            next_vip = None
+            if vip is None:
+                vip = self._k8s.get_virtualip(name)
+            if not vip:
+                raise driver_exc.UnsupportedOptionError(
+                    user_fault_string="VirtualIP no longer exists.",
+                    operator_fault_string=(
+                        f"VirtualIP {name} disappeared during update"
+                    ),
+                )
+
+            metadata = vip.get("metadata", {}) or {}
+            spec = copy.deepcopy(vip.get("spec", {}) or {})
+            annotations = copy.deepcopy(
+                metadata.get("annotations", {}) or {}
+            )
+
+            mutate(vip, spec, annotations)
+
+            kwargs = {"annotations": annotations}
+            resource_version = metadata.get("resourceVersion")
+            if resource_version:
+                kwargs["resource_version"] = resource_version
+
+            try:
+                return self._k8s.update_virtualip(
+                    name, spec, current=vip, **kwargs
+                )
+            except k8s_client.exceptions.ApiException as exc:
+                if exc.status != 409 or attempt == K8S_UPDATE_MAX_ATTEMPTS - 1:
+                    raise
+                LOG.info(
+                    "VirtualIP %s changed while patching; retrying (%d/%d)",
+                    name, attempt + 1, K8S_UPDATE_MAX_ATTEMPTS,
+                )
+
+        raise driver_exc.UnsupportedOptionError(
+            user_fault_string="VirtualIP update conflicted repeatedly.",
+            operator_fault_string=(
+                f"VirtualIP {name} update conflicted "
+                f"{K8S_UPDATE_MAX_ATTEMPTS} times"
+            ),
+        )
 
     def _associate_pool_with_virtualip(self, vip, pool_id):
         if not vip or not pool_id:

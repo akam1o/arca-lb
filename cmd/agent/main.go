@@ -379,6 +379,7 @@ func cleanupStaleLastConfigs(
 	}
 
 	var firstErr error
+	decodedLastConfigs := make(map[string]*v1alpha1.VirtualIP, len(lastConfigs))
 	for key, data := range lastConfigs {
 		vip, err := virtualIPFromLastConfig(key, data)
 		if err != nil {
@@ -388,6 +389,16 @@ func cleanupStaleLastConfigs(
 			}
 			continue
 		}
+		decodedLastConfigs[key] = vip
+	}
+
+	for key, vip := range decodedLastConfigs {
+		if _, ok := currentByKey[key]; ok && !currentValidByKey[key] && vip.Spec.Address != "" {
+			currentAddresses[vip.Spec.Address] = struct{}{}
+		}
+	}
+
+	for key, vip := range decodedLastConfigs {
 		if currentVIP, ok := currentByKey[key]; ok {
 			// Invalid current specs are ignored by the event handler; keep the
 			// last known good dataplane state for this key until a valid spec arrives.

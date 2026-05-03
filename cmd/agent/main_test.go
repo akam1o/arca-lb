@@ -391,6 +391,71 @@ func TestCleanupStaleLastConfigsPreservesSameKeyWhenCurrentInvalid(t *testing.T)
 	}
 }
 
+func TestCleanupStaleLastConfigsPreservesSiblingRouteForInvalidCurrentRetainedAddress(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	activeSpec := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP","backends":[{"address":"10.0.0.1","weight":100}]}`)
+	staleSharedSpec := []byte(`{"address":"203.0.113.10","port":443,"protocol":"TCP","backends":[{"address":"10.0.0.2","weight":100}]}`)
+	if err := st.SaveLastConfig("team-a/web", activeSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveLastConfig("team-b/api", staleSharedSpec); err != nil {
+		t.Fatal(err)
+	}
+
+	dp := &recordingDataPlane{}
+	router := routing.NewNoop()
+	if err := router.AnnounceVIP(context.Background(), "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	current := []v1alpha1.VirtualIP{{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "web"},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.20",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+				{Address: "10.0.0.1", Weight: 100},
+			},
+		},
+	}}
+
+	if err := cleanupStaleLastConfigs(context.Background(), st, dp, router, nil, current, logger); err != nil {
+		t.Fatalf("cleanupStaleLastConfigs: %v", err)
+	}
+
+	removed := dp.removedVIPs()
+	if len(removed) != 1 {
+		t.Fatalf("removed VIP count = %d, want only stale sibling removed", len(removed))
+	}
+	if removed[0].Namespace != "team-b" || removed[0].Name != "api" || removed[0].Spec.Address != "203.0.113.10" {
+		t.Fatalf("removed VIP = %#v", removed[0])
+	}
+	active, err := st.LoadLastConfig("team-a/web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(active) != string(activeSpec) {
+		t.Fatalf("active config = %q, want %q", active, activeSpec)
+	}
+	stale, err := st.LoadLastConfig("team-b/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != nil {
+		t.Fatal("stale sibling config should be deleted")
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("preserved invalid-current address route should protect sibling cleanup")
+	}
+}
+
 func TestCleanupStaleLastConfigsPreservesSameKeyWhenCurrentHealthCheckInvalid(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))

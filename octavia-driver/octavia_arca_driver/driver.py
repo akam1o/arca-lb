@@ -588,9 +588,18 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         vip = self._k8s.find_by_pool(pool_id)
         if not vip:
-            deferred_context = self._deferred_pool_context(pool_id)
+            pool = {}
+            try:
+                pool = self._pool_from_octavia(pool_id)
+            except Exception:
+                LOG.exception(
+                    "Failed to fetch Octavia pool %s while deleting member",
+                    pool_id,
+                )
+
+            deferred_context = self._deferred_pool_context(pool_id, pool=pool)
+            member_id = self._member_id(m)
             if deferred_context:
-                member_id = self._member_id(m)
                 self._push_resource_delete_status(
                     f"member/{member_id or address}",
                     lb_id=deferred_context["lb_id"],
@@ -599,6 +608,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 )
                 LOG.info("Deleted deferred member %s from listener-less pool %s",
                          member_id or address, pool_id)
+                return
+            self._push_resource_delete_status(
+                f"member/{member_id or address}",
+                lb_id=self._pool_loadbalancer_id(pool),
+                active_listener_ids=[self._pool_listener_id(pool)],
+                active_pool_ids=[pool_id],
+                deleted_member_ids=[member_id],
+            )
             return
 
         name = vip["metadata"]["name"]
@@ -721,7 +738,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             annotations, draining_member_ids
         )
         self._refresh_health_check_port(
-            spec, pool_id, vip, extra_members=member_dicts
+            spec, pool_id, vip, extra_members=member_dicts, pool={}
         )
         self._k8s.update_virtualip(name, spec, annotations=annotations)
         self._push_deleted_member_statuses(
@@ -969,8 +986,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._remember_loadbalancer_vip(lb_id, vip_address)
         return vip_address
 
-    def _deferred_pool_context(self, pool_id):
-        pool = self._pool_from_octavia(pool_id)
+    def _deferred_pool_context(self, pool_id, pool=None):
+        if pool is None:
+            pool = self._pool_from_octavia(pool_id)
         if not pool or self._pool_listener_id(pool):
             return None
 
@@ -1560,7 +1578,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return hc
 
     def _refresh_health_check_port(self, spec, pool_id, vip,
-                                   extra_members=None):
+                                   extra_members=None, pool=None):
         """Keep an existing health check pointed at Octavia member ports."""
         hc = spec.get("healthCheck")
         if not hc:
@@ -1571,14 +1589,15 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return
 
         port = self._resolve_health_check_port(
-            {"pool_id": pool_id}, vip, extra_members=extra_members
+            {"pool_id": pool_id}, vip, extra_members=extra_members, pool=pool
         )
         if hc_type in ("http", "https"):
             hc.setdefault("http", {})["port"] = port
         else:
             hc.setdefault("tcp", {})["port"] = port
 
-    def _resolve_health_check_port(self, hm, vip=None, extra_members=None):
+    def _resolve_health_check_port(self, hm, vip=None, extra_members=None,
+                                   pool=None):
         """Resolve the single probe port representable by VirtualIP.
 
         Octavia health monitors do not carry their own port. The probe port is
@@ -1587,7 +1606,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         rejected instead of silently probing the wrong target.
         """
         pool_id = hm.get("pool_id")
-        member_ports = self._member_probe_ports(pool_id, extra_members)
+        member_ports = self._member_probe_ports(
+            pool_id, extra_members, pool=pool
+        )
         if len(member_ports) == 1:
             return next(iter(member_ports))
         if len(member_ports) > 1:
@@ -1614,9 +1635,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             ),
         )
 
-    def _member_probe_ports(self, pool_id, extra_members=None):
+    def _member_probe_ports(self, pool_id, extra_members=None, pool=None):
         ports = set()
-        for member in self._pool_members(pool_id, extra_members):
+        for member in self._pool_members(pool_id, extra_members, pool=pool):
             port = self._member_probe_port(member)
             if port is not None:
                 ports.add(port)

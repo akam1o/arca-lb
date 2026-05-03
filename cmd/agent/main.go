@@ -78,7 +78,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		if err := otelShutdown.Shutdown(ctx); err != nil {
+		otelShutdownCtx, otelShutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer otelShutdownCancel()
+		if err := otelShutdown.Shutdown(otelShutdownCtx); err != nil {
 			logger.Error("failed to shutdown OpenTelemetry", "error", err)
 		}
 	}()

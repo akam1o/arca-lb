@@ -12,6 +12,7 @@ import (
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	"github.com/akam1o/arca-lb/internal/agent/dataplane"
 	"github.com/akam1o/arca-lb/internal/agent/routing"
+	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -62,6 +63,52 @@ func TestV2ReconcilerSkipsStatusAndRouteWhenDataPlaneFails(t *testing.T) {
 	}
 	if got := statusUpdater.updateCount(); got != 0 {
 		t.Fatalf("status updates = %d, want 0 after dataplane apply failure", got)
+	}
+}
+
+func TestV2ReconcilerReportsRouteFailureInStatus(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	router := newRecordingRouter(events)
+	router.announceErr = errors.New("vtysh failed")
+	statusUpdater := &recordingStatusUpdater{events: events}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return statusUpdater.updateCount() == 1 }, "status update after route failure")
+
+	gotEvents := events.snapshot()
+	wantEvents := []string{"announce:203.0.113.10", "status"}
+	if len(gotEvents) != len(wantEvents) {
+		t.Fatalf("events = %#v, want %#v", gotEvents, wantEvents)
+	}
+	for i := range wantEvents {
+		if gotEvents[i] != wantEvents[i] {
+			t.Fatalf("events = %#v, want %#v", gotEvents, wantEvents)
+		}
+	}
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should not be recorded as announced after announce failure")
+	}
+
+	conditions := statusUpdater.lastConditions()
+	route := findTestCondition(conditions, agentstatus.ConditionRouteAdvertised)
+	if route == nil {
+		t.Fatalf("RouteAdvertised condition missing from %#v", conditions)
+	}
+	if route.Status != metav1.ConditionUnknown {
+		t.Fatalf("RouteAdvertised status = %s, want Unknown", route.Status)
+	}
+	if route.Reason != "RouteUpdateFailed" {
+		t.Fatalf("RouteAdvertised reason = %q, want RouteUpdateFailed", route.Reason)
 	}
 }
 
@@ -244,6 +291,15 @@ func waitFor(t *testing.T, condition func() bool, description string) {
 	t.Fatalf("timed out waiting for %s", description)
 }
 
+func findTestCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
+
 type recordingDataPlane struct {
 	mu        sync.Mutex
 	applies   int
@@ -337,11 +393,13 @@ func (r *recordingDataPlane) recreateCount() int {
 }
 
 type recordingRouter struct {
-	mu        sync.Mutex
-	announced map[string]bool
-	announces int
-	withdraws int
-	events    *eventRecorder
+	mu          sync.Mutex
+	announced   map[string]bool
+	announces   int
+	withdraws   int
+	announceErr error
+	withdrawErr error
+	events      *eventRecorder
 }
 
 func newRecordingRouter(events *eventRecorder) *recordingRouter {
@@ -354,18 +412,24 @@ func newRecordingRouter(events *eventRecorder) *recordingRouter {
 func (r *recordingRouter) AnnounceVIP(_ context.Context, vipAddress string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.announced[vipAddress] = true
 	r.announces++
 	r.events.record("announce:" + vipAddress)
+	if r.announceErr != nil {
+		return r.announceErr
+	}
+	r.announced[vipAddress] = true
 	return nil
 }
 
 func (r *recordingRouter) WithdrawVIP(_ context.Context, vipAddress string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.announced, vipAddress)
 	r.withdraws++
 	r.events.record("withdraw:" + vipAddress)
+	if r.withdrawErr != nil {
+		return r.withdrawErr
+	}
+	delete(r.announced, vipAddress)
 	return nil
 }
 
@@ -392,14 +456,18 @@ func (r *recordingRouter) withdrawCount() int {
 }
 
 type recordingStatusUpdater struct {
-	mu      sync.Mutex
-	updates int
+	mu         sync.Mutex
+	updates    int
+	conditions []metav1.Condition
+	events     *eventRecorder
 }
 
-func (r *recordingStatusUpdater) UpdateVIPStatus(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec, _ ...metav1.Condition) error {
+func (r *recordingStatusUpdater) UpdateVIPStatus(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec, conditions ...metav1.Condition) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.updates++
+	r.conditions = append([]metav1.Condition(nil), conditions...)
+	r.events.record("status")
 	return nil
 }
 
@@ -407,4 +475,10 @@ func (r *recordingStatusUpdater) updateCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.updates
+}
+
+func (r *recordingStatusUpdater) lastConditions() []metav1.Condition {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]metav1.Condition(nil), r.conditions...)
 }

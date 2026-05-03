@@ -27,7 +27,9 @@ Restart Octavia API and verify:
 openstack loadbalancer provider list
 ```
 
-See [docs/octavia.md](../docs/octavia.md) for full documentation.
+See [docs/octavia.md](../docs/octavia.md) for setup documentation and
+[docs/octavia-operations.md](../docs/octavia-operations.md) for operational
+checks and route ERROR recovery.
 
 ## Concept Mapping
 

@@ -179,6 +179,7 @@ For detailed documentation, see the `docs/` directory:
 - [Configuration Guide](docs/configuration.md) - How to configure Operator and Agent
 - [API Reference](docs/api.md) - CRD API reference and REST API (v1)
 - [OpenStack Octavia Integration](docs/octavia.md) - Octavia provider driver setup
+- [Octavia Operations Guide](docs/octavia-operations.md) - Octavia status checks and route ERROR recovery
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and fixes
 - [Backend Server Setup Guide](docs/backend-setup.md) - How to configure backend servers
 

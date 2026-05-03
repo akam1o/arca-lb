@@ -2,6 +2,8 @@
 
 This document explains how to integrate arca-lb with OpenStack Octavia as a provider driver.
 
+For operational checks, `RouteAdvertised` / route ERROR troubleshooting, and recovery procedures, see the [Octavia Operations Guide](./octavia-operations.md).
+
 ## Overview
 
 arca-lb provides an Octavia provider driver that translates OpenStack load balancer API operations into VirtualIP custom resource operations on a Kubernetes cluster. This enables OpenStack users to provision high-performance VPP-based L3DSR load balancers through the standard Octavia API.
@@ -284,6 +286,8 @@ Available flavor metadata:
 1. Check the arca-lb agent logs: `kubectl logs -n arca-system -l app.kubernetes.io/name=arca-lb-agent`
 2. Verify CRD status: `kubectl describe virtualip -n arca-system <name>`
 3. Check VPP status: `vppctl show lb vip verbose`
+
+For FRR route advertisement issues and Octavia `operating_status=ERROR` troubleshooting, see the [Octavia Operations Guide](./octavia-operations.md).
 
 ### Status not syncing to Octavia
 

@@ -2248,6 +2248,53 @@ class TestDriverLifecycle(unittest.TestCase):
             },
         ])
 
+    def test_virtualip_status_change_reports_error_when_route_failed(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                    "member-2222": "10.0.1.2",
+                }),
+            },
+            status={
+                "healthyBackends": 2,
+                "totalBackends": 2,
+                "backends": [
+                    {"address": "10.0.1.1", "healthy": True},
+                    {"address": "10.0.1.2", "healthy": True},
+                ],
+                "conditions": [
+                    {"type": "Ready", "status": "True"},
+                    {
+                        "type": "RouteAdvertised",
+                        "status": "Unknown",
+                        "reason": "RouteUpdateFailed",
+                    },
+                ],
+            },
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(
+            status["loadbalancers"][0]["provisioning_status"], "ACTIVE"
+        )
+        self.assertEqual(
+            status["loadbalancers"][0]["operating_status"], "ERROR"
+        )
+        self.assertEqual(
+            status["listeners"][0]["operating_status"], "ERROR"
+        )
+        self.assertEqual(
+            status["pools"][0]["operating_status"], "ERROR"
+        )
+
     def test_virtualip_status_change_reports_error_when_not_ready(self):
         vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",
@@ -2361,6 +2408,36 @@ class TestDriverLifecycle(unittest.TestCase):
                 "conditions": [
                     {
                         "type": "Ready",
+                        "status": "True",
+                        "observedGeneration": 1,
+                    },
+                ],
+            },
+            generation=2,
+        )
+
+        self.driver._on_virtualip_status_change("MODIFIED", vip)
+
+        self.mock_driver_lib.update_loadbalancer_status.assert_not_called()
+
+    def test_virtualip_status_change_skips_stale_route_condition(self):
+        vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+            },
+            status={
+                "healthyBackends": 1,
+                "totalBackends": 1,
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "True",
+                        "observedGeneration": 2,
+                    },
+                    {
+                        "type": "RouteAdvertised",
                         "status": "True",
                         "observedGeneration": 1,
                     },

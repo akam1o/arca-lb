@@ -39,6 +39,8 @@ OPERATING_ERROR = "ERROR"
 OPERATING_DRAINING = "DRAINING"
 DEFAULT_MEMBER_WEIGHT = 1
 OCTAVIA_MEMBER_WEIGHT_DRAINING = 0
+CONDITION_READY = "Ready"
+CONDITION_ROUTE_ADVERTISED = "RouteAdvertised"
 
 
 class ArcaLBDriver(driver_base.ProviderDriver):
@@ -1685,7 +1687,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if not lb_id:
             return
 
-        ready_condition = self._ready_condition(status.get("conditions", []))
+        conditions = status.get("conditions", [])
+        ready_condition = self._condition(conditions, CONDITION_READY)
         if ready_condition is None:
             LOG.debug(
                 "VirtualIP %s has no Ready condition yet; skipping Octavia "
@@ -1693,8 +1696,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 metadata.get("name"),
             )
             return
+        route_condition = self._condition(
+            conditions, CONDITION_ROUTE_ADVERTISED
+        )
         if not self._status_matches_generation(metadata, status,
-                                               ready_condition):
+                                               ready_condition,
+                                               route_condition):
             LOG.debug(
                 "VirtualIP %s status is stale for generation %s; skipping "
                 "Octavia status update",
@@ -1710,18 +1717,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         # Build Octavia status update.
         healthy = status.get("healthyBackends", 0)
         total = status.get("totalBackends", 0)
+        route_advertised = self._route_advertised(route_condition)
         provisioning_status = (
             PROVISIONING_ACTIVE
             if is_ready or is_no_backends
             else PROVISIONING_ERROR
         )
         operating_status = self._octavia_operating_status(
-            is_ready, is_no_backends, healthy, total
+            is_ready, is_no_backends, healthy, total, route_advertised
         )
 
         LOG.debug(
-            "VirtualIP %s status: ready=%s, healthy=%d/%d -> %s/%s",
-            metadata.get("name"), is_ready, healthy, total,
+            "VirtualIP %s status: ready=%s, route_advertised=%s, "
+            "healthy=%d/%d -> %s/%s",
+            metadata.get("name"), is_ready, route_advertised, healthy, total,
             provisioning_status, operating_status,
         )
 
@@ -1741,21 +1750,23 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._push_octavia_status(status_update, metadata.get("name"))
 
     @staticmethod
-    def _ready_condition(conditions):
+    def _condition(conditions, condition_type):
         for condition in conditions:
-            if condition.get("type") == "Ready":
+            if condition.get("type") == condition_type:
                 return condition
         return None
 
     @classmethod
-    def _status_matches_generation(cls, metadata, status, ready_condition):
+    def _status_matches_generation(cls, metadata, status, *conditions):
         generation = metadata.get("generation")
-        return (
-            cls._generation_matches(status.get("observedGeneration"),
-                                    generation) and
-            cls._generation_matches(
-                ready_condition.get("observedGeneration"), generation
+        if not cls._generation_matches(status.get("observedGeneration"),
+                                       generation):
+            return False
+        return all(
+            condition is None or cls._generation_matches(
+                condition.get("observedGeneration"), generation
             )
+            for condition in conditions
         )
 
     @staticmethod
@@ -1768,13 +1779,24 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             return False
 
     @staticmethod
-    def _octavia_operating_status(is_ready, is_no_backends, healthy, total):
+    def _route_advertised(route_condition):
+        if route_condition is None:
+            return None
+        return route_condition.get("status") == "True"
+
+    @staticmethod
+    def _octavia_operating_status(is_ready, is_no_backends, healthy, total,
+                                  route_advertised=None):
         if not is_ready:
             if is_no_backends:
                 return OPERATING_OFFLINE
             return OPERATING_ERROR
         if total <= 0:
             return OPERATING_OFFLINE
+        if healthy <= 0:
+            return OPERATING_ERROR
+        if route_advertised is False:
+            return OPERATING_ERROR
         if healthy >= total:
             return OPERATING_ONLINE
         if healthy > 0:

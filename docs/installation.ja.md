@@ -67,6 +67,12 @@ Agent DaemonSet を適用する前に、すべての LB ノードへ FRR をイ�
 kubectl apply -f config/agent/
 ```
 
+同梱の `config/agent/daemonset.yaml` は本番向けマニフェストであり、ノードローカル FRR を必須とします。開発用途や経路広報を意図的に無効化したデータプレーンのみの検証では、代わりに no-FRR マニフェストを使用してください。
+
+```bash
+kubectl apply -f config/agent-no-frr/
+```
+
 各 LB ノードで Agent が稼働していることを確認：
 
 ```bash

@@ -70,6 +70,14 @@ the node-local FRR configuration.
 kubectl apply -f config/agent/
 ```
 
+The bundled `config/agent/daemonset.yaml` is the production manifest and requires
+node-local FRR. For development or data-plane-only validation where route
+announcements are intentionally disabled, use the no-FRR manifest instead:
+
+```bash
+kubectl apply -f config/agent-no-frr/
+```
+
 Verify the Agent is running on each LB node:
 
 ```bash

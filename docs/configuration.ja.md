@@ -86,6 +86,8 @@ log:
 
 `routing.type` が `frr` の場合、Agent は `vtysh` 経由で VIP の static route を管理します。Kubernetes デプロイでは FRR はノード上で稼働している前提で、Agent は `/run/frr` の runtime socket directory をマウントして利用します。Agent は FRR プロセスの起動や BGP peer の設定は行いません。
 
+同梱の `config/agent/daemonset.yaml` は FRR 必須の本番向けマニフェストです。開発用途やデータプレーンのみの検証で `routing.enabled: false` または `routing.type: noop` が必要な場合は、Pod が `vtysh` を待機せず `/run/frr` もマウントしない `config/agent-no-frr/` をデプロイしてください。
+
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `routing.enabled` | BGP 経路管理を有効化 | `false` |

@@ -89,6 +89,12 @@ routes. In Kubernetes deployments, FRR is expected to run on the node and expose
 its runtime socket directory at `/run/frr`; the Agent does not start FRR or
 configure BGP peers.
 
+The bundled `config/agent/daemonset.yaml` is the FRR-required production
+manifest. If `routing.enabled: false` or `routing.type: noop` is needed for
+development or data-plane-only validation, deploy
+`config/agent-no-frr/` instead so the Pod does not wait on `vtysh` or mount
+`/run/frr`.
+
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `routing.enabled` | Enable BGP route management | `false` |

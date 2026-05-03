@@ -1,0 +1,134 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arca-lb-agent
+  namespace: arca-lb-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arca-lb-agent-config
+  namespace: arca-lb-system
+data:
+  agent.yaml: |
+    agent:
+      storePath: /var/lib/arca-lb/agent.db
+      reconcileInterval: 30s
+      statusTTL: 2m
+    kubernetes:
+      namespace: ""
+      resyncInterval: 30s
+    dataplane:
+      type: vpp
+      vpp:
+        socket_path: /run/vpp/api.sock
+        encap_type: L3DSR
+        dscp: 10
+        service_type: CLUSTERIP
+        new_flows_table_length: 65537
+        retained_vip_tuning_drift_policy: rolling_recreate
+        retained_vip_tuning_drift_drain: 30s
+    routing:
+      enabled: false
+      type: noop
+    rollout:
+      enabled: true
+      leaseNamespace: arca-lb-system
+      leaseDuration: 2m
+      retryInterval: 1s
+    healthCheck:
+      workerCount: 4
+      maxConcurrentChecks: 64
+      defaultTimeout: 3s
+    metrics:
+      enabled: true
+      address: ":9090"
+      path: /metrics
+    log:
+      level: info
+      format: json
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: arca-lb-agent
+  namespace: arca-lb-system
+  labels:
+    app.kubernetes.io/name: arca-lb-agent
+    app.kubernetes.io/part-of: arca-lb
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: arca-lb-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: arca-lb-agent
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: arca-lb-agent
+      hostNetwork: true
+      containers:
+        - name: agent
+          image: arcalb-agent:latest
+          command:
+            - /app/arcalb-agent
+            - --config=/etc/arca-lb/agent.yaml
+          env:
+            - name: ARCA_AGENT_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          startupProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            failureThreshold: 12
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/arca-lb
+              readOnly: true
+            - name: vpp-socket
+              mountPath: /run/vpp
+            - name: agent-state
+              mountPath: /var/lib/arca-lb
+          resources:
+            limits:
+              cpu: "1"
+              memory: 256Mi
+            requests:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            privileged: true
+      volumes:
+        - name: config
+          configMap:
+            name: arca-lb-agent-config
+        - name: vpp-socket
+          hostPath:
+            path: /run/vpp
+            type: DirectoryOrCreate
+        - name: agent-state
+          hostPath:
+            path: /var/lib/arca-lb
+            type: DirectoryOrCreate

@@ -181,6 +181,9 @@ func (u *Updater) UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.
 		condition.Type = ConditionHealthCheckReady
 		condition.ObservedGeneration = vip.Generation
 		meta.SetStatusCondition(&current.Status.Conditions, condition)
+		if condition.Status == metav1.ConditionFalse {
+			RefreshAggregateStatus(&current, vip.Generation, time.Now(), u.effectiveAgentStatusTTL())
+		}
 
 		return u.client.Status().Update(ctx, &current)
 	})

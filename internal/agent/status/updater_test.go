@@ -607,12 +607,9 @@ func TestUpdateHealthCheckCondition(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if len(got.Status.Conditions) != 1 {
-		t.Fatalf("conditions = %d, want 1", len(got.Status.Conditions))
-	}
-	condition := got.Status.Conditions[0]
-	if condition.Type != ConditionHealthCheckReady {
-		t.Fatalf("condition type = %q, want %q", condition.Type, ConditionHealthCheckReady)
+	condition := meta.FindStatusCondition(got.Status.Conditions, ConditionHealthCheckReady)
+	if condition == nil {
+		t.Fatalf("HealthCheckReady condition missing from %+v", got.Status.Conditions)
 	}
 	if condition.Status != metav1.ConditionFalse {
 		t.Fatalf("condition status = %s, want False", condition.Status)
@@ -622,5 +619,14 @@ func TestUpdateHealthCheckCondition(t *testing.T) {
 	}
 	if condition.ObservedGeneration != 3 {
 		t.Fatalf("condition observedGeneration = %d, want 3", condition.ObservedGeneration)
+	}
+	if got.Status.ObservedGeneration != 3 {
+		t.Fatalf("ObservedGeneration = %d, want 3", got.Status.ObservedGeneration)
+	}
+	if serving := meta.FindStatusCondition(got.Status.Conditions, ConditionServing); serving == nil || serving.ObservedGeneration != 3 {
+		t.Fatalf("Serving condition = %+v, want current generation", serving)
+	}
+	if advertised := meta.FindStatusCondition(got.Status.Conditions, ConditionRouteAdvertised); advertised == nil || advertised.ObservedGeneration != 3 {
+		t.Fatalf("RouteAdvertised condition = %+v, want current generation", advertised)
 	}
 }

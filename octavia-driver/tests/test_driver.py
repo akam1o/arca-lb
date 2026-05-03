@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from octavia_lib.api.drivers import data_models as octavia_data_models
+from octavia_lib.api.drivers import exceptions as driver_exc
 
 from octavia_arca_driver import constants
 from octavia_arca_driver.driver import ArcaLBDriver
@@ -76,6 +77,22 @@ class TestParseExpectedCodes(unittest.TestCase):
 
     def test_none(self):
         self.assertEqual(ArcaLBDriver._parse_expected_codes(None), [200])
+
+    def test_invalid_token_raises(self):
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            ArcaLBDriver._parse_expected_codes("200,abc")
+
+    def test_reversed_range_raises(self):
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            ArcaLBDriver._parse_expected_codes("204-200")
+
+    def test_out_of_range_code_raises(self):
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            ArcaLBDriver._parse_expected_codes("99")
+
+    def test_empty_list_token_raises(self):
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            ArcaLBDriver._parse_expected_codes("200,")
 
 
 class TestBuildHealthCheck(unittest.TestCase):

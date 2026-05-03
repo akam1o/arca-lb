@@ -3,6 +3,7 @@
 
 """Kubernetes client for managing VirtualIP custom resources."""
 
+import hashlib
 import logging
 import threading
 
@@ -32,7 +33,8 @@ class VirtualIPClient:
 
     def _resource_name(self, lb_id, listener_id):
         """Generate a deterministic VirtualIP resource name from Octavia IDs."""
-        return f"octavia-{lb_id[:8]}-{listener_id[:8]}"
+        raw_name = f"{lb_id}:{listener_id}".encode("utf-8")
+        return f"octavia-{hashlib.sha256(raw_name).hexdigest()[:40]}"
 
     def create_virtualip(self, name, spec, annotations=None, labels=None):
         """Create a VirtualIP custom resource."""

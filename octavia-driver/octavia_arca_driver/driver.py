@@ -1677,23 +1677,48 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         Octavia accepts formats like "200", "200,201", "200-204".
         """
-        if not codes_str:
+        if codes_str is None or str(codes_str).strip() == "":
             return [200]
         codes = []
         for part in str(codes_str).split(","):
             part = part.strip()
+            if not part:
+                raise ArcaLBDriver._expected_codes_error(codes_str)
             if "-" in part:
                 try:
                     start, end = part.split("-", 1)
-                    codes.extend(range(int(start), int(end) + 1))
+                    start = int(start)
+                    end = int(end)
                 except (ValueError, TypeError):
-                    codes.append(200)
+                    raise ArcaLBDriver._expected_codes_error(codes_str)
+                if start > end:
+                    raise ArcaLBDriver._expected_codes_error(codes_str)
+                ArcaLBDriver._validate_expected_code(start, codes_str)
+                ArcaLBDriver._validate_expected_code(end, codes_str)
+                codes.extend(range(start, end + 1))
             else:
                 try:
-                    codes.append(int(part))
+                    code = int(part)
                 except (ValueError, TypeError):
-                    codes.append(200)
+                    raise ArcaLBDriver._expected_codes_error(codes_str)
+                ArcaLBDriver._validate_expected_code(code, codes_str)
+                codes.append(code)
         return codes or [200]
+
+    @staticmethod
+    def _validate_expected_code(code, codes_str):
+        if not 100 <= code <= 599:
+            raise ArcaLBDriver._expected_codes_error(codes_str)
+
+    @staticmethod
+    def _expected_codes_error(codes_str):
+        return driver_exc.UnsupportedOptionError(
+            user_fault_string=(
+                "Health monitor expected_codes must contain HTTP status "
+                "codes or ascending ranges between 100 and 599."
+            ),
+            operator_fault_string=f"Invalid expected_codes: {codes_str}",
+        )
 
     def _on_virtualip_status_change(self, event_type, vip_obj):
         """Handle VirtualIP status changes from the K8s watch.

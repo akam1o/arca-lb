@@ -84,6 +84,22 @@ class TestVirtualIPClient(unittest.TestCase):
         spec = api.patch_body["spec"]
         self.assertIsNone(spec["healthCheck"])
 
+    def test_resource_name_uses_full_id_entropy(self):
+        client = VirtualIPClient.__new__(VirtualIPClient)
+
+        first = client._resource_name(
+            "12345678-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "87654321-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        )
+        second = client._resource_name(
+            "12345678-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "87654321-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        )
+
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("octavia-"))
+        self.assertLessEqual(len(first), 63)
+
 
 if __name__ == "__main__":
     unittest.main()

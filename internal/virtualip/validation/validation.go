@@ -24,27 +24,13 @@ func ValidateDataPlane(vip *v1alpha1.VirtualIP) error {
 		return fmt.Errorf("VirtualIP is nil")
 	}
 
-	if ip := net.ParseIP(vip.Spec.Address); ip == nil {
-		return fmt.Errorf("spec.address %q is not a valid IP address", vip.Spec.Address)
-	}
-
-	if vip.Spec.Port < 1 || vip.Spec.Port > 65535 {
-		return fmt.Errorf("spec.port must be between 1 and 65535, got %d", vip.Spec.Port)
-	}
-
-	switch vip.Spec.Protocol {
-	case v1alpha1.ProtocolTCP, v1alpha1.ProtocolUDP:
-	default:
-		return fmt.Errorf("spec.protocol must be TCP or UDP, got %q", vip.Spec.Protocol)
-	}
-
-	return validateDataPlaneSpec(&vip.Spec)
+	return validateCoreSpec(&vip.Spec)
 }
 
 // ValidateSpec validates VirtualIP spec fields that are not fully guarded by
 // CRD schema validation in all deployment modes.
 func ValidateSpec(spec *v1alpha1.VirtualIPSpec) error {
-	if err := validateDataPlaneSpec(spec); err != nil {
+	if err := validateCoreSpec(spec); err != nil {
 		return err
 	}
 	return ValidateHealthCheckSpec(spec.HealthCheck)
@@ -72,6 +58,28 @@ func ValidateHealthCheckRuntimeSpec(hc *v1alpha1.HealthCheckSpec) error {
 	}
 
 	return nil
+}
+
+func validateCoreSpec(spec *v1alpha1.VirtualIPSpec) error {
+	if spec == nil {
+		return fmt.Errorf("spec is nil")
+	}
+
+	if ip := net.ParseIP(spec.Address); ip == nil {
+		return fmt.Errorf("spec.address %q is not a valid IP address", spec.Address)
+	}
+
+	if spec.Port < 1 || spec.Port > 65535 {
+		return fmt.Errorf("spec.port must be between 1 and 65535, got %d", spec.Port)
+	}
+
+	switch spec.Protocol {
+	case v1alpha1.ProtocolTCP, v1alpha1.ProtocolUDP:
+	default:
+		return fmt.Errorf("spec.protocol must be TCP or UDP, got %q", spec.Protocol)
+	}
+
+	return validateDataPlaneSpec(spec)
 }
 
 func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {

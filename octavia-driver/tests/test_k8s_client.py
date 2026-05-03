@@ -3,10 +3,14 @@
 
 """Unit tests for Kubernetes VirtualIP client helpers."""
 
+import threading
 import unittest
 
 from octavia_arca_driver import constants
-from octavia_arca_driver.k8s_client import VirtualIPClient
+from octavia_arca_driver.k8s_client import (
+    VirtualIPClient,
+    VirtualIPStatusWatcher,
+)
 
 
 class FakeCustomObjectsApi:
@@ -20,6 +24,26 @@ class FakeCustomObjectsApi:
     def patch_namespaced_custom_object(self, **kwargs):
         self.patch_body = kwargs["body"]
         return self.patch_body
+
+
+class FakeWatch:
+    def __init__(self):
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakeThread:
+    def __init__(self, alive):
+        self.alive = alive
+        self.join_timeout = None
+
+    def join(self, timeout=None):
+        self.join_timeout = timeout
+
+    def is_alive(self):
+        return self.alive
 
 
 class TestVirtualIPClient(unittest.TestCase):
@@ -99,6 +123,36 @@ class TestVirtualIPClient(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertTrue(first.startswith("octavia-"))
         self.assertLessEqual(len(first), 63)
+
+
+class TestVirtualIPStatusWatcher(unittest.TestCase):
+    def _watcher_with_thread(self, thread):
+        watcher = VirtualIPStatusWatcher.__new__(VirtualIPStatusWatcher)
+        watcher._stop_event = threading.Event()
+        watcher._thread = thread
+        watcher._watch = FakeWatch()
+        watcher._watch_lock = threading.Lock()
+        return watcher
+
+    def test_stop_stops_active_watch_and_keeps_live_thread(self):
+        thread = FakeThread(alive=True)
+        watcher = self._watcher_with_thread(thread)
+        watch = watcher._watch
+
+        watcher.stop()
+
+        self.assertTrue(watcher._stop_event.is_set())
+        self.assertTrue(watch.stopped)
+        self.assertEqual(thread.join_timeout, 5)
+        self.assertIs(watcher._thread, thread)
+
+    def test_stop_clears_finished_thread(self):
+        thread = FakeThread(alive=False)
+        watcher = self._watcher_with_thread(thread)
+
+        watcher.stop()
+
+        self.assertIsNone(watcher._thread)
 
 
 if __name__ == "__main__":

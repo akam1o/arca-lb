@@ -2386,6 +2386,35 @@ class TestDriverLifecycle(unittest.TestCase):
             "provisioning_status": "ACTIVE",
         }])
 
+    def test_health_monitor_update_restores_annotation(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        hm = FakeObj({
+            "healthmonitor_id": "hm-1111",
+            "pool_id": "pool-1111",
+            "type": "HTTP",
+            "delay": 10,
+            "timeout": 5,
+            "max_retries": 3,
+            "max_retries_down": 2,
+            "http_method": "GET",
+            "url_path": "/healthz",
+            "expected_codes": "200",
+        })
+        self.driver.health_monitor_update(FakeObj({}), hm)
+
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        annotations = self.mock_k8s.update_virtualip.call_args[1]["annotations"]
+        self.assertIn("healthCheck", spec)
+        self.assertEqual(spec["healthCheck"]["type"], "http")
+        self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
+
     def test_health_monitor_update_without_associated_virtualip_raises(self):
         self.mock_k8s.find_by_pool.return_value = None
         self.mock_driver_lib.get_pool.return_value = FakeObj({

@@ -865,7 +865,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
         spec["healthCheck"] = self._build_health_check(hm, vip)
-        self._k8s.update_virtualip(name, spec)
+        annotations = vip.get("metadata", {}).get("annotations", {})
+        annotations[constants.ANNOTATION_HM_ID] = hm.get("healthmonitor_id")
+        self._k8s.update_virtualip(name, spec, annotations=annotations)
 
     # ------------------------------------------------------------------
     # L7Policy / L7Rule — not supported (L4 only)

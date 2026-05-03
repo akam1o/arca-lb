@@ -26,6 +26,10 @@ const (
 	// without a refresh from the reporting agent.
 	DefaultAgentStatusTTL = 2 * time.Minute
 
+	// DefaultExpiredAgentStatusRetention is how long expired per-agent
+	// observations are retained for diagnostics before being pruned.
+	DefaultExpiredAgentStatusRetention = 7 * 24 * time.Hour
+
 	// ConditionHealthCheckReady reports whether the agent accepted the current
 	// health check configuration.
 	ConditionHealthCheckReady = "HealthCheckReady"
@@ -240,8 +244,8 @@ func upsertAgentStatus(statuses []v1alpha1.AgentStatus, next v1alpha1.AgentStatu
 	return out
 }
 
-// RefreshAggregateStatus removes expired per-agent observations and rebuilds
-// the aggregate status fields for the requested generation.
+// RefreshAggregateStatus prunes old per-agent observations and rebuilds the
+// aggregate status fields for the requested generation.
 func RefreshAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, now time.Time, ttl time.Duration) {
 	if vip == nil {
 		return
@@ -264,6 +268,9 @@ func splitAgentStatuses(statuses []v1alpha1.AgentStatus, generation int64, now t
 			continue
 		}
 		if agentStatusExpired(status, now, ttl) {
+			if agentStatusExpired(status, now, DefaultExpiredAgentStatusRetention) {
+				continue
+			}
 			expired = append(expired, status)
 			continue
 		}

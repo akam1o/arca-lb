@@ -345,6 +345,101 @@ func TestUpdateVIPStatusTreatsExpiredAgentStatusAsUnknown(t *testing.T) {
 	}
 }
 
+func TestUpdateVIPStatusPrunesExpiredAgentStatusAfterRetention(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	old := metav1.NewTime(time.Now().Add(-DefaultExpiredAgentStatusRetention - time.Minute))
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 3,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+			},
+		},
+		Status: v1alpha1.VirtualIPStatus{
+			ObservedGeneration: 3,
+			HealthyBackends:    1,
+			TotalBackends:      1,
+			Backends: []v1alpha1.BackendStatus{
+				{Address: "10.0.0.1", Healthy: true},
+			},
+			AgentStatuses: []v1alpha1.AgentStatus{
+				{
+					AgentID:            "node-a",
+					ObservedGeneration: 3,
+					HealthyBackends:    1,
+					TotalBackends:      1,
+					LastUpdateTime:     &old,
+					Backends: []v1alpha1.BackendStatus{
+						{Address: "10.0.0.1", Healthy: true},
+					},
+					Conditions: []metav1.Condition{
+						{Type: ConditionServing, Status: metav1.ConditionTrue, Reason: "BackendsHealthy"},
+						{Type: ConditionRouteAdvertised, Status: metav1.ConditionTrue, Reason: "Advertised"},
+					},
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	updater := &Updater{
+		client:         k8sClient,
+		agentID:        "node-b",
+		agentStatusTTL: time.Minute,
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	if err := updater.UpdateVIPStatus(context.Background(), vip, nil, metav1.Condition{
+		Type:    ConditionServing,
+		Status:  metav1.ConditionFalse,
+		Reason:  "NoHealthyBackends",
+		Message: "node-b not serving",
+	}, metav1.Condition{
+		Type:    ConditionRouteAdvertised,
+		Status:  metav1.ConditionFalse,
+		Reason:  "NotAdvertised",
+		Message: "node-b not advertised",
+	}); err != nil {
+		t.Fatalf("UpdateVIPStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if len(got.Status.AgentStatuses) != 1 || got.Status.AgentStatuses[0].AgentID != "node-b" {
+		t.Fatalf("AgentStatuses = %#v, want only fresh node-b status", got.Status.AgentStatuses)
+	}
+	if got.Status.HealthyBackends != 0 {
+		t.Fatalf("HealthyBackends = %d, want pruned node-a health excluded", got.Status.HealthyBackends)
+	}
+	serving := meta.FindStatusCondition(got.Status.Conditions, ConditionServing)
+	if serving == nil || serving.Status != metav1.ConditionFalse || serving.Reason != "NoAgentServing" {
+		t.Fatalf("Serving aggregate = %+v, want False NoAgentServing", serving)
+	}
+	advertised := meta.FindStatusCondition(got.Status.Conditions, ConditionRouteAdvertised)
+	if advertised == nil || advertised.Status != metav1.ConditionFalse || advertised.Reason != "NotAdvertised" {
+		t.Fatalf("RouteAdvertised aggregate = %+v, want False NotAdvertised", advertised)
+	}
+}
+
 func TestUpdateVIPStatusSkipsStaleGeneration(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {

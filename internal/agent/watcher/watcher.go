@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
@@ -161,10 +162,17 @@ func (w *Watcher) StartWithInitialSync(ctx context.Context, afterSync InitialSyn
 		return fmt.Errorf("failed to get informer: %w", err)
 	}
 
-	reg, err := informer.AddEventHandler(&eventHandler{
+	vipHandler := k8scache.ResourceEventHandler(&eventHandler{
 		handler: w.handler,
 		logger:  w.logger,
 	})
+	var initialSyncGate *initialSyncEventGate
+	if afterSync != nil {
+		initialSyncGate = newInitialSyncEventGate(vipHandler)
+		vipHandler = initialSyncGate
+	}
+
+	reg, err := informer.AddEventHandler(vipHandler)
 	if err != nil {
 		return fmt.Errorf("failed to add event handler: %w", err)
 	}
@@ -211,6 +219,7 @@ func (w *Watcher) StartWithInitialSync(ctx context.Context, afterSync InitialSyn
 			<-cacheErrCh
 			return err
 		}
+		initialSyncGate.Release()
 	}
 
 	return <-cacheErrCh
@@ -250,6 +259,63 @@ func newScheme() (*runtime.Scheme, error) {
 type eventHandler struct {
 	handler Handler
 	logger  *slog.Logger
+}
+
+type initialSyncEventGate struct {
+	handler k8scache.ResourceEventHandler
+
+	mu       sync.Mutex
+	released bool
+	pending  []func()
+}
+
+func newInitialSyncEventGate(handler k8scache.ResourceEventHandler) *initialSyncEventGate {
+	return &initialSyncEventGate{handler: handler}
+}
+
+func (h *initialSyncEventGate) Release() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.released {
+		return
+	}
+	h.released = true
+	// Hold the lock while replaying so post-sync events cannot overtake
+	// buffered initial-list events.
+	for _, deliver := range h.pending {
+		deliver()
+	}
+	h.pending = nil
+}
+
+func (h *initialSyncEventGate) deliver(deliver func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.released {
+		deliver()
+		return
+	}
+	h.pending = append(h.pending, deliver)
+}
+
+func (h *initialSyncEventGate) OnAdd(obj interface{}, isInInitialList bool) {
+	h.deliver(func() {
+		h.handler.OnAdd(obj, isInInitialList)
+	})
+}
+
+func (h *initialSyncEventGate) OnUpdate(oldObj, newObj interface{}) {
+	h.deliver(func() {
+		h.handler.OnUpdate(oldObj, newObj)
+	})
+}
+
+func (h *initialSyncEventGate) OnDelete(obj interface{}) {
+	h.deliver(func() {
+		h.handler.OnDelete(obj)
+	})
 }
 
 func (h *eventHandler) OnAdd(obj interface{}, _ bool) {

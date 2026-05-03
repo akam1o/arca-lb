@@ -90,6 +90,51 @@ func TestEventHandlerOnUpdateHandlesGenerationChange(t *testing.T) {
 	}
 }
 
+func TestInitialSyncEventGateBuffersUntilRelease(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	gate := newInitialSyncEventGate(eh)
+	addedVIP := newWatcherTestVIP()
+	updatedVIP := addedVIP.DeepCopy()
+	updatedVIP.Spec.Port = 443
+
+	gate.OnAdd(addedVIP, true)
+	gate.OnUpdate(addedVIP, updatedVIP)
+
+	if len(handler.updated) != 0 {
+		t.Fatalf("expected no updates before release, got %d", len(handler.updated))
+	}
+
+	gate.Release()
+
+	if len(handler.updated) != 2 {
+		t.Fatalf("expected 2 updates after release, got %d", len(handler.updated))
+	}
+	if handler.updated[0] != addedVIP {
+		t.Fatalf("first released VIP = %#v, want added VIP", handler.updated[0])
+	}
+	if handler.updated[1] != updatedVIP {
+		t.Fatalf("second released VIP = %#v, want updated VIP", handler.updated[1])
+	}
+}
+
+func TestInitialSyncEventGateDeliversAfterRelease(t *testing.T) {
+	handler := &recordingHandler{}
+	eh := &eventHandler{handler: handler, logger: newTestLogger()}
+	gate := newInitialSyncEventGate(eh)
+	vip := newWatcherTestVIP()
+
+	gate.Release()
+	gate.OnAdd(vip, false)
+
+	if len(handler.updated) != 1 {
+		t.Fatalf("expected 1 update after release, got %d", len(handler.updated))
+	}
+	if handler.updated[0] != vip {
+		t.Fatalf("updated VIP = %#v, want VIP", handler.updated[0])
+	}
+}
+
 func TestEventHandlerOnDeleteHandlesVirtualIP(t *testing.T) {
 	handler := &recordingHandler{}
 	eh := &eventHandler{handler: handler, logger: newTestLogger()}

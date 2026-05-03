@@ -591,8 +591,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})
         annotations = vip.get("metadata", {}).get("annotations", {})
-        backends = [b for b in spec.get("backends", [])
-                    if b.get("address") != address]
+        delete_address = self._member_delete_address(annotations, m)
+        if delete_address:
+            backends = [b for b in spec.get("backends", [])
+                        if b.get("address") != delete_address]
+        else:
+            backends = list(spec.get("backends", []))
         spec["backends"] = backends
         deleted_member_ids = self._forget_member_mapping(annotations, m)
         member_id = self._member_id(m)
@@ -602,7 +606,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._refresh_health_check_port(spec, pool_id, vip)
         self._k8s.update_virtualip(name, spec, annotations=annotations)
         self._push_deleted_member_statuses(vip, deleted_member_ids)
-        LOG.info("Removed member %s from VirtualIP %s", address, name)
+        LOG.info("Removed member %s from VirtualIP %s",
+                 delete_address or address, name)
 
     def member_update(self, old_member, new_member):
         """Update a backend's weight in the VirtualIP."""
@@ -1266,6 +1271,18 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if removed:
             self._set_member_map_annotation(annotations, member_map)
         return removed
+
+    def _member_delete_address(self, annotations, member):
+        address = member.get("address")
+        if address:
+            return address
+
+        member_id = self._member_id(member)
+        if not member_id:
+            return None
+
+        member_map = self._member_map_from_annotations(annotations)
+        return member_map.get(member_id)
 
     def _discard_draining_member_ids(self, annotations, member_ids):
         draining_member_ids = self._draining_member_ids_from_annotations(

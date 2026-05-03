@@ -103,6 +103,10 @@ func testVIPCRUD(t *testing.T, factory DataStoreFactory) {
 	_, err = ds.GetVIP(ctx, vip.ID)
 	assert.Error(t, err)
 	assert.Equal(t, datastore.ErrNotFound, err)
+
+	// Deleting a missing VIP should report not found consistently.
+	err = ds.DeleteVIP(ctx, vip.ID)
+	assert.ErrorIs(t, err, datastore.ErrNotFound)
 }
 
 func testBackendCRUD(t *testing.T, factory DataStoreFactory) {
@@ -181,6 +185,29 @@ func testBackendCRUD(t *testing.T, factory DataStoreFactory) {
 	_, err = ds.GetBackend(ctx, backend.ID)
 	assert.Error(t, err)
 	assert.Equal(t, datastore.ErrNotFound, err)
+
+	// Deleting a VIP should remove its backends as well.
+	cascadeVIP := &models.VIP{
+		VIP:      "192.168.1.201",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, cascadeVIP)
+	require.NoError(t, err)
+
+	cascadeBackend := &models.Backend{
+		VIPID:  cascadeVIP.ID,
+		IP:     "10.0.0.3",
+		Weight: 10,
+	}
+	err = ds.AddBackend(ctx, cascadeBackend)
+	require.NoError(t, err)
+
+	err = ds.DeleteVIP(ctx, cascadeVIP.ID)
+	require.NoError(t, err)
+	_, err = ds.GetBackend(ctx, cascadeBackend.ID)
+	assert.ErrorIs(t, err, datastore.ErrNotFound)
 }
 
 func testRevisionManagement(t *testing.T, factory DataStoreFactory) {
@@ -250,6 +277,52 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	retrieved, err := ds.GetVIP(ctx, vip.ID)
 	require.NoError(t, err)
 	assert.Equal(t, vip.ID, retrieved.ID)
+
+	// A backend created in a transaction should be fully usable after commit.
+	txBackend, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+
+	committedBackend := &models.Backend{
+		VIPID:  vip.ID,
+		IP:     "10.0.0.3",
+		Weight: 10,
+	}
+	err = txBackend.AddBackend(ctx, committedBackend)
+	require.NoError(t, err)
+
+	_, err = ds.GetBackend(ctx, committedBackend.ID)
+	assert.ErrorIs(t, err, datastore.ErrNotFound)
+
+	err = txBackend.Commit()
+	require.NoError(t, err)
+
+	retrievedBackend, err := ds.GetBackend(ctx, committedBackend.ID)
+	require.NoError(t, err)
+	assert.Equal(t, committedBackend.ID, retrievedBackend.ID)
+	assert.Equal(t, committedBackend.VIPID, retrievedBackend.VIPID)
+
+	committedBackend.Weight = 20
+	err = ds.UpdateBackend(ctx, committedBackend)
+	require.NoError(t, err)
+
+	err = ds.DeleteBackend(ctx, committedBackend.ID)
+	require.NoError(t, err)
+
+	// A transactional backend still requires an existing parent VIP.
+	txMissingBackend, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+
+	missingParentBackend := &models.Backend{
+		VIPID:  "missing-vip-id",
+		IP:     "10.0.0.254",
+		Weight: 1,
+	}
+	err = txMissingBackend.AddBackend(ctx, missingParentBackend)
+	if err == nil {
+		err = txMissingBackend.Commit()
+	}
+	require.ErrorIs(t, err, datastore.ErrNotFound)
+	_ = txMissingBackend.Rollback()
 
 	// Test rollback
 	tx2, err := ds.BeginTx(ctx)

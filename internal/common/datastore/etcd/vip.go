@@ -131,18 +131,35 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 // DeleteVIP deletes a VIP and its associated backends from etcd
 func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
-	// Delete VIP
 	vipKey := ds.vipKey(id)
-	_, err := ds.client.Delete(ctx, vipKey)
+	backendPrefix := ds.backendPrefix(id)
+
+	indexKeys, err := ds.backendIndexKeysForVIP(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	ops := []clientv3.Op{
+		clientv3.OpDelete(vipKey),
+		clientv3.OpDelete(backendPrefix, clientv3.WithPrefix()),
+	}
+	for _, indexKey := range indexKeys {
+		ops = append(ops, clientv3.OpDelete(indexKey))
+	}
+
+	txnResp, err := ds.client.Txn(ctx).If(
+		clientv3.Compare(clientv3.Version(vipKey), ">", 0),
+	).Then(ops...).Commit()
 	if err != nil {
 		return fmt.Errorf("failed to delete VIP from etcd: %w", err)
 	}
+	if !txnResp.Succeeded {
+		return datastore.ErrNotFound
+	}
 
-	// Delete all associated backends
-	backendPrefix := ds.backendPrefix(id)
-	_, err = ds.client.Delete(ctx, backendPrefix, clientv3.WithPrefix())
-	if err != nil {
-		return fmt.Errorf("failed to delete backends from etcd: %w", err)
+	// Clean up indexes that may have been added before the VIP delete committed.
+	if err := ds.deleteBackendIndexesForVIP(ctx, id); err != nil {
+		return err
 	}
 
 	// Increment revision

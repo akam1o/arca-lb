@@ -59,6 +59,43 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 	return nil
 }
 
+func (ds *EtcdDataStore) backendIndexKeysForVIP(ctx context.Context, vipID string) ([]string, error) {
+	resp, err := ds.client.Get(ctx, ds.backendIndexPrefix(), clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("failed to list backend indexes from etcd: %w", err)
+	}
+
+	keys := make([]string, 0)
+	for _, kv := range resp.Kvs {
+		if string(kv.Value) == vipID {
+			keys = append(keys, string(kv.Key))
+		}
+	}
+
+	return keys, nil
+}
+
+func (ds *EtcdDataStore) deleteBackendIndexesForVIP(ctx context.Context, vipID string) error {
+	indexKeys, err := ds.backendIndexKeysForVIP(ctx, vipID)
+	if err != nil {
+		return err
+	}
+	if len(indexKeys) == 0 {
+		return nil
+	}
+
+	ops := make([]clientv3.Op, 0, len(indexKeys))
+	for _, key := range indexKeys {
+		ops = append(ops, clientv3.OpDelete(key))
+	}
+
+	if _, err := ds.client.Txn(ctx).Then(ops...).Commit(); err != nil {
+		return fmt.Errorf("failed to delete backend indexes from etcd: %w", err)
+	}
+
+	return nil
+}
+
 // GetBackend retrieves a backend by ID from etcd using the index
 func (ds *EtcdDataStore) GetBackend(ctx context.Context, id string) (*models.Backend, error) {
 	// Use index to find VIP ID (O(1) lookup)

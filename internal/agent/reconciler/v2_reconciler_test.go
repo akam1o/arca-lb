@@ -516,8 +516,10 @@ func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T
 	dp := newRecordingDataPlane()
 	dp.events = events
 	router := newRecordingRouter(events)
+	statusUpdater := &recordingStatusUpdater{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
 	mgr.SetTuningDriftConfig(TuningDriftConfig{
 		Policy:        TuningDriftPolicyRollingRecreate,
 		DrainDuration: time.Millisecond,
@@ -546,7 +548,9 @@ func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T
 	if err := mgr.Reconcile("default/web-80"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	waitFor(t, func() bool { return dp.applyCount() == 3 }, "tuning drift reconcile")
+	waitFor(t, func() bool {
+		return dp.applyCount() == 3 && statusUpdater.updateCount() == 3
+	}, "blocked tuning drift status update")
 
 	if got := dp.recreateCount(); got != 0 {
 		t.Fatalf("recreate count = %d, want 0 while sibling keeps shared address serving", got)
@@ -559,6 +563,21 @@ func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T
 	}
 	if drifts := dp.TuningDrifts("default/web-80"); len(drifts) == 0 {
 		t.Fatal("tuning drift should remain pending when rolling recreate is skipped")
+	}
+	conditions := statusUpdater.lastConditions()
+	dataPlane := findTestCondition(conditions, agentstatus.ConditionDataPlaneReady)
+	if dataPlane == nil {
+		t.Fatal("DataPlaneReady condition missing")
+	}
+	if dataPlane.Status != metav1.ConditionFalse || dataPlane.Reason != "TuningDriftRepairBlocked" {
+		t.Fatalf("DataPlaneReady condition = %+v, want False TuningDriftRepairBlocked", dataPlane)
+	}
+	route := findTestCondition(conditions, agentstatus.ConditionRouteAdvertised)
+	if route == nil {
+		t.Fatal("RouteAdvertised condition missing")
+	}
+	if route.Status != metav1.ConditionTrue || route.Reason != "Advertised" {
+		t.Fatalf("RouteAdvertised condition = %+v, want True Advertised", route)
 	}
 
 	got := events.snapshot()

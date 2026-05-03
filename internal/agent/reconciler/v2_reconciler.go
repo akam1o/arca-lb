@@ -975,6 +975,33 @@ func (vr *vipReconciler) reconcileApplied(
 
 	if drifts := dataplaneTuningDrifts(vr.dp, vr.key); len(drifts) > 0 {
 		repairResult, err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, rolloutHeld)
+		if repairResult.blocked {
+			vr.logger.Warn("retained VIP tuning drift repair is blocked", "drifts", drifts)
+			if drainHeld && !repairResult.drainReleased {
+				routeAdvertised, routeErr = vr.releaseUpdateDrain(ctx, vip, hasHealthy)
+				if routeErr != nil {
+					vr.logger.Error("failed to release VIP address drain after blocked tuning drift repair", "error", routeErr)
+					span.RecordError(routeErr)
+				}
+			} else {
+				routeAdvertised, routeErr = vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, hasHealthy)
+				if routeErr != nil {
+					vr.logger.Error("failed to reconcile VIP address route after blocked tuning drift repair", "error", routeErr)
+					span.RecordError(routeErr)
+				}
+			}
+			if vr.statusUpdater != nil {
+				if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+					servingCondition(vip, len(healthyBackends)),
+					tuningDriftRepairBlockedCondition(vip, drifts),
+					routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+				); statusErr != nil {
+					vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+					span.RecordError(statusErr)
+				}
+			}
+			return
+		}
 		if err != nil {
 			vr.logger.Error("failed to repair retained VIP tuning drift", "error", err, "drifts", drifts)
 			span.RecordError(err)
@@ -1215,6 +1242,19 @@ func retainedOldVIPDataPlaneCondition(repairErr error) metav1.Condition {
 	}
 }
 
+func tuningDriftRepairBlockedCondition(vip *v1alpha1.VirtualIP, drifts []dataplane.VIPTuningDrift) metav1.Condition {
+	message := fmt.Sprintf("Retained VIP tuning drift repair for %s is blocked until the shared address can drain", vip.Spec.Address)
+	if len(drifts) > 0 {
+		message = fmt.Sprintf("%s (%d drift(s) pending)", message, len(drifts))
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionDataPlaneReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "TuningDriftRepairBlocked",
+		Message: message,
+	}
+}
+
 func lastConfigPersistFailedCondition(persistErr error) metav1.Condition {
 	message := "Failed to persist last-applied config"
 	if persistErr != nil {
@@ -1265,6 +1305,7 @@ type tuningDriftRepairResult struct {
 	routeStateKnown bool
 	retainedOldVIP  bool
 	drainReleased   bool
+	blocked         bool
 }
 
 func (vr *vipReconciler) repairTuningDrift(
@@ -1310,7 +1351,7 @@ func (vr *vipReconciler) repairTuningDrift(
 	}
 	if !drained {
 		vr.logger.Warn("skipping retained VIP tuning drift repair until VIP address can drain", "address", vip.Spec.Address, "drifts", drifts)
-		return tuningDriftRepairResult{}, nil
+		return tuningDriftRepairResult{blocked: true}, nil
 	}
 	releaseDrain := func(serving bool, retErr error) (tuningDriftRepairResult, error) {
 		advertised, releaseErr := vr.releaseUpdateDrain(ctx, vip, serving)

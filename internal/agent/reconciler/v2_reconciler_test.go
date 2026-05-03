@@ -376,6 +376,77 @@ func TestV2ReconcilerDrainsSameAddressDisruptiveUpdate(t *testing.T) {
 	}
 }
 
+func TestV2ReconcilerConservativelyDrainsWhenUpdatePlanFails(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	dp.recordApplies = true
+	router := newRecordingRouter(events)
+	rollouts := &recordingRolloutCoordinator{}
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+	mgr.SetRolloutCoordinator(rollouts)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return dp.applyCount() == 1 && router.announceCount() == 1
+	}, "initial VIP apply")
+
+	if err := st.SaveLastConfig(vipKey, []byte("{invalid-json")); err != nil {
+		t.Fatalf("SaveLastConfig: %v", err)
+	}
+	mgr.mu.RLock()
+	vr := mgr.vips[vipKey]
+	mgr.mu.RUnlock()
+	vr.setLastAppliedVIP(nil)
+
+	updated := vip.DeepCopy()
+	updated.Generation = 2
+	updated.Spec.Port = 443
+	mgr.OnVIPUpdate(updated)
+
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.applyCount() == 2 &&
+			router.withdrawCount() == 1 &&
+			router.announceCount() == 2 &&
+			last != nil &&
+			last.Spec.Port == 443
+	}, "conservative drain after VIP update planning failure")
+
+	got := events.snapshot()
+	want := []string{
+		"apply:default/web:80",
+		"announce:203.0.113.10",
+		"withdraw:203.0.113.10",
+		"apply:default/web:443",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+	if got := rollouts.keysSnapshot(); len(got) != 1 || got[0] != "vip-address/203.0.113.10" {
+		t.Fatalf("rollout keys = %#v, want conservative address-scoped key", got)
+	}
+}
+
 func TestV2ReconcilerDrainsDisruptiveUpdateWithServingSibling(t *testing.T) {
 	events := &eventRecorder{}
 	dp := newRecordingDataPlane()

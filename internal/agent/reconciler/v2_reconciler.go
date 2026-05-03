@@ -756,8 +756,14 @@ func (vr *vipReconciler) planVIPUpdate(vip *v1alpha1.VirtualIP) (vipUpdatePlan, 
 	}
 
 	needsDrain, err := vr.needsDrainForVIPUpdate(vip)
-	if err != nil || !needsDrain {
-		return vipUpdatePlan{}, err
+	if err != nil {
+		return vipUpdatePlan{
+			rolloutKeys:      rolloutKeysForAddresses(vip.Spec.Address),
+			drainBeforeApply: true,
+		}, err
+	}
+	if !needsDrain {
+		return vipUpdatePlan{}, nil
 	}
 	return vipUpdatePlan{
 		rolloutKeys:      rolloutKeysForAddresses(vip.Spec.Address),

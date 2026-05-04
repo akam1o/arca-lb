@@ -38,7 +38,7 @@ func vppConfigFromMap(m map[string]interface{}) VPPConfig {
 		EncapType:                 "L3DSR",
 		DSCP:                      10,
 		ServiceType:               "CLUSTERIP",
-		NewFlowsTableLength:       65537,
+		NewFlowsTableLength:       65536,
 		StateVerificationInterval: 30 * time.Second,
 	}
 	if m == nil {

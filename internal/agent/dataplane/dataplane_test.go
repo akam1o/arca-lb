@@ -39,7 +39,7 @@ func testVPPConfig() VPPConfig {
 		EncapType:                 "L3DSR",
 		DSCP:                      10,
 		ServiceType:               "CLUSTERIP",
-		NewFlowsTableLength:       65537,
+		NewFlowsTableLength:       65536,
 		StateVerificationInterval: 30 * time.Second,
 	}
 }
@@ -195,7 +195,7 @@ func TestVPPSameVIPAttributes(t *testing.T) {
 			EncapType:           "L3DSR",
 			DSCP:                10,
 			ServiceType:         "CLUSTERIP",
-			NewFlowsTableLength: 65537,
+			NewFlowsTableLength: 65536,
 		},
 	}
 
@@ -239,7 +239,7 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 			EncapType:           "GRE4",
 			DSCP:                0,
 			ServiceType:         "CLUSTERIP",
-			NewFlowsTableLength: 65537,
+			NewFlowsTableLength: 65536,
 		},
 		vips: make(map[string]*vipEntry),
 	}
@@ -560,15 +560,15 @@ func TestVPPDetectTuningDriftsUsesDumpWidthForFlowTableLength(t *testing.T) {
 			EncapType:           "L3DSR",
 			DSCP:                10,
 			ServiceType:         "CLUSTERIP",
-			NewFlowsTableLength: 65537,
+			NewFlowsTableLength: 65536,
 		},
 	}
 
 	vip := newTestVIP("test-vip", "203.0.113.1", 80)
-	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 1}); len(drifts) != 0 {
+	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 0}); len(drifts) != 0 {
 		t.Fatalf("drift count = %d, want 0 when dump-width representation matches", len(drifts))
 	}
-	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 2}); len(drifts) != 1 {
+	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 1}); len(drifts) != 1 {
 		t.Fatalf("drift count = %d, want 1 when dump-width representation differs", len(drifts))
 	}
 }

@@ -449,8 +449,8 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("vpp.lb.dscp must be <= 63")
 	}
 
-	if cfg.VPP.LB.NewFlowsTableLength > 0 && cfg.VPP.LB.NewFlowsTableLength < 1 {
-		return fmt.Errorf("vpp.lb.new_flows_table_length must be positive if set")
+	if cfg.VPP.LB.NewFlowsTableLength > 0 && !isPowerOfTwo(int64(cfg.VPP.LB.NewFlowsTableLength)) {
+		return fmt.Errorf("vpp.lb.new_flows_table_length must be a power of two if set")
 	}
 
 	// Validate health check settings

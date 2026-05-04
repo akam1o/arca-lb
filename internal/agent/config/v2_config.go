@@ -297,8 +297,8 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 
 	if value, ok := vpp["new_flows_table_length"]; ok {
 		tableLength, ok := v2IntegerSetting(value)
-		if !ok || tableLength < 1 || tableLength > int64(^uint32(0)) {
-			return fmt.Errorf("dataplane.vpp.new_flows_table_length must be an integer between 1 and %d", uint64(^uint32(0)))
+		if !ok || tableLength < 1 || tableLength > int64(^uint32(0)) || !isPowerOfTwo(tableLength) {
+			return fmt.Errorf("dataplane.vpp.new_flows_table_length must be a power-of-two integer between 1 and %d", uint64(^uint32(0)))
 		}
 	}
 
@@ -344,6 +344,10 @@ func validV2VPPTuningDriftPolicy(value string) bool {
 	default:
 		return false
 	}
+}
+
+func isPowerOfTwo(value int64) bool {
+	return value > 0 && value&(value-1) == 0
 }
 
 func v2DurationSetting(value interface{}) (time.Duration, bool) {

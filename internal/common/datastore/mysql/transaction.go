@@ -89,6 +89,11 @@ func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) erro
 	}
 
 	tx.hasOps = true
+	tx.changes = append(tx.changes, ChangeEvent{
+		EventType: "vip_created",
+		VIPID:     vip.ID,
+		BackendID: "",
+	})
 
 	// Create health check if provided
 	if vip.HealthCheck != nil {

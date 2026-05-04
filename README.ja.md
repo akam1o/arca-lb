@@ -84,7 +84,7 @@ arca-lb/
 │   └── v1alpha1/           # VirtualIP CRD 型定義 (kubebuilder)
 ├── cmd/
 │   ├── operator/           # Operator (K8s コントローラー) バイナリ
-│   └── agent/              # Agent バイナリ
+│   └── arcalb-agent/       # Agent バイナリ
 ├── config/                 # K8s マニフェスト (生成 + 手書き)
 │   ├── crd/                # CRD YAML (controller-gen 出力)
 │   ├── rbac/               # RBAC ロール

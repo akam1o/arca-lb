@@ -115,10 +115,26 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                  lb_id, vip_address)
 
     def loadbalancer_delete(self, loadbalancer, cascade=False):
-        """Delete all VirtualIP CRDs associated with this loadbalancer."""
+        """Delete VirtualIP CRDs associated with this loadbalancer."""
         lb = loadbalancer.to_dict() if hasattr(loadbalancer, 'to_dict') else loadbalancer
         lb_id = lb.get("loadbalancer_id")
         vips = self._k8s.find_by_loadbalancer(lb_id)
+        if vips and not cascade:
+            LOG.warning(
+                "Refusing non-cascade delete for loadbalancer %s with %d "
+                "VirtualIP(s)",
+                lb_id, len(vips),
+            )
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "Load balancer has attached listeners; use cascade delete."
+                ),
+                operator_fault_string=(
+                    f"loadbalancer_delete called with cascade=False for "
+                    f"loadbalancer {lb_id} with {len(vips)} VirtualIP(s)"
+                ),
+            )
+
         listener_ids, pool_ids, hm_ids, member_ids = (
             self._octavia_ids_from_virtualips(vips)
         )
@@ -362,7 +378,20 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         vip = self._k8s.find_by_listener(listener_id)
         if not vip:
             LOG.warning("No VirtualIP found for listener %s", listener_id)
-            return
+            lb_id = lst.get("loadbalancer_id")
+            self._push_missing_virtualip_error_status(
+                f"listener/{listener_id}",
+                lb_id=lb_id,
+                listener_id=listener_id,
+            )
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "Listener is not associated with a VirtualIP."
+                ),
+                operator_fault_string=(
+                    f"No VirtualIP for listener {listener_id}"
+                ),
+            )
 
         name = vip["metadata"]["name"]
         spec = vip.get("spec", {})

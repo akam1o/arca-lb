@@ -400,14 +400,16 @@ components:
     EncapType:
       type: string
       enum: [GRE4, GRE6, L3DSR, NAT4, NAT6]
+    IPAddress:
+      type: string
+      description: IPv4 or IPv6 address.
     VIP:
       type: object
       properties:
         id:
           type: string
         vip:
-          type: string
-          format: ipv4
+          $ref: "#/components/schemas/IPAddress"
         port:
           type: integer
           minimum: 1
@@ -502,8 +504,7 @@ components:
       type: object
       properties:
         vip:
-          type: string
-          format: ipv4
+          $ref: "#/components/schemas/IPAddress"
         port:
           type: integer
           minimum: 1
@@ -526,8 +527,7 @@ components:
       type: object
       properties:
         vip:
-          type: string
-          format: ipv4
+          $ref: "#/components/schemas/IPAddress"
         port:
           type: integer
           minimum: 1
@@ -562,8 +562,7 @@ components:
         vip_id:
           type: string
         ip:
-          type: string
-          format: ipv4
+          $ref: "#/components/schemas/IPAddress"
         weight:
           type: integer
           minimum: 1
@@ -581,8 +580,7 @@ components:
         vip_id:
           type: string
         ip:
-          type: string
-          format: ipv4
+          $ref: "#/components/schemas/IPAddress"
         weight:
           type: integer
           minimum: 1
@@ -592,8 +590,7 @@ components:
       type: object
       properties:
         ip:
-          type: string
-          format: ipv4
+          $ref: "#/components/schemas/IPAddress"
         weight:
           type: integer
           minimum: 1

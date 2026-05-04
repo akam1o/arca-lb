@@ -13,6 +13,7 @@ from octavia_lib.api.drivers import exceptions as driver_exc
 
 from octavia_arca_driver import constants
 from octavia_arca_driver.driver import ArcaLBDriver
+from octavia_arca_driver.k8s_client import VirtualIPClient
 
 
 class FakeObj:
@@ -1467,6 +1468,60 @@ class TestDriverLifecycle(unittest.TestCase):
             "id": "pool-1111",
             "provisioning_status": "ACTIVE",
         }])
+
+    def test_listener_update_default_pool_none_patch_clears_annotations(self):
+        class FakeCustomObjectsApi:
+            def __init__(self):
+                self.patch_body = None
+
+            def patch_namespaced_custom_object(self, **kwargs):
+                self.patch_body = kwargs["body"]
+                return self.patch_body
+
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {
+                "address": "203.0.113.10",
+                "port": 80,
+                "protocol": "TCP",
+                "backends": [{"address": "10.0.1.1", "weight": 100}],
+                "healthCheck": {"type": "tcp", "tcp": {"port": 80}},
+            },
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_HM_ID: "hm-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+                constants.ANNOTATION_DRAINING_MEMBER_IDS: json.dumps([
+                    "member-2222",
+                ]),
+            },
+        )
+        api = FakeCustomObjectsApi()
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+        client.find_by_listener = lambda _listener_id: existing_vip
+        self.driver._k8s = client
+
+        self.driver.listener_update(FakeObj({}), FakeObj({
+            "listener_id": "listener-1111",
+            "default_pool_id": None,
+        }))
+
+        patch = api.patch_body
+        self.assertEqual(patch["spec"]["backends"], [])
+        self.assertIsNone(patch["spec"]["healthCheck"])
+        annotations = patch["metadata"]["annotations"]
+        self.assertIsNone(annotations[constants.ANNOTATION_POOL_ID])
+        self.assertIsNone(annotations[constants.ANNOTATION_HM_ID])
+        self.assertIsNone(annotations[constants.ANNOTATION_MEMBER_MAP])
+        self.assertIsNone(
+            annotations[constants.ANNOTATION_DRAINING_MEMBER_IDS]
+        )
 
     def test_listener_update_port_revalidates_existing_pool_members(self):
         from octavia_lib.api.drivers import exceptions as driver_exc

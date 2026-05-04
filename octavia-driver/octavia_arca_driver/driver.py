@@ -426,7 +426,6 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         elif pool_id_present and annotations.get(constants.ANNOTATION_POOL_ID):
             pool_detached = True
             detached_pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
-            self._clear_pool_association(spec, annotations)
         elif port_changed and annotations.get(constants.ANNOTATION_POOL_ID):
             should_restore_pool = True
 

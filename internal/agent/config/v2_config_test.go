@@ -302,6 +302,26 @@ func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 			vppYAML: "state_verification_interval: 0s\n",
 			wantErr: "dataplane.vpp.state_verification_interval",
 		},
+		{
+			name:    "negative retained tuning drift drain",
+			vppYAML: "retained_vip_tuning_drift_drain: -1s\n",
+			wantErr: "dataplane.vpp.retained_vip_tuning_drift_drain",
+		},
+		{
+			name:    "zero retained tuning drift drain",
+			vppYAML: "retained_vip_tuning_drift_drain: 0s\n",
+			wantErr: "dataplane.vpp.retained_vip_tuning_drift_drain",
+		},
+		{
+			name:    "invalid rolling recreate drain",
+			vppYAML: "rolling_recreate_drain: eventually\n",
+			wantErr: "dataplane.vpp.rolling_recreate_drain",
+		},
+		{
+			name:    "negative rolling recreate drain",
+			vppYAML: "rolling_recreate_drain: -1s\n",
+			wantErr: "dataplane.vpp.rolling_recreate_drain",
+		},
 	}
 
 	for _, tt := range tests {

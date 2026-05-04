@@ -316,6 +316,15 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 		}
 	}
 
+	for _, key := range []string{"retained_vip_tuning_drift_drain", "rolling_recreate_drain"} {
+		if value, ok := vpp[key]; ok {
+			drain, ok := v2DurationSetting(value)
+			if !ok || drain <= 0 {
+				return fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
+			}
+		}
+	}
+
 	return nil
 }
 

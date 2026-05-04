@@ -599,6 +599,10 @@ func retainedVIPTuningDriftConfig(vpp map[string]interface{}, logger *slog.Logge
 			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", err)
 			continue
 		}
+		if drain <= 0 {
+			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", "must be positive")
+			continue
+		}
 		cfg.DrainDuration = drain
 		break
 	}

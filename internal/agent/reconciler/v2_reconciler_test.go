@@ -376,6 +376,58 @@ func TestV2ReconcilerDrainsSameAddressDisruptiveUpdate(t *testing.T) {
 	}
 }
 
+func TestV2ReconcilerDrainsStaleRetainedVIPBeforeApply(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	dp.recordApplies = true
+	dp.retainedDrain = true
+	router := newRecordingRouter(events)
+	rollouts := &recordingRolloutCoordinator{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetRolloutCoordinator(rollouts)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+
+	waitFor(t, func() bool {
+		return dp.applyCount() == 1 &&
+			router.withdrawCount() == 1 &&
+			router.announceCount() == 1
+	}, "retained stale VIP drain and apply")
+
+	got := events.snapshot()
+	want := []string{
+		"withdraw:203.0.113.10",
+		"apply:default/web:80",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+	if got := rollouts.keysSnapshot(); len(got) != 1 || got[0] != "vip-address/203.0.113.10" {
+		t.Fatalf("rollout keys = %#v, want address-scoped key", got)
+	}
+	if got := dp.retainedCheckCount(); got != 1 {
+		t.Fatalf("retained drain checks = %d, want 1", got)
+	}
+}
+
 func TestV2ReconcilerConservativelyDrainsWhenUpdatePlanFails(t *testing.T) {
 	events := &eventRecorder{}
 	dp := newRecordingDataPlane()
@@ -1359,6 +1411,9 @@ type recordingDataPlane struct {
 	recreateErr   error
 	recreateSafe  bool
 	drifts        []dataplane.VIPTuningDrift
+	retainedDrain bool
+	retainedErr   error
+	retainedCheck int
 	events        *eventRecorder
 	recordApplies bool
 	lastVIP       *v1alpha1.VirtualIP
@@ -1459,6 +1514,19 @@ func (r *recordingDataPlane) NeedsDrainForVIPUpdate(current, desired *v1alpha1.V
 		current.Spec.Protocol != desired.Spec.Protocol ||
 		current.Spec.EncapType != desired.Spec.EncapType ||
 		!sameUint8Ptr(current.Spec.DSCP, desired.Spec.DSCP), nil
+}
+
+func (r *recordingDataPlane) NeedsDrainForRetainedVIP(_ context.Context, _ *v1alpha1.VirtualIP) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.retainedCheck++
+	return r.retainedDrain, r.retainedErr
+}
+
+func (r *recordingDataPlane) retainedCheckCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.retainedCheck
 }
 
 func sameUint8Ptr(a, b *uint8) bool {

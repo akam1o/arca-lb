@@ -396,6 +396,35 @@ func (v *VPP) NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool
 	return currentAttrs != desiredAttrs, nil
 }
 
+func (v *VPP) NeedsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error) {
+	if vip == nil {
+		return false, nil
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	key := v.vipKey(vip)
+	desiredAttrs, err := v.effectiveVIPAttributes(vip)
+	if err != nil {
+		return false, fmt.Errorf("invalid desired VIP attributes for %s: %w", key, err)
+	}
+
+	if entry := v.vips[key]; entry != nil {
+		existingAttrs, err := v.effectiveVIPAttributes(entry.vip)
+		if err != nil {
+			return false, fmt.Errorf("invalid cached VIP attributes for %s: %w", key, err)
+		}
+		return existingAttrs != desiredAttrs, nil
+	}
+
+	detail, exists, err := v.lookupVIP(ctx, vip)
+	if err != nil || !exists {
+		return false, err
+	}
+	return !v.vipDetailsMatchDesired(vip, detail), nil
+}
+
 func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()

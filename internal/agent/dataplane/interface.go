@@ -124,6 +124,13 @@ type VIPUpdateDrainChecker interface {
 	NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool, error)
 }
 
+// RetainedVIPDrainChecker is optionally implemented by data planes that can
+// detect retained VIPs whose forwarding attributes need a route drain before
+// they can be safely replaced.
+type RetainedVIPDrainChecker interface {
+	NeedsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error)
+}
+
 // New creates a DataPlane from a type name and config.
 func New(dpType string, cfg map[string]interface{}) (DataPlane, error) {
 	switch dpType {

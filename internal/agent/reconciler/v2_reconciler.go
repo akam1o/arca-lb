@@ -740,7 +740,7 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	}
 	hasHealthy := len(healthyBackends) > 0
 
-	plan, err := vr.planVIPUpdate(vip)
+	plan, err := vr.planVIPUpdate(ctx, vip)
 	if err != nil {
 		vr.logger.Warn("failed to plan VIP rollout", "error", err, "generation", vip.Generation)
 		span.RecordError(err)
@@ -769,7 +769,7 @@ type vipUpdatePlan struct {
 	drainBeforeApply bool
 }
 
-func (vr *vipReconciler) planVIPUpdate(vip *v1alpha1.VirtualIP) (vipUpdatePlan, error) {
+func (vr *vipReconciler) planVIPUpdate(ctx context.Context, vip *v1alpha1.VirtualIP) (vipUpdatePlan, error) {
 	previousAddress, pendingAddressChange := vr.routes.pendingAddressChange(vr.key, vip.Spec.Address)
 	if pendingAddressChange {
 		return vipUpdatePlan{
@@ -783,6 +783,15 @@ func (vr *vipReconciler) planVIPUpdate(vip *v1alpha1.VirtualIP) (vipUpdatePlan, 
 			rolloutKeys:      rolloutKeysForAddresses(vip.Spec.Address),
 			drainBeforeApply: true,
 		}, err
+	}
+	if !needsDrain {
+		needsDrain, err = vr.needsDrainForRetainedVIP(ctx, vip)
+		if err != nil {
+			return vipUpdatePlan{
+				rolloutKeys:      rolloutKeysForAddresses(vip.Spec.Address),
+				drainBeforeApply: true,
+			}, err
+		}
 	}
 	if !needsDrain {
 		return vipUpdatePlan{}, nil
@@ -807,6 +816,14 @@ func (vr *vipReconciler) needsDrainForVIPUpdate(vip *v1alpha1.VirtualIP) (bool, 
 		return false, nil
 	}
 	return checker.NeedsDrainForVIPUpdate(applied, vip)
+}
+
+func (vr *vipReconciler) needsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error) {
+	checker, ok := vr.dp.(dataplane.RetainedVIPDrainChecker)
+	if !ok {
+		return false, nil
+	}
+	return checker.NeedsDrainForRetainedVIP(ctx, vip)
 }
 
 func runExclusiveRollouts(ctx context.Context, rollouts RolloutCoordinator, keys []string, fn func(context.Context) error) error {

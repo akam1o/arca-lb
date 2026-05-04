@@ -1395,6 +1395,68 @@ class TestDriverLifecycle(unittest.TestCase):
             "provisioning_status": "ERROR",
         }])
 
+    def test_listener_update_port_restores_pool_after_conflict(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        refreshed_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        self.mock_k8s.find_by_listener.return_value = existing_vip
+        self.mock_k8s.get_virtualip.return_value = refreshed_vip
+        self.mock_k8s.update_virtualip.side_effect = [
+            k8s_client.exceptions.ApiException(
+                status=409, reason="Conflict"
+            ),
+            None,
+        ]
+        self.mock_driver_lib.get_pool.return_value = FakeObj({
+            "pool_id": "pool-1111",
+            "members": [{
+                "member_id": "member-1111",
+                "address": "10.0.1.1",
+                "protocol_port": 443,
+                "weight": 100,
+            }],
+        })
+
+        self.driver.listener_update(FakeObj({}), FakeObj({
+            "listener_id": "listener-1111",
+            "protocol_port": 443,
+        }))
+
+        self.assertEqual(self.mock_k8s.update_virtualip.call_count, 2)
+        second_call = self.mock_k8s.update_virtualip.call_args_list[1]
+        spec = second_call[0][1]
+        self.assertEqual(spec["port"], 443)
+        self.assertEqual(spec["backends"], [{
+            "address": "10.0.1.1",
+            "weight": 100,
+        }])
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+
     def test_listener_update_restore_failure_reports_dependents_error(self):
         from octavia_lib.api.drivers import exceptions as driver_exc
         existing_vip = _make_vip(

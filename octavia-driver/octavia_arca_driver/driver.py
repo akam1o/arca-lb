@@ -352,8 +352,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         )
 
         protocol = lst.get("protocol")
+        mapped_protocol = None
         if protocol:
-            spec["protocol"] = self._map_listener_protocol(protocol)
+            mapped_protocol = self._map_listener_protocol(protocol)
+            spec["protocol"] = mapped_protocol
 
         port = lst.get("protocol_port")
         old_port = self._valid_port(spec.get("port"))
@@ -379,12 +381,22 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         elif port_changed and annotations.get(constants.ANNOTATION_POOL_ID):
             should_restore_pool = True
 
+        def prepare_restore_update(current_spec, current_annotations):
+            if mapped_protocol:
+                current_spec["protocol"] = mapped_protocol
+            if port is not None:
+                current_spec["port"] = port
+            if pool_id:
+                current_annotations[constants.ANNOTATION_POOL_ID] = pool_id
+
         admin_state = lst.get("admin_state_up")
         if admin_state is False:
             spec["backends"] = []
         elif not pool_detached and (admin_state is True or should_restore_pool):
             try:
-                restored = self._restore_virtualip_backends([vip])
+                restored = self._restore_virtualip_backends(
+                    [vip], prepare_update=prepare_restore_update
+                )
             except Exception:
                 error_pool_id = annotations.get(constants.ANNOTATION_POOL_ID)
                 LOG.exception(
@@ -421,10 +433,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 lst.get("loadbalancer_id") or
                 lb_id
             )
-            if protocol:
-                current_spec["protocol"] = self._map_listener_protocol(
-                    protocol
-                )
+            if mapped_protocol:
+                current_spec["protocol"] = mapped_protocol
             if port is not None:
                 current_spec["port"] = port
             if pool_detached:
@@ -1521,7 +1531,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 return object_id
         return ""
 
-    def _restore_virtualip_backends(self, vips):
+    def _restore_virtualip_backends(self, vips, prepare_update=None):
         restored = 0
         for vip in vips:
             annotations = vip.get("metadata", {}).get("annotations", {})
@@ -1534,6 +1544,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             name = vip["metadata"]["name"]
 
             def mutate(current_vip, spec, current_annotations):
+                if prepare_update:
+                    prepare_update(spec, current_annotations)
+
+                effective_vip = dict(current_vip)
+                effective_vip["spec"] = spec
+
                 current_pool_id = current_annotations.get(
                     constants.ANNOTATION_POOL_ID
                 )
@@ -1552,7 +1568,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     if not member.get("address"):
                         continue
                     self._validate_member_supported(member)
-                    self._validate_member_dataplane_port(current_vip, member)
+                    self._validate_member_dataplane_port(effective_vip, member)
                     is_draining = self._member_is_draining(member)
                     member_id = self._member_id(member)
                     if not is_draining:
@@ -1572,7 +1588,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 hm, hm_known = self._pool_health_monitor(pool, pool_id)
                 if hm:
                     spec["healthCheck"] = self._build_health_check(
-                        hm, current_vip
+                        hm, effective_vip
                     )
                     hm_id = self._health_monitor_id(hm)
                     if hm_id:
@@ -1582,7 +1598,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     current_annotations.pop(constants.ANNOTATION_HM_ID, None)
                 else:
                     self._refresh_health_check_port(
-                        spec, pool_id, current_vip, extra_members=members
+                        spec, pool_id, effective_vip, extra_members=members
                     )
 
             try:

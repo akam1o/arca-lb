@@ -415,7 +415,12 @@ func (v *VPP) NeedsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.Virtua
 		if err != nil {
 			return false, fmt.Errorf("invalid cached VIP attributes for %s: %w", key, err)
 		}
-		return existingAttrs != desiredAttrs, nil
+		if existingAttrs != desiredAttrs {
+			return true, nil
+		}
+		if !v.shouldVerifyCachedVIP(entry, v.currentTime()) {
+			return false, nil
+		}
 	}
 
 	detail, exists, err := v.lookupVIP(ctx, vip)

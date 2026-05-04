@@ -332,6 +332,72 @@ func TestVPPNeedsDrainForRetainedVIPDetectsCachedAttributeChange(t *testing.T) {
 	}
 }
 
+func TestVPPNeedsDrainForRetainedVIPChecksExpiredCachedVIP(t *testing.T) {
+	now := time.Unix(100, 0)
+	lookupCalls := 0
+	vpp := &VPP{
+		config: testVPPConfig(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip:          vip.DeepCopy(),
+		backends:     make(map[string]v1alpha1.BackendSpec),
+		lastVerified: now.Add(-31 * time.Second),
+	}
+	retained := vppDetailForTest(t, vpp, vip)
+	retained.Dscp = ip_types.IPDscp(vpp.config.DSCP + 1)
+	vpp.lookupVIPFn = func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		lookupCalls++
+		return retained, true, nil
+	}
+
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if !needsDrain {
+		t.Fatal("expired cached VIP with stale live attributes should require route drain")
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookupCalls)
+	}
+}
+
+func TestVPPNeedsDrainForRetainedVIPSkipsFreshCachedVIPLookup(t *testing.T) {
+	now := time.Unix(100, 0)
+	vpp := &VPP{
+		config: testVPPConfig(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		lookupVIPFn: func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+			t.Fatal("lookupVIP should not be called before verification interval")
+			return nil, false, nil
+		},
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip:          vip.DeepCopy(),
+		backends:     make(map[string]v1alpha1.BackendSpec),
+		lastVerified: now.Add(-10 * time.Second),
+	}
+
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if needsDrain {
+		t.Fatal("fresh cached VIP should not require route drain")
+	}
+}
+
 func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 	vpp := &VPP{
 		config: VPPConfig{

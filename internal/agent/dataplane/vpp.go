@@ -753,14 +753,9 @@ func (v *VPP) effectiveVIPAttributes(vip *v1alpha1.VirtualIP) (vipAttributes, er
 		encapType = string(vip.Spec.EncapType)
 	}
 
-	dscp := v.config.DSCP
-	if encapType == "L3DSR" {
-		if vip.Spec.DSCP != nil {
-			dscp = *vip.Spec.DSCP
-		}
-		if dscp == 0 {
-			return vipAttributes{}, fmt.Errorf("invalid dscp=0 for L3DSR; must be 1-63")
-		}
+	dscp, err := v.effectiveDSCP(encapType, vip)
+	if err != nil {
+		return vipAttributes{}, err
 	}
 
 	return vipAttributes{
@@ -772,6 +767,21 @@ func (v *VPP) effectiveVIPAttributes(vip *v1alpha1.VirtualIP) (vipAttributes, er
 		serviceType:         v.config.ServiceType,
 		newFlowsTableLength: v.config.NewFlowsTableLength,
 	}, nil
+}
+
+func (v *VPP) effectiveDSCP(encapType string, vip *v1alpha1.VirtualIP) (uint8, error) {
+	if encapType != "L3DSR" {
+		return 0, nil
+	}
+
+	dscp := v.config.DSCP
+	if vip.Spec.DSCP != nil {
+		dscp = *vip.Spec.DSCP
+	}
+	if dscp == 0 {
+		return 0, fmt.Errorf("invalid dscp=0 for L3DSR; must be 1-63")
+	}
+	return dscp, nil
 }
 
 func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
@@ -791,14 +801,9 @@ func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
 		encapType = string(vip.Spec.EncapType)
 	}
 
-	dscp := v.config.DSCP
-	if encapType == "L3DSR" {
-		if vip.Spec.DSCP != nil {
-			dscp = *vip.Spec.DSCP
-		}
-		if dscp == 0 {
-			return fmt.Errorf("invalid dscp=0 for L3DSR; must be 1-63")
-		}
+	dscp, err := v.effectiveDSCP(encapType, vip)
+	if err != nil {
+		return err
 	}
 
 	req := &lb.LbAddDelVip{
@@ -840,9 +845,9 @@ func (v *VPP) deleteVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error 
 		encapType = string(vip.Spec.EncapType)
 	}
 
-	dscp := v.config.DSCP
-	if encapType == "L3DSR" && vip.Spec.DSCP != nil {
-		dscp = *vip.Spec.DSCP
+	dscp, err := v.effectiveDSCP(encapType, vip)
+	if err != nil {
+		return err
 	}
 
 	req := &lb.LbAddDelVip{
@@ -960,11 +965,12 @@ func (v *VPP) vipDetailsMatchDesired(vip *v1alpha1.VirtualIP, detail *lb.LbVipDe
 	if err != nil {
 		return false
 	}
+	dscpMatches := attrs.encapType != "L3DSR" || uint8(detail.Dscp) == attrs.dscp
 	// Flow table length is intentionally excluded here. A retained VIP with
 	// matching forwarding attributes can be adopted first and recreated later
 	// through a drained rolling repair.
 	return detail.Encap == encapToAPI(attrs.encapType) &&
-		uint8(detail.Dscp) == attrs.dscp &&
+		dscpMatches &&
 		detail.SrvType == serviceTypeToAPI(attrs.serviceType) &&
 		detail.TargetPort == uint16(attrs.port)
 }

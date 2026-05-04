@@ -231,6 +231,29 @@ func TestVPPSameVIPAttributes(t *testing.T) {
 	if vpp.sameVIPAttributes(base, encapChanged) {
 		t.Fatal("encapType change should require VIP recreation")
 	}
+
+	nonL3DSR := base.DeepCopy()
+	nonL3DSR.Spec.EncapType = v1alpha1.EncapTypeNAT4
+	nonL3DSRWithDSCP := nonL3DSR.DeepCopy()
+	ignoredDSCP := uint8(11)
+	nonL3DSRWithDSCP.Spec.DSCP = &ignoredDSCP
+	if !vpp.sameVIPAttributes(nonL3DSR, nonL3DSRWithDSCP) {
+		t.Fatal("non-L3DSR DSCP change should not require VIP recreation")
+	}
+
+	attrs, err := vpp.effectiveVIPAttributes(nonL3DSRWithDSCP)
+	if err != nil {
+		t.Fatalf("effectiveVIPAttributes: %v", err)
+	}
+	if attrs.dscp != 0 {
+		t.Fatalf("non-L3DSR effective DSCP = %d, want 0", attrs.dscp)
+	}
+
+	detail := vppDetailForTest(t, vpp, nonL3DSRWithDSCP)
+	detail.Dscp = ip_types.IPDscp(vpp.config.DSCP)
+	if !vpp.vipDetailsMatchDesired(nonL3DSRWithDSCP, detail) {
+		t.Fatal("non-L3DSR retained VIP should match regardless of dump DSCP")
+	}
 }
 
 func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {

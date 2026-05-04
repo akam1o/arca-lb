@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"math"
 	"net/http"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 type badRequestError string
@@ -285,8 +288,14 @@ func (s *Server) getVIP(c *gin.Context) {
 func (s *Server) updateVIP(c *gin.Context) {
 	id := c.Param("id")
 
+	var requestFields map[string]json.RawMessage
+	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	var req UpdateVIPRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -318,8 +327,12 @@ func (s *Server) updateVIP(c *gin.Context) {
 	if req.EncapType != "" {
 		vip.EncapType = req.EncapType
 	}
-	if req.DSCP != nil {
-		vip.DSCP = req.DSCP
+	if rawDSCP, ok := requestFields["dscp"]; ok {
+		if bytes.Equal(bytes.TrimSpace(rawDSCP), []byte("null")) {
+			vip.DSCP = nil
+		} else {
+			vip.DSCP = req.DSCP
+		}
 	}
 
 	if err := validateDSCPForEncap(vip.EncapType, vip.DSCP); err != nil {

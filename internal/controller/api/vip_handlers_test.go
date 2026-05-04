@@ -619,6 +619,41 @@ func TestUpdateVIP(t *testing.T) {
 	}
 }
 
+func TestUpdateVIPClearsDSCP(t *testing.T) {
+	server, mockDS := setupTestServer()
+	ctx := context.TODO()
+
+	dscp := uint8(10)
+	vip := &models.VIP{
+		ID:        "vip-1",
+		VIP:       "192.168.1.100",
+		Port:      80,
+		Protocol:  models.ProtocolTCP,
+		EncapType: models.EncapTypeL3DSR,
+		DSCP:      &dscp,
+	}
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
+
+	body, err := json.Marshal(map[string]interface{}{
+		"dscp": nil,
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/vips/vip-1", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var updatedVIP models.VIP
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &updatedVIP))
+	require.Nil(t, updatedVIP.DSCP)
+
+	storedVIP, err := mockDS.GetVIP(ctx, "vip-1")
+	require.NoError(t, err)
+	require.Nil(t, storedVIP.DSCP)
+}
+
 func TestDeleteVIP(t *testing.T) {
 	server, mockDS := setupTestServer()
 	ctx := context.TODO()

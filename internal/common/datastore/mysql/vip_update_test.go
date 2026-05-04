@@ -129,11 +129,11 @@ func newMockGORMDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock, func()) {
 		SkipInitializeWithVersion: true,
 	}), &gorm.Config{})
 	if err != nil {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 		t.Fatalf("failed to open gorm db: %v", err)
 	}
 
 	return db, mock, func() {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 	}
 }

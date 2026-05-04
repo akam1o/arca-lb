@@ -115,18 +115,6 @@ func (ds *EtcdDataStore) claimVIPTupleIndex(ctx context.Context, vip *models.VIP
 	}
 }
 
-func (ds *EtcdDataStore) ensureVIPTupleIndex(ctx context.Context, vip *models.VIP) error {
-	owned, err := ds.claimVIPTupleIndex(ctx, vip)
-	if err != nil {
-		return err
-	}
-	if !owned {
-		return datastore.ErrConflict
-	}
-
-	return nil
-}
-
 func (ds *EtcdDataStore) claimBackendIPIndex(ctx context.Context, backend *models.Backend) (bool, error) {
 	indexKey := ds.backendIPIndexKey(backend.VIPID, backend.IP)
 
@@ -160,16 +148,4 @@ func (ds *EtcdDataStore) claimBackendIPIndex(ctx context.Context, backend *model
 			return false, datastore.ErrNotFound
 		}
 	}
-}
-
-func (ds *EtcdDataStore) ensureBackendIPIndex(ctx context.Context, backend *models.Backend) error {
-	owned, err := ds.claimBackendIPIndex(ctx, backend)
-	if err != nil {
-		return err
-	}
-	if !owned {
-		return datastore.ErrConflict
-	}
-
-	return nil
 }

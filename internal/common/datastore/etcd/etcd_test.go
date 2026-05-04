@@ -27,13 +27,16 @@ func TestEtcdDataStore_CommonTests(t *testing.T) {
 			EtcdKeyPrefix: "/arca-lb-test",
 		}
 
-		ds, err := NewEtcdDataStore(ctx, cfg)
+		dsIface, err := NewEtcdDataStore(ctx, cfg)
 		require.NoError(t, err)
+		ds := dsIface.(*EtcdDataStore)
+		_, err = ds.client.Delete(ctx, ds.keyPrefix, clientv3.WithPrefix())
+		require.NoError(t, err)
+		require.NoError(t, ds.initRevision(ctx))
 
 		cleanup := func() {
-			// Clean up test data
-			// Note: In a real scenario, you might want to delete all keys with the test prefix
-			ds.Close()
+			_, _ = ds.client.Delete(context.Background(), ds.keyPrefix, clientv3.WithPrefix())
+			_ = ds.Close()
 		}
 
 		return ds, cleanup

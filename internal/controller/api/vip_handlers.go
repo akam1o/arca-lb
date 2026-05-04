@@ -217,7 +217,7 @@ func (s *Server) createVIP(c *gin.Context) {
 		}
 		fallCount := req.HealthCheck.FallCount
 		if fallCount == 0 {
-			fallCount = 3
+			fallCount = 2
 		}
 
 		vip.HealthCheck = &models.HealthCheck{

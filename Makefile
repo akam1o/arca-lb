@@ -39,7 +39,7 @@ goenv: ## Prepare local Go cache directories
 build: goenv ## Build operator and agent binaries
 	@mkdir -p $(BIN_DIR)
 	$(GO_ENV) go build -o $(OPERATOR_BIN) ./cmd/operator
-	$(GO_ENV) go build -o $(AGENT_BIN) ./cmd/agent
+	$(GO_ENV) go build -o $(AGENT_BIN) ./cmd/arcalb-agent
 
 .PHONY: test
 test: goenv ## Run unit tests with race detector and coverage

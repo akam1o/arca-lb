@@ -1,394 +1,670 @@
+// Package main is the entry point for the arca-lb v2 agent.
+// The agent watches VirtualIP CRDs from the K8s API server,
+// reconciles each VIP independently, and manages health checks,
+// data-plane programming (VPP), and BGP route announcements (FRR).
 package main
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/akam1o/arca-lb/internal/agent/config"
-	"github.com/akam1o/arca-lb/internal/agent/frr"
-	"github.com/akam1o/arca-lb/internal/agent/grpc"
+	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	agentconfig "github.com/akam1o/arca-lb/internal/agent/config"
+	"github.com/akam1o/arca-lb/internal/agent/dataplane"
 	"github.com/akam1o/arca-lb/internal/agent/healthcheck"
-	"github.com/akam1o/arca-lb/internal/agent/metrics"
 	"github.com/akam1o/arca-lb/internal/agent/reconciler"
-	"github.com/akam1o/arca-lb/internal/agent/shutdown"
-	"github.com/akam1o/arca-lb/internal/agent/state"
-	"github.com/akam1o/arca-lb/internal/agent/vpp"
-	"github.com/akam1o/arca-lb/internal/common/models"
+	agentrollout "github.com/akam1o/arca-lb/internal/agent/rollout"
+	"github.com/akam1o/arca-lb/internal/agent/routing"
+	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
+	"github.com/akam1o/arca-lb/internal/agent/store"
+	"github.com/akam1o/arca-lb/internal/agent/watcher"
+	otelsetup "github.com/akam1o/arca-lb/internal/pkg/otel"
+	vipvalidation "github.com/akam1o/arca-lb/internal/virtualip/validation"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Components holds all initialized agent components
-type Components struct {
-	StateManager    *state.Manager
-	VPPConnection   *vpp.Connection
-	VPPSyncer       *vpp.Syncer
-	FRRManager      *frr.Manager // Can be nil if FRR is disabled
-	HealthCheckMgr  *healthcheck.Manager
-	Reconciler      *reconciler.Reconciler
-	GRPCClient      *grpc.Client
-	MetricsRegistry *metrics.Registry
-	MetricsServer   *metrics.Server
+func main() {
+	os.Exit(run())
 }
 
-func main() {
-	// Setup logger with default settings
-	logger := logrus.New()
-	logger.SetFormatter(&logrus.TextFormatter{
-		FullTimestamp: true,
-	})
-	logger.SetLevel(logrus.InfoLevel)
+func run() int {
+	var configPath string
+	flag.StringVar(&configPath, "config", "", "Path to agent configuration file")
+	flag.Parse()
 
-	// Load configuration
-	// Default to /etc/arca-lb/agent.yaml
-	configPath := os.Getenv("ARCA_AGENT_CONFIG")
+	if configPath == "" {
+		configPath = os.Getenv("ARCA_AGENT_CONFIG")
+	}
 	if configPath == "" {
 		configPath = "/etc/arca-lb/agent.yaml"
 	}
 
-	cfg, err := config.LoadConfig(configPath)
+	// Load configuration
+	cfg, err := agentconfig.LoadV2Config(configPath)
 	if err != nil {
-		logger.WithError(err).Fatal("Failed to load configuration")
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		return 1
 	}
 
-	// Configure logger based on configuration
-	configureLogger(logger, cfg)
+	// Setup logging
+	logger := setupLogger(cfg.Log)
+	slog.SetDefault(logger)
 
-	logger.Info("Starting arca-lb agent")
+	logger.Info("starting arca-lb agent v2",
+		"agent_id", cfg.Agent.ID,
+		"dataplane", cfg.DataPlane.Type,
+		"routing", cfg.Routing.Type)
 
-	// Create root context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize components
-	components, err := initializeComponents(ctx, cfg, logger)
+	// Setup OpenTelemetry
+	otelShutdown, err := otelsetup.Setup(ctx, otelsetup.Config{
+		ServiceName:    "arca-lb-agent",
+		ServiceVersion: "2.0.0",
+		OTLPEndpoint:   cfg.Telemetry.OTLPEndpoint,
+		OTLPInsecure:   cfg.Telemetry.OTLPInsecure,
+		MetricsEnabled: cfg.Metrics.Enabled,
+	})
 	if err != nil {
-		logger.WithError(err).Fatal("Failed to initialize components")
+		logger.Error("failed to setup OpenTelemetry", "error", err)
+		return 1
 	}
+	defer func() {
+		otelShutdownCtx, otelShutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer otelShutdownCancel()
+		if err := otelShutdown.Shutdown(otelShutdownCtx); err != nil {
+			logger.Error("failed to shutdown OpenTelemetry", "error", err)
+		}
+	}()
 
-	// Start components
-	if err := startComponents(ctx, components, logger); err != nil {
-		logger.WithError(err).Fatal("Failed to start components")
+	// Open local store
+	st, err := store.Open(cfg.Agent.StorePath)
+	if err != nil {
+		logger.Error("failed to open local store", "error", err)
+		return 1
 	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			logger.Error("failed to close local store", "error", err)
+		}
+	}()
 
-	logger.Info("All components started successfully")
-
-	// Wait for shutdown signal
-	waitForShutdown(logger)
-
-	// Cancel context to signal all components
-	cancel()
-
-	// Graceful shutdown using shutdown handler
-	shutdownHandler := shutdown.NewHandler(&shutdown.Components{
-		GRPCClient:     components.GRPCClient,
-		Reconciler:     components.Reconciler,
-		HealthCheckMgr: components.HealthCheckMgr,
-		FRRManager:     components.FRRManager,
-		VPPConnection:  components.VPPConnection,
-		MetricsServer:  components.MetricsServer,
-	}, logger)
-
-	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	defer shutdownCancel()
-
-	if err := shutdownHandler.Shutdown(shutdownCtx); err != nil {
-		logger.WithError(err).Warn("Shutdown completed with errors")
+	// Create data plane
+	dp, err := dataplane.New(cfg.DataPlane.Type, cfg.DataPlane.VPP)
+	if err != nil {
+		logger.Error("failed to create data plane", "error", err)
+		return 1
 	}
+	defer func() {
+		if err := dp.Close(); err != nil {
+			logger.Error("failed to close data plane", "error", err)
+		}
+	}()
 
-	logger.Info("Agent shutdown complete")
-}
-
-// initializeComponents creates all agent components in the correct dependency order
-func initializeComponents(ctx context.Context, cfg *config.Config, logger *logrus.Logger) (*Components, error) {
-	logger.Info("Initializing components...")
-
-	// 1. State Manager (no dependencies)
-	logger.Debug("Creating state manager")
-	stateManager := state.NewManager()
-
-	// 2. VPP Connection (needed by syncer)
-	logger.Debug("Creating VPP connection")
-	vppConn := vpp.NewConnection(&cfg.VPP, logger)
-
-	// 3. VPP Syncer (depends on connection + LB config)
-	logger.Debug("Creating VPP syncer")
-	vppSyncer := vpp.NewSyncer(vppConn, &cfg.VPP.LB, logger)
-
-	// 4. FRR Manager (optional - control plane)
-	var frrManager *frr.Manager
-	if cfg.FRR.Enabled {
-		logger.Debug("Creating FRR manager")
-		frrMgr, err := frr.NewManager(&cfg.FRR, logger)
+	// Create router
+	var router routing.Router
+	if cfg.Routing.Enabled && cfg.Routing.Type == "frr" {
+		router, err = routing.NewFRR(routing.FRRConfig{
+			VTYShPath:  cfg.Routing.VTYShPath,
+			RouteTag:   cfg.Routing.RouteTag,
+			CmdTimeout: cfg.Routing.CmdTimeout,
+		})
 		if err != nil {
-			// FRR failure is non-fatal (can run VPP-only mode)
-			logger.WithError(err).Warn("Failed to initialize FRR manager, BGP announcements disabled")
-			frrManager = nil
-		} else {
-			logger.Info("FRR integration enabled")
-			frrManager = frrMgr
+			logger.Error("failed to create FRR router", "error", err)
+			return 1
 		}
 	} else {
-		logger.Info("FRR integration disabled in configuration")
+		router = routing.NewNoop()
+	}
+	defer func() {
+		if err := router.Close(); err != nil {
+			logger.Error("failed to close router", "error", err)
+		}
+	}()
+
+	statusUpdater, err := agentstatus.NewUpdater(agentstatus.Config{
+		Kubeconfig:     cfg.Kubernetes.Kubeconfig,
+		AgentID:        cfg.Agent.ID,
+		AgentStatusTTL: cfg.Agent.StatusTTL,
+	}, logger)
+	if err != nil {
+		logger.Error("failed to create status updater", "error", err)
+		return 1
 	}
 
-	// 5. Health Check Callback (VPP + optional FRR)
-	logger.Debug("Creating health check callback")
-	var healthCheckCallback healthcheck.StateChangeCallback
-	if frrManager != nil {
-		// Composite callback: VPP + FRR
-		healthCheckCallback = healthcheck.CompositeStateChangeCallback(vppSyncer, frrManager, logger)
+	var rolloutCoordinator reconciler.RolloutCoordinator
+	if cfg.Rollout.Enabled {
+		rolloutCoordinator, err = agentrollout.New(agentrollout.Config{
+			Kubeconfig:     cfg.Kubernetes.Kubeconfig,
+			Namespace:      cfg.Rollout.LeaseNamespace,
+			HolderIdentity: cfg.Agent.ID,
+			LeaseDuration:  cfg.Rollout.LeaseDuration,
+			RetryInterval:  cfg.Rollout.RetryInterval,
+		}, logger)
+		if err != nil {
+			logger.Error("failed to create rollout coordinator", "error", err)
+			return 1
+		}
+		logger.Info("rollout coordinator enabled",
+			"lease_namespace", cfg.Rollout.LeaseNamespace,
+			"lease_duration", cfg.Rollout.LeaseDuration,
+			"retry_interval", cfg.Rollout.RetryInterval)
+	}
+
+	// Create health check engine
+	hcEngine := healthcheck.NewEngine(healthcheck.EngineConfig{
+		WorkerCount:         cfg.HealthCheck.WorkerCount,
+		MaxConcurrentChecks: cfg.HealthCheck.MaxConcurrentChecks,
+		DefaultTimeout:      cfg.HealthCheck.DefaultTimeout,
+	}, st, nil, logger)
+
+	// Create reconciler manager
+	reconMgr := reconciler.NewManager(dp, router, st, hcEngine, cfg.Agent.ReconcileInterval, logger)
+	reconMgr.SetStatusUpdater(statusUpdater)
+	reconMgr.SetTuningDriftConfig(retainedVIPTuningDriftConfig(cfg.DataPlane.VPP, logger))
+	reconMgr.SetRolloutCoordinator(rolloutCoordinator)
+
+	// Wire health change callback: when health changes, trigger reconcile
+	hcCallback := func(vipKey, backendAddr string, oldState, newState healthcheck.V2BackendState) {
+		logger.Info("backend health changed",
+			"vip", vipKey, "backend", backendAddr,
+			"old", oldState, "new", newState)
+		reconMgr.OnHealthChange(vipKey)
+	}
+	hcEngine.SetCallback(hcCallback)
+
+	// Start health check engine
+	if err := hcEngine.Start(ctx); err != nil {
+		logger.Error("failed to start health check engine", "error", err)
+		return 1
+	}
+
+	// Start reconciler
+	reconMgr.Start(ctx)
+
+	// Create VIP event handler that bridges watcher events to reconciler + health checks
+	handler := &vipEventHandler{
+		ctx:           ctx,
+		reconciler:    reconMgr,
+		hcEngine:      hcEngine,
+		statusUpdater: statusUpdater,
+		logger:        logger,
+	}
+
+	shutdownAgent := func(metricsServer *http.Server) {
+		cancel()
+		if metricsServer != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer shutdownCancel()
+
+			if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+				logger.Error("failed to shutdown agent HTTP server", "error", err)
+			}
+		}
+		reconMgr.Stop()
+		hcEngine.Stop()
+
+		logger.Info("agent shutdown complete")
+	}
+
+	// Create and start K8s watcher
+	watcherCfg := watcher.Config{
+		Kubeconfig:     cfg.Kubernetes.Kubeconfig,
+		Namespace:      cfg.Kubernetes.Namespace,
+		ResyncInterval: cfg.Kubernetes.ResyncInterval,
+	}
+	w, err := watcher.New(watcherCfg, handler, logger)
+	if err != nil {
+		logger.Error("failed to create watcher", "error", err)
+		shutdownAgent(nil)
+		return 1
+	}
+
+	// Start HTTP server for the container healthcheck and optional metrics before
+	// initial sync so liveness does not depend on stale dataplane cleanup time.
+	metricsServer := newAgentHTTPServer(cfg.Metrics, logger)
+	go func() {
+		logger.Info("agent HTTP server starting", "address", cfg.Metrics.Address, "metrics_enabled", cfg.Metrics.Enabled)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("agent HTTP server error", "error", err)
+		}
+	}()
+
+	watcherErrCh := make(chan error, 1)
+	watcherSyncedCh := make(chan struct{})
+	go func() {
+		watcherErrCh <- w.StartWithInitialSync(ctx, func(syncCtx context.Context, currentVIPs []v1alpha1.VirtualIP) error {
+			if err := cleanupStaleLastConfigs(syncCtx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
+				return fmt.Errorf("stale dataplane cleanup failed: %w", err)
+			}
+			close(watcherSyncedCh)
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-watcherErrCh:
+		if err != nil {
+			logger.Error("watcher exited before initial sync", "error", err)
+		}
+		shutdownAgent(metricsServer)
+		return 1
+	case <-watcherSyncedCh:
+	}
+
+	// Wait for signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	exitCode := 0
+	select {
+	case sig := <-sigCh:
+		logger.Info("received signal, shutting down", "signal", sig)
+	case err := <-watcherErrCh:
+		if err != nil {
+			logger.Error("watcher exited with error", "error", err)
+			exitCode = 1
+		}
+	}
+
+	shutdownAgent(metricsServer)
+	return exitCode
+}
+
+func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {
+	return &http.Server{
+		Addr:         cfg.Address,
+		Handler:      newAgentHTTPMux(cfg, logger),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+}
+
+func newAgentHTTPMux(cfg agentconfig.MetricsSettings, logger *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	if cfg.Enabled {
+		mux.Handle(cfg.Path, promhttp.Handler())
+	}
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("ok")); err != nil {
+			logger.Error("failed to write health response", "error", err)
+		}
+	})
+	return mux
+}
+
+// vipEventHandler bridges watcher events to the reconciler and health check engine.
+type vipEventHandler struct {
+	ctx           context.Context
+	reconciler    *reconciler.Manager
+	hcEngine      *healthcheck.Engine
+	statusUpdater healthCheckConditionUpdater
+	logger        *slog.Logger
+}
+
+type healthCheckConditionUpdater interface {
+	UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.VirtualIP, condition metav1.Condition) error
+}
+
+func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
+	vipKey := healthcheck.KeyForVIP(vip)
+	h.logger.Info("VIP update received", "vip", vipKey, "generation", vip.Generation)
+
+	if err := vipvalidation.ValidateDataPlane(vip); err != nil {
+		h.logger.Error("invalid VirtualIP spec, ignoring update", "vip", vipKey, "error", err)
+		return
+	}
+
+	// Start/update health checks
+	if vip.Spec.HealthCheck != nil {
+		if err := h.hcEngine.UpdateVIP(vip); err != nil {
+			h.logger.Error("failed to update health check", "vip", vipKey, "error", err)
+			h.hcEngine.StopVIP(vipKey)
+			h.updateHealthCheckCondition(vip, metav1.ConditionFalse, "InvalidHealthCheck", err.Error())
+			h.reconciler.OnVIPUpdate(vip)
+			return
+		}
+		h.updateHealthCheckCondition(vip, metav1.ConditionTrue, "Configured", "Health check configured")
 	} else {
-		// VPP-only callback
-		healthCheckCallback = healthcheck.VPPStateChangeCallback(vppSyncer, logger)
+		h.hcEngine.StopVIP(vipKey)
+		h.updateHealthCheckCondition(vip, metav1.ConditionTrue, "Disabled", "Health check disabled")
 	}
 
-	// 6. Health Check Manager (needs callback)
-	logger.Debug("Creating health check manager")
-	healthCheckMgr := healthcheck.NewManager(&cfg.HealthCheck, logger, healthCheckCallback)
+	// Trigger reconciliation
+	h.reconciler.OnVIPUpdate(vip)
+}
 
-	// 6.5. Metrics Registry and Server (optional, depends on config)
-	var metricsRegistry *metrics.Registry
-	var metricsServer *metrics.Server
-	if cfg.Metrics.Enabled {
-		logger.Debug("Creating metrics registry")
-		metricsRegistry = metrics.NewRegistry(logger)
+func (h *vipEventHandler) OnVIPDelete(vip *v1alpha1.VirtualIP) {
+	vipKey := healthcheck.KeyForVIP(vip)
+	h.logger.Info("VIP delete received", "vip", vipKey)
 
-		// Register health check collector
-		metricsRegistry.RegisterHealthCheckCollector(healthCheckMgr.GetStateTracker())
+	h.hcEngine.StopVIP(vipKey)
+	h.reconciler.OnVIPDelete(vip)
+}
 
-		// Register VIP traffic collector (using VPP Syncer as provider)
-		vipProvider := &vppSyncerVIPProvider{syncer: vppSyncer}
-		metricsRegistry.RegisterVIPTrafficCollector(vipProvider)
-
-		// Create metrics server
-		logger.Debug("Creating metrics server")
-		metricsServer = metrics.NewServer(&cfg.Metrics, metricsRegistry.HTTPHandler(), logger)
-	} else {
-		logger.Debug("Metrics disabled in configuration")
+func (h *vipEventHandler) updateHealthCheckCondition(vip *v1alpha1.VirtualIP, status metav1.ConditionStatus, reason, message string) {
+	if h.statusUpdater == nil {
+		return
 	}
 
-	// 7. Reconciler (needs state manager, VPP syncer, health checker)
-	logger.Debug("Creating reconciler")
-	reconcilerInstance := reconciler.NewReconciler(
-		cfg,
-		logger,
-		stateManager,
-		vppSyncer,
-		healthCheckMgr,
-	)
+	ctx := h.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	// 8. gRPC Config Handler (composite: state manager + reconciler)
-	logger.Debug("Creating gRPC config handler")
-	configHandler := func(config *models.Config) error {
-		// Update state manager
-		stateManager.UpdateConfig(config)
+	condition := metav1.Condition{
+		Type:               agentstatus.ConditionHealthCheckReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: vip.Generation,
+	}
+	if err := h.statusUpdater.UpdateHealthCheckCondition(ctx, vip, condition); err != nil {
+		h.logger.Warn("failed to update health check condition", "vip", healthcheck.KeyForVIP(vip), "error", err)
+	}
+}
 
-		// Trigger reconciliation
-		reconcilerInstance.TriggerReconcile()
+type retainedConfigSource string
 
+const (
+	retainedConfigLastApplied retainedConfigSource = "last-applied"
+	retainedConfigPending     retainedConfigSource = "pending"
+)
+
+type retainedConfig struct {
+	key    string
+	source retainedConfigSource
+	vip    *v1alpha1.VirtualIP
+}
+
+func cleanupStaleLastConfigs(
+	ctx context.Context,
+	st *store.Store,
+	dp dataplane.DataPlane,
+	router routing.Router,
+	rollouts reconciler.RolloutCoordinator,
+	currentVIPs []v1alpha1.VirtualIP,
+	logger *slog.Logger,
+) error {
+	if st == nil || dp == nil {
 		return nil
 	}
 
-	// 9. gRPC Client (needs handler)
-	logger.Debug("Creating gRPC client")
-	grpcClient := grpc.NewClient(cfg, logger, configHandler)
+	lastConfigs, err := st.LoadAllLastConfigs()
+	if err != nil {
+		return fmt.Errorf("failed to load last-applied configs: %w", err)
+	}
+	pendingConfigs, err := st.LoadAllPendingConfigs()
+	if err != nil {
+		return fmt.Errorf("failed to load pending configs: %w", err)
+	}
+	if len(lastConfigs) == 0 && len(pendingConfigs) == 0 {
+		return nil
+	}
 
-	// Set metrics recorders if metrics are enabled
-	if metricsRegistry != nil {
-		// Health check metrics
-		healthCheckCollector := metricsRegistry.GetHealthCheckCollector()
-		if healthCheckCollector != nil {
-			healthCheckMgr.SetMetricsRecorder(healthCheckCollector)
+	currentByKey := make(map[string]*v1alpha1.VirtualIP, len(currentVIPs))
+	currentValidByKey := make(map[string]bool, len(currentVIPs))
+	currentAddresses := make(map[string]struct{}, len(currentVIPs))
+	for i := range currentVIPs {
+		currentVIP := &currentVIPs[i]
+		key := healthcheck.KeyForVIP(currentVIP)
+		if !currentVIP.DeletionTimestamp.IsZero() {
+			logger.Info("treating terminating VirtualIP as stale during initial cleanup", "vip", key)
+			continue
 		}
-
-		// VPP metrics
-		vppCollector := metricsRegistry.GetVPPCollector()
-		if vppCollector != nil {
-			vppConn.SetMetricsRecorder(vppCollector)
-			vppSyncer.SetMetricsRecorder(vppCollector)
+		currentByKey[key] = currentVIP
+		if err := vipvalidation.Validate(currentVIP); err != nil {
+			logger.Warn("ignoring invalid current VirtualIP for stale route protection", "vip", key, "error", err)
+			continue
 		}
+		currentValidByKey[key] = true
+		currentAddresses[currentVIP.Spec.Address] = struct{}{}
+	}
 
-		// Reconciler metrics
-		reconcilerCollector := metricsRegistry.GetReconcilerCollector()
-		if reconcilerCollector != nil {
-			reconcilerInstance.SetMetricsRecorder(reconcilerCollector)
+	var firstErr error
+	retainedConfigs := make([]retainedConfig, 0, len(lastConfigs)+len(pendingConfigs))
+	for key, data := range lastConfigs {
+		vip, err := virtualIPFromRetainedConfig(key, data, retainedConfigLastApplied)
+		if err != nil {
+			logger.Warn("failed to decode retained VIP config", "vip", key, "source", retainedConfigLastApplied, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		retainedConfigs = append(retainedConfigs, retainedConfig{key: key, source: retainedConfigLastApplied, vip: vip})
+	}
+	for key, data := range pendingConfigs {
+		vip, err := virtualIPFromRetainedConfig(key, data, retainedConfigPending)
+		if err != nil {
+			logger.Warn("failed to decode retained VIP config", "vip", key, "source", retainedConfigPending, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		retainedConfigs = append(retainedConfigs, retainedConfig{key: key, source: retainedConfigPending, vip: vip})
+	}
+
+	for _, retained := range retainedConfigs {
+		key := retained.key
+		vip := retained.vip
+		if _, ok := currentByKey[key]; ok && !currentValidByKey[key] && vip.Spec.Address != "" {
+			currentAddresses[vip.Spec.Address] = struct{}{}
 		}
 	}
 
-	logger.Info("All components initialized successfully")
+	for _, retained := range retainedConfigs {
+		key := retained.key
+		vip := retained.vip
+		if currentVIP, ok := currentByKey[key]; ok {
+			// Invalid current specs are ignored by the event handler; keep the
+			// last known good dataplane state for this key until a valid spec arrives.
+			if !currentValidByKey[key] {
+				logger.Warn("preserving retained VIP for invalid current VirtualIP", "vip", key)
+				continue
+			}
+			if sameRetainedVIPIdentity(vip, currentVIP) {
+				continue
+			}
+		}
 
-	return &Components{
-		StateManager:    stateManager,
-		VPPConnection:   vppConn,
-		VPPSyncer:       vppSyncer,
-		FRRManager:      frrManager,
-		HealthCheckMgr:  healthCheckMgr,
-		Reconciler:      reconcilerInstance,
-		GRPCClient:      grpcClient,
-		MetricsRegistry: metricsRegistry,
-		MetricsServer:   metricsServer,
-	}, nil
+		_, addressInUse := currentAddresses[vip.Spec.Address]
+		withdrawRoute := !addressInUse
+		_, currentKeyExists := currentByKey[key]
+		deleteHealthStates := !currentKeyExists
+		cleanup := func(ctx context.Context) error {
+			return cleanupRetainedVIP(ctx, st, dp, router, key, retained.source, vip, withdrawRoute, deleteHealthStates, logger)
+		}
+		var cleanupErr error
+		if rollouts != nil {
+			cleanupErr = rollouts.RunExclusive(ctx, rolloutKeyForCleanup(key, vip), cleanup)
+		} else {
+			cleanupErr = cleanup(ctx)
+		}
+		if cleanupErr != nil {
+			logger.Warn("failed to clean stale retained VIP", "vip", key, "error", cleanupErr)
+			if firstErr == nil {
+				firstErr = cleanupErr
+			}
+		}
+	}
+
+	return firstErr
 }
 
-// startComponents starts all components in the correct order
-func startComponents(ctx context.Context, components *Components, logger *logrus.Logger) error {
-	logger.Info("Starting components...")
-
-	// 1. Start VPP connection (goroutine-based, returns immediately)
-	logger.Info("Starting VPP connection")
-	if err := components.VPPConnection.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start VPP connection: %w", err)
-	}
-
-	// Wait for VPP to be ready (with timeout and context cancellation support)
-	logger.Debug("Waiting for VPP connection to be ready")
-	if err := waitForVPPConnection(ctx, components.VPPConnection, 30*time.Second, logger); err != nil {
-		return fmt.Errorf("VPP connection not ready: %w", err)
-	}
-	logger.Info("VPP connection established")
-
-	// 2. Start reconciler FIRST (goroutine-based, no error return)
-	// This ensures the reconcile channel is ready before gRPC client starts sending configs
-	logger.Info("Starting reconciler")
-	components.Reconciler.Start(ctx)
-
-	// 3. Start health check manager BEFORE gRPC client (synchronous)
-	// This ensures health check manager is ready when config arrives and reconciler tries to start health checks
-	logger.Info("Starting health check manager")
-	if err := components.HealthCheckMgr.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start health check manager: %w", err)
-	}
-
-	// 4. Start gRPC client AFTER reconciler and health check manager are ready (goroutine-based, returns immediately)
-	// This prevents race condition where config arrives before reconciler/health check manager are ready
-	logger.Info("Starting gRPC client")
-	if err := components.GRPCClient.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start gRPC client: %w", err)
-	}
-
-	// 5. Start metrics server (if enabled)
-	if components.MetricsServer != nil {
-		logger.Info("Starting metrics server")
-		if err := components.MetricsServer.Start(); err != nil {
-			logger.WithError(err).Warn("Failed to start metrics server")
-			// Metrics server failure is non-fatal
+func cleanupRetainedVIP(
+	ctx context.Context,
+	st *store.Store,
+	dp dataplane.DataPlane,
+	router routing.Router,
+	key string,
+	source retainedConfigSource,
+	vip *v1alpha1.VirtualIP,
+	withdrawRoute bool,
+	deleteHealthStates bool,
+	logger *slog.Logger,
+) error {
+	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "source", source, "address", vip.Spec.Address, "withdraw_route", withdrawRoute)
+	if withdrawRoute && router != nil {
+		if err := router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
+			return fmt.Errorf("failed to withdraw stale retained VIP route: %w", err)
 		}
 	}
-
-	logger.Info("All components started")
+	if err := dp.RemoveVIP(ctx, vip); err != nil {
+		return fmt.Errorf("failed to remove stale retained VIP from dataplane: %w", err)
+	}
+	switch source {
+	case retainedConfigLastApplied:
+		if err := st.DeleteLastConfig(key); err != nil {
+			return fmt.Errorf("failed to delete stale last-applied config: %w", err)
+		}
+	case retainedConfigPending:
+		if err := st.DeletePendingConfig(key); err != nil {
+			return fmt.Errorf("failed to delete stale pending config: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown retained config source %q", source)
+	}
+	if !deleteHealthStates {
+		return nil
+	}
+	if err := st.DeleteHealthStatesForVIP(key); err != nil {
+		return fmt.Errorf("failed to delete stale health states: %w", err)
+	}
 	return nil
 }
 
-// waitForVPPConnection polls VPP connection status until connected, timeout, or context cancelled
-func waitForVPPConnection(ctx context.Context, conn *vpp.Connection, timeout time.Duration, logger *logrus.Logger) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	for {
-		if conn.IsConnected() {
-			return nil
-		}
-
-		select {
-		case <-timeoutCtx.Done():
-			// Check if parent context was cancelled or timeout occurred
-			if ctx.Err() != nil {
-				return fmt.Errorf("cancelled while waiting for VPP connection: %w", ctx.Err())
-			}
-			return fmt.Errorf("timeout waiting for VPP connection after %v", timeout)
-		case <-ticker.C:
-			// Continue waiting
-		}
+func rolloutKeyForCleanup(key string, vip *v1alpha1.VirtualIP) string {
+	if vip != nil && vip.Spec.Address != "" {
+		return "vip-address/" + vip.Spec.Address
 	}
+	return "virtualip/" + key
 }
 
-// waitForShutdown blocks until SIGTERM or SIGINT is received
-func waitForShutdown(logger *logrus.Logger) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+func virtualIPFromRetainedConfig(key string, data []byte, source retainedConfigSource) (*v1alpha1.VirtualIP, error) {
+	namespace, name, ok := strings.Cut(key, "/")
+	if !ok || namespace == "" || name == "" {
+		return nil, fmt.Errorf("invalid namespaced VIP key %q", key)
+	}
 
-	sig := <-sigChan
-	logger.WithField("signal", sig.String()).Info("Received shutdown signal")
+	var spec v1alpha1.VirtualIPSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("failed to decode %s config for %s: %w", source, key, err)
+	}
+
+	return &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      name,
+		},
+		Spec: spec,
+	}, nil
 }
 
-// configureLogger configures the logger based on configuration
-func configureLogger(logger *logrus.Logger, cfg *config.Config) {
-	// Set log level
-	level, err := logrus.ParseLevel(cfg.Log.Level)
-	if err != nil {
-		logger.WithError(err).Warn("Invalid log level, using INFO")
-		level = logrus.InfoLevel
+func sameRetainedVIPIdentity(a, b *v1alpha1.VirtualIP) bool {
+	if a == nil || b == nil {
+		return false
 	}
-	logger.SetLevel(level)
+	return a.Spec.Address == b.Spec.Address &&
+		a.Spec.Port == b.Spec.Port &&
+		a.Spec.Protocol == b.Spec.Protocol &&
+		a.Spec.EncapType == b.Spec.EncapType &&
+		uint8PtrEqual(a.Spec.DSCP, b.Spec.DSCP)
+}
 
-	// Set log format
-	switch cfg.Log.Format {
-	case "json":
-		logger.SetFormatter(&logrus.JSONFormatter{
-			TimestampFormat: time.RFC3339,
-		})
-	case "text":
-		logger.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: time.RFC3339,
-		})
-	default:
-		logger.Warnf("Unknown log format %s, using JSON", cfg.Log.Format)
-		logger.SetFormatter(&logrus.JSONFormatter{
-			TimestampFormat: time.RFC3339,
-		})
+func uint8PtrEqual(a, b *uint8) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func retainedVIPTuningDriftConfig(vpp map[string]interface{}, logger *slog.Logger) reconciler.TuningDriftConfig {
+	cfg := reconciler.TuningDriftConfig{}
+	if vpp == nil {
+		return cfg
 	}
 
-	// Set log output
-	switch cfg.Log.Output {
-	case "stdout":
-		logger.SetOutput(os.Stdout)
-	case "stderr":
-		logger.SetOutput(os.Stderr)
-	case "":
-		// Default to stdout
-		logger.SetOutput(os.Stdout)
-	default:
-		// File path
-		file, err := os.OpenFile(cfg.Log.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if policy, ok := vpp["retained_vip_tuning_drift_policy"].(string); ok && policy != "" {
+		cfg.Policy = policy
+	}
+
+	for _, key := range []string{"retained_vip_tuning_drift_drain", "rolling_recreate_drain"} {
+		value, ok := vpp[key]
+		if !ok {
+			continue
+		}
+		drain, err := durationSetting(value)
 		if err != nil {
-			logger.WithError(err).Warnf("Failed to open log file %s, using stdout", cfg.Log.Output)
-			logger.SetOutput(os.Stdout)
-		} else {
-			logger.SetOutput(file)
+			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", err)
+			continue
 		}
+		if drain <= 0 {
+			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", "must be positive")
+			continue
+		}
+		cfg.DrainDuration = drain
+		break
+	}
+
+	return cfg
+}
+
+func durationSetting(value interface{}) (time.Duration, error) {
+	switch v := value.(type) {
+	case time.Duration:
+		return v, nil
+	case string:
+		if v == "" {
+			return 0, nil
+		}
+		return time.ParseDuration(v)
+	case int:
+		return time.Duration(v) * time.Second, nil
+	case int64:
+		return time.Duration(v) * time.Second, nil
+	case float64:
+		return time.Duration(v * float64(time.Second)), nil
+	default:
+		return 0, fmt.Errorf("unsupported duration type %T", value)
 	}
 }
 
-// vppSyncerVIPProvider implements metrics.VIPTrafficProvider using VPP Syncer
-type vppSyncerVIPProvider struct {
-	syncer *vpp.Syncer
-}
-
-func (p *vppSyncerVIPProvider) GetVIPs() map[string]metrics.VIPInfo {
-	if p.syncer == nil {
-		return make(map[string]metrics.VIPInfo)
+func setupLogger(cfg agentconfig.LogSettings) *slog.Logger {
+	var level slog.Level
+	switch cfg.Level {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
 	}
 
-	vppVIPs := p.syncer.GetVIPsForMetrics()
-	result := make(map[string]metrics.VIPInfo, len(vppVIPs))
+	opts := &slog.HandlerOptions{Level: level}
 
-	for vipID, vppVIP := range vppVIPs {
-		result[vipID] = metrics.VIPInfo{
-			ID:       vppVIP.ID,
-			IP:       vppVIP.IP,
-			Port:     vppVIP.Port,
-			Protocol: vppVIP.Protocol,
-		}
+	var handler slog.Handler
+	if cfg.Format == "text" {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
 	}
 
-	return result
+	return slog.New(handler)
 }

@@ -10,6 +10,7 @@ from unittest import mock
 from kubernetes import client as k8s_client
 from octavia_lib.api.drivers import data_models as octavia_data_models
 from octavia_lib.api.drivers import exceptions as driver_exc
+from oslo_config import cfg
 
 from octavia_arca_driver import constants
 from octavia_arca_driver.driver import ArcaLBDriver
@@ -24,6 +25,35 @@ class FakeObj:
 
     def to_dict(self):
         return self._data
+
+
+class TestDriverOptions(unittest.TestCase):
+    """Test Octavia driver configuration validation."""
+
+    def setUp(self):
+        self.conf = cfg.ConfigOpts()
+        constants.register_opts(self.conf)
+
+    def test_default_listener_options_accept_crd_values(self):
+        self.conf.set_override(
+            "default_encap_type", "NAT4", group="driver_arca"
+        )
+        self.conf.set_override("default_dscp", 63, group="driver_arca")
+
+        self.assertEqual(self.conf.driver_arca.default_encap_type, "NAT4")
+        self.assertEqual(self.conf.driver_arca.default_dscp, 63)
+
+    def test_default_encap_type_rejects_invalid_value(self):
+        with self.assertRaises(ValueError):
+            self.conf.set_override(
+                "default_encap_type", "INVALID", group="driver_arca"
+            )
+
+    def test_default_dscp_rejects_crd_out_of_range_values(self):
+        with self.assertRaises(ValueError):
+            self.conf.set_override("default_dscp", 0, group="driver_arca")
+        with self.assertRaises(ValueError):
+            self.conf.set_override("default_dscp", 64, group="driver_arca")
 
 
 def _make_vip(name, spec, annotations=None, status=None, generation=1,
@@ -285,6 +315,37 @@ class TestDriverLifecycle(unittest.TestCase):
             "l7policies": [],
             "l7rules": [],
         })
+
+    def test_loadbalancer_create_propagates_status_update_failure(self):
+        lb_id = "lb-1111"
+        loadbalancer = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+        })
+        exc = driver_exc.UpdateStatusError(
+            fault_string="status socket unavailable"
+        )
+        self.mock_driver_lib.update_loadbalancer_status.side_effect = exc
+
+        with self.assertRaises(driver_exc.UpdateStatusError) as raised:
+            self.driver.loadbalancer_create(loadbalancer)
+
+        self.assertIs(raised.exception, exc)
+
+    def test_loadbalancer_create_raises_on_status_update_result(self):
+        lb_id = "lb-1111"
+        loadbalancer = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+        })
+        self.mock_driver_lib.update_loadbalancer_status.return_value = {
+            "fault_string": "invalid status"
+        }
+
+        with self.assertRaises(driver_exc.UpdateStatusError) as raised:
+            self.driver.loadbalancer_create(loadbalancer)
+
+        self.assertIn("invalid status", raised.exception.fault_string)
 
     def test_listener_create_creates_virtualip(self):
         listener = FakeObj({
@@ -647,6 +708,32 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(spec["address"], "203.0.113.10")
         self.mock_k8s.find_by_loadbalancer.assert_not_called()
 
+    def test_listener_create_uses_loadbalancer_flavor(self):
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        listener_id = "aaaaaaaa-1111-2222-3333-444444444444"
+        loadbalancer = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+            "flavor": {"encap_type": "GRE4", "dscp": "20"},
+        })
+        listener = FakeObj({
+            "listener_id": listener_id,
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "project_id": "test-project",
+        })
+
+        self.mock_k8s.find_by_loadbalancer.return_value = []
+
+        self.driver.loadbalancer_create(loadbalancer)
+        self.driver.listener_create(listener)
+
+        self.mock_k8s.create_virtualip.assert_called_once()
+        spec = self.mock_k8s.create_virtualip.call_args[0][1]
+        self.assertEqual(spec["encapType"], "GRE4")
+        self.assertNotIn("dscp", spec)
+
     def test_first_listener_can_fetch_vip_from_octavia_loadbalancer(self):
         lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
         listener = FakeObj({
@@ -669,6 +756,36 @@ class TestDriverLifecycle(unittest.TestCase):
         self.mock_k8s.create_virtualip.assert_called_once()
         spec = self.mock_k8s.create_virtualip.call_args[0][1]
         self.assertEqual(spec["address"], "203.0.113.10")
+
+    def test_first_listener_fetches_loadbalancer_flavor(self):
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        listener = FakeObj({
+            "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "project_id": "test-project",
+        })
+
+        self.mock_k8s.find_by_loadbalancer.return_value = []
+        self.mock_driver_lib.get_loadbalancer.return_value = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+            "flavor": {
+                "flavor_data": json.dumps({
+                    "encap_type": "L3DSR",
+                    "dscp": "22",
+                }),
+            },
+        })
+
+        self.driver.listener_create(listener)
+
+        self.mock_driver_lib.get_loadbalancer.assert_called_once_with(lb_id)
+        self.mock_k8s.create_virtualip.assert_called_once()
+        spec = self.mock_k8s.create_virtualip.call_args[0][1]
+        self.assertEqual(spec["encapType"], "L3DSR")
+        self.assertEqual(spec["dscp"], 22)
 
     def test_pool_create_without_listener_does_not_associate_single_lb_vip(self):
         existing_vip = _make_vip(
@@ -2488,6 +2605,79 @@ class TestDriverLifecycle(unittest.TestCase):
             constants.ANNOTATION_DRAINING_MEMBER_IDS, annotations
         )
 
+    def test_member_update_merges_sparse_update_with_old_member(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        old_member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+            "protocol_port": 80,
+            "weight": 100,
+            "admin_state_up": True,
+            "backup": False,
+        })
+        new_member = FakeObj({
+            "member_id": "member-1111",
+            "weight": 25,
+        })
+        self.driver.member_update(old_member, new_member)
+
+        self.mock_driver_lib.get_member.assert_not_called()
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["backends"], [{
+            "address": "10.0.1.1",
+            "weight": 25,
+        }])
+
+    def test_member_update_fetches_missing_member_detail(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+        self.mock_driver_lib.get_member.return_value = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+            "protocol_port": 80,
+            "weight": 100,
+            "admin_state_up": True,
+            "backup": False,
+        })
+
+        new_member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "weight": 25,
+        })
+        self.driver.member_update(FakeObj({}), new_member)
+
+        self.mock_driver_lib.get_member.assert_called_once_with("member-1111")
+        spec = self.mock_k8s.update_virtualip.call_args[0][1]
+        self.assertEqual(spec["backends"], [{
+            "address": "10.0.1.1",
+            "weight": 25,
+        }])
+
     def test_member_update_keeps_backends_empty_when_listener_disabled(self):
         existing_vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",
@@ -3243,7 +3433,11 @@ class TestDriverLifecycle(unittest.TestCase):
             "octavia-bbbbbbbb-aaaaaaaa",
             {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
              "backends": [{"address": "10.0.1.1", "weight": 100}]},
-            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
         )
         self.mock_k8s.find_by_pool.return_value = existing_vip
 
@@ -3265,6 +3459,23 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertIn("healthCheck", spec)
         self.assertEqual(spec["healthCheck"]["type"], "http")
         self.assertEqual(spec["healthCheck"]["http"]["port"], 80)
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "ACTIVE",
+        }])
 
     def test_health_monitor_create_deferred_for_listener_less_pool(self):
         self.mock_k8s.find_by_pool.return_value = None
@@ -3306,7 +3517,11 @@ class TestDriverLifecycle(unittest.TestCase):
             "octavia-bbbbbbbb-aaaaaaaa",
             {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
              "backends": [{"address": "10.0.1.1", "weight": 100}]},
-            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
         )
         self.mock_k8s.find_by_pool.return_value = existing_vip
 
@@ -3329,6 +3544,23 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertIn("healthCheck", spec)
         self.assertEqual(spec["healthCheck"]["type"], "http")
         self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "ACTIVE",
+        }])
 
     def test_health_monitor_update_retries_conflict_with_latest_spec(self):
         stale_vip = _make_vip(

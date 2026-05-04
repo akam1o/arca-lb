@@ -21,7 +21,7 @@ RUN if [ -n "$TARGETOS" ]; then export GOOS="$TARGETOS"; fi; \
     -trimpath \
     -ldflags="-w -s" \
     -o /build/bin/arcalb-agent \
-    ./cmd/agent
+    ./cmd/arcalb-agent
 
 FROM alpine:3.19
 

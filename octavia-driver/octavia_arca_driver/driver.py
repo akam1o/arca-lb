@@ -72,6 +72,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._default_dscp = conf.default_dscp
         self._driver_lib = driver_lib.DriverLibrary()
         self._loadbalancer_vips = {}
+        self._loadbalancer_flavors = {}
         self._loadbalancer_vips_lock = threading.Lock()
 
         # Start background status watcher.
@@ -107,7 +108,11 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 operator_fault_string="loadbalancer_create called without vip_address",
             )
 
-        self._remember_loadbalancer_vip(lb_id, vip_address)
+        self._remember_loadbalancer_context(
+            lb_id,
+            vip_address=vip_address,
+            flavor=lb.get("flavor") if "flavor" in lb else {},
+        )
         self._push_loadbalancer_status(
             lb_id, PROVISIONING_ACTIVE, OPERATING_OFFLINE
         )
@@ -141,7 +146,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         for vip in vips:
             name = vip["metadata"]["name"]
             self._k8s.delete_virtualip(name)
-        self._forget_loadbalancer_vip(lb_id)
+        self._forget_loadbalancer_context(lb_id)
         self._push_resource_delete_status(
             f"loadbalancer/{lb_id}",
             lb_id=lb_id,
@@ -164,8 +169,11 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         lb_id = lb.get("loadbalancer_id")
         admin_state = lb.get("admin_state_up")
         vip_address = lb.get("vip_address")
-        if vip_address:
-            self._remember_loadbalancer_vip(lb_id, vip_address)
+        self._remember_loadbalancer_context(
+            lb_id,
+            vip_address=vip_address,
+            flavor=lb.get("flavor") if "flavor" in lb else None,
+        )
         vips = self._k8s.find_by_loadbalancer(lb_id)
         if admin_state is False:
             # Remove all backends to effectively disable.
@@ -275,7 +283,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
 
         # Parse flavor metadata for encap settings.
-        flavor = lst.get("flavor") or {}
+        flavor = self._listener_flavor(lst, lb_id)
         encap_type = flavor.get("encap_type", self._default_encap_type)
         dscp = flavor.get("dscp", self._default_dscp)
 
@@ -308,7 +316,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 name, spec, annotations, lb_id, listener_id
             )
         )
-        self._remember_loadbalancer_vip(lb_id, vip_address)
+        self._remember_loadbalancer_context(lb_id, vip_address=vip_address)
         if pool_id and restore_pool_id == pool_id:
             try:
                 self._restore_virtualip_backends([restore_vip])
@@ -813,10 +821,26 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
     def member_update(self, old_member, new_member):
         """Update a backend's weight in the VirtualIP."""
-        m = new_member.to_dict() if hasattr(new_member, 'to_dict') else new_member
+        m = self._member_update_model(old_member, new_member)
         self._validate_member_supported(m)
         pool_id = m.get("pool_id")
         address = m.get("address")
+        if not pool_id:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Member pool is required.",
+                operator_fault_string=(
+                    "Cannot resolve pool for Octavia member update "
+                    f"{self._member_id(m) or address}"
+                ),
+            )
+        if not address:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Member address is required.",
+                operator_fault_string=(
+                    "Cannot resolve address for Octavia member update "
+                    f"{self._member_id(m)}"
+                ),
+            )
         is_draining = self._member_is_draining(m)
         backend = None if is_draining else self._backend_from_member(m)
 
@@ -964,15 +988,28 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
 
         name = vip["metadata"]["name"]
+        annotations = vip.get("metadata", {}).get("annotations", {}) or {}
+        lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+        listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
 
         def mutate(current_vip, spec, annotations):
+            nonlocal lb_id, listener_id
             spec["healthCheck"] = self._build_health_check(hm, current_vip)
             annotations[constants.ANNOTATION_HM_ID] = hm_id
+            lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+            listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
 
         if not self._update_pool_virtualip_with_retry(
             name, pool_id, "health monitor create", mutate, initial_vip=vip
         ):
             return
+        self._push_resource_active_status(
+            name,
+            lb_id=lb_id,
+            active_listener_ids=[listener_id],
+            active_pool_ids=[pool_id],
+            active_hm_ids=[hm_id],
+        )
         LOG.info("Health monitor %s applied to VirtualIP %s", hm_id, name)
 
     def health_monitor_delete(self, health_monitor):
@@ -1058,17 +1095,29 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
 
         name = vip["metadata"]["name"]
+        annotations = vip.get("metadata", {}).get("annotations", {}) or {}
+        lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+        listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
+        hm_id = hm.get("healthmonitor_id")
 
         def mutate(current_vip, spec, annotations):
+            nonlocal lb_id, listener_id, hm_id
             spec["healthCheck"] = self._build_health_check(hm, current_vip)
-            annotations[constants.ANNOTATION_HM_ID] = hm.get(
-                "healthmonitor_id"
-            )
+            annotations[constants.ANNOTATION_HM_ID] = hm_id
+            lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+            listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
 
         if not self._update_pool_virtualip_with_retry(
             name, pool_id, "health monitor update", mutate, initial_vip=vip
         ):
             return
+        self._push_resource_active_status(
+            name,
+            lb_id=lb_id,
+            active_listener_ids=[listener_id],
+            active_pool_ids=[pool_id],
+            active_hm_ids=[hm_id],
+        )
 
     # ------------------------------------------------------------------
     # L7Policy / L7Rule — not supported (L4 only)
@@ -1160,17 +1209,33 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
         return mapped_protocol
 
-    def _remember_loadbalancer_vip(self, lb_id, vip_address):
-        if not lb_id or not vip_address:
+    def _remember_loadbalancer_context(self, lb_id, vip_address=None,
+                                       flavor=None):
+        if not lb_id:
+            return
+        flavor_metadata = None
+        if flavor is not None:
+            flavor_metadata = self._flavor_metadata(flavor)
+        if not vip_address and flavor_metadata is None:
             return
         with self._loadbalancer_vips_lock:
-            self._loadbalancer_vips[lb_id] = vip_address
+            if vip_address:
+                self._loadbalancer_vips[lb_id] = vip_address
+            if flavor_metadata is not None:
+                self._loadbalancer_flavors[lb_id] = flavor_metadata
 
-    def _forget_loadbalancer_vip(self, lb_id):
+    def _remember_loadbalancer_vip(self, lb_id, vip_address):
+        self._remember_loadbalancer_context(lb_id, vip_address=vip_address)
+
+    def _forget_loadbalancer_context(self, lb_id):
         if not lb_id:
             return
         with self._loadbalancer_vips_lock:
             self._loadbalancer_vips.pop(lb_id, None)
+            self._loadbalancer_flavors.pop(lb_id, None)
+
+    def _forget_loadbalancer_vip(self, lb_id):
+        self._forget_loadbalancer_context(lb_id)
 
     def _loadbalancer_vip(self, lb_id):
         if not lb_id:
@@ -1178,20 +1243,73 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         with self._loadbalancer_vips_lock:
             return self._loadbalancer_vips.get(lb_id, "")
 
-    def _loadbalancer_vip_from_octavia(self, lb_id):
+    def _loadbalancer_flavor(self, lb_id):
         if not lb_id:
-            return ""
+            return None
+        with self._loadbalancer_vips_lock:
+            flavor = self._loadbalancer_flavors.get(lb_id)
+        if flavor is None:
+            return None
+        return copy.deepcopy(flavor)
+
+    def _loadbalancer_from_octavia(self, lb_id):
+        if not lb_id:
+            return {}
         loadbalancer = self._driver_lib.get_loadbalancer(lb_id)
         if not loadbalancer:
-            return ""
-        lb = (
-            loadbalancer.to_dict()
-            if hasattr(loadbalancer, "to_dict")
-            else loadbalancer
+            return {}
+        lb = self._as_dict(loadbalancer)
+        self._remember_loadbalancer_context(
+            lb_id,
+            vip_address=lb.get("vip_address", ""),
+            flavor=lb.get("flavor") if "flavor" in lb else {},
         )
-        vip_address = lb.get("vip_address", "")
-        self._remember_loadbalancer_vip(lb_id, vip_address)
-        return vip_address
+        return lb
+
+    def _loadbalancer_vip_from_octavia(self, lb_id):
+        return self._loadbalancer_from_octavia(lb_id).get("vip_address", "")
+
+    def _listener_flavor(self, listener, lb_id):
+        flavor = self._flavor_metadata(listener.get("flavor"))
+        if flavor:
+            return flavor
+
+        flavor = self._loadbalancer_flavor(lb_id)
+        if flavor is not None:
+            return flavor
+
+        lb = self._loadbalancer_from_octavia(lb_id)
+        return self._flavor_metadata(lb.get("flavor"))
+
+    @classmethod
+    def _flavor_metadata(cls, flavor):
+        data = cls._as_dict(flavor)
+        if not data:
+            return {}
+
+        for key in ("metadata", "flavor_data"):
+            metadata = cls._flavor_dict(data.get(key))
+            if metadata:
+                return metadata
+
+        return copy.deepcopy(data)
+
+    @classmethod
+    def _flavor_dict(cls, value):
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped or stripped[0] not in "{[":
+                return {}
+            try:
+                value = json.loads(stripped)
+            except (TypeError, ValueError):
+                LOG.warning("Invalid Octavia flavor metadata JSON: %s", value)
+                return {}
+
+        data = cls._as_dict(value)
+        if not data:
+            return {}
+        return copy.deepcopy(data)
 
     def _deferred_pool_context(self, pool_id, pool=None):
         if pool is None:
@@ -1937,6 +2055,28 @@ class ArcaLBDriver(driver_base.ProviderDriver):
     @staticmethod
     def _member_id(member):
         return member.get("member_id") or member.get("id")
+
+    def _member_update_model(self, old_member, new_member):
+        member = {}
+        member.update(self._as_dict(old_member))
+        member.update(self._as_dict(new_member))
+
+        member_id = self._member_id(member)
+        if member_id and self._member_update_needs_detail_fetch(member):
+            fetched = self._member_from_octavia(member_id)
+            for key, value in fetched.items():
+                if key not in member or member.get(key) is None:
+                    member[key] = value
+
+        return member
+
+    @classmethod
+    def _member_update_needs_detail_fetch(cls, member):
+        return (
+            cls._member_needs_detail_fetch(member) or
+            not member.get("pool_id") or
+            member.get("protocol_port") is None
+        )
 
     @classmethod
     def _member_needs_detail_fetch(cls, member):
@@ -2980,14 +3120,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         except Exception:
             LOG.exception("Failed to update Octavia status for VirtualIP %s",
                           vip_name)
-            return
+            raise
 
         if result:
             LOG.warning(
                 "Octavia status update for VirtualIP %s returned: %s",
                 vip_name, result,
             )
-            return
+            raise driver_exc.UpdateStatusError(fault_string=str(result))
 
         LOG.info(
             "Updated Octavia status for VirtualIP %s: %s",

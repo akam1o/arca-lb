@@ -223,6 +223,9 @@ func validateV2(cfg *V2Config) error {
 	if cfg.Agent.StatusTTL <= 0 {
 		return fmt.Errorf("agent.statusTTL must be positive")
 	}
+	if cfg.Kubernetes.ResyncInterval <= 0 {
+		return fmt.Errorf("kubernetes.resyncInterval must be positive")
+	}
 	if cfg.HealthCheck.WorkerCount <= 0 {
 		return fmt.Errorf("healthCheck.workerCount must be positive")
 	}
@@ -248,6 +251,15 @@ func validateV2(cfg *V2Config) error {
 	case "frr", "noop":
 	default:
 		return fmt.Errorf("unsupported routing.type: %s", cfg.Routing.Type)
+	}
+	if cfg.Routing.CmdTimeout <= 0 {
+		return fmt.Errorf("routing.cmdTimeout must be positive")
+	}
+	if cfg.Rollout.LeaseDuration <= 0 {
+		return fmt.Errorf("rollout.leaseDuration must be positive")
+	}
+	if cfg.Rollout.RetryInterval <= 0 {
+		return fmt.Errorf("rollout.retryInterval must be positive")
 	}
 
 	if cfg.Metrics.Enabled {

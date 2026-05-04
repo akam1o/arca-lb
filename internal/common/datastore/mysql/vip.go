@@ -39,7 +39,7 @@ type HealthCheckRecord struct {
 	IntervalSec int             `gorm:"not null;default:5"`
 	TimeoutSec  int             `gorm:"not null;default:3"`
 	RiseCount   int             `gorm:"not null;default:3"`
-	FallCount   int             `gorm:"not null;default:3"`
+	FallCount   int             `gorm:"not null;default:2"`
 	Config      json.RawMessage `gorm:"type:json"`
 	CreatedAt   time.Time       `gorm:"not null"`
 	UpdatedAt   time.Time       `gorm:"not null"`

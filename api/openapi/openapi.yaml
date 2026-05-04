@@ -494,7 +494,7 @@ components:
         fall_count:
           type: integer
           minimum: 1
-          description: Consecutive failures to mark backend Down (default 3).
+          description: Consecutive failures to mark backend Down (default 2).
         config:
           type: object
           description: Prober-specific configuration; required for http/https/tcp/tls-hello.

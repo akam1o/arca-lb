@@ -23,6 +23,7 @@ type EtcdTransaction struct {
 	createdBackendIDs  map[string]struct{}
 	vipTupleIndexKeys  map[string]string
 	vipOriginalIndexes map[string]string
+	vipReleasedTuples  map[string]string
 	vipTupleOwners     map[string]string
 	backendIPOwners    map[string]string
 	deletedVIPIDs      map[string]struct{}
@@ -40,10 +41,56 @@ func (ds *EtcdDataStore) BeginTx(ctx context.Context) (datastore.Transaction, er
 		createdBackendIDs:  make(map[string]struct{}),
 		vipTupleIndexKeys:  make(map[string]string),
 		vipOriginalIndexes: make(map[string]string),
+		vipReleasedTuples:  make(map[string]string),
 		vipTupleOwners:     make(map[string]string),
 		backendIPOwners:    make(map[string]string),
 		deletedVIPIDs:      make(map[string]struct{}),
 	}, nil
+}
+
+func (tx *EtcdTransaction) checkVIPTupleAvailable(ctx context.Context, vip *models.VIP) (bool, error) {
+	indexKey := tx.ds.vipTupleIndexKey(vip)
+	needsEmptyIndexCheck := true
+	if _, released := tx.vipReleasedTuples[indexKey]; released {
+		needsEmptyIndexCheck = false
+	}
+
+	if owner, reserved := tx.vipTupleOwners[indexKey]; reserved && owner != vip.ID {
+		return false, datastore.ErrConflict
+	}
+
+	vips, err := tx.ds.ListVIPs(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	for i := range vips {
+		existing := &vips[i]
+		if existing.ID == vip.ID || !sameVIPTuple(existing, vip) {
+			continue
+		}
+		if _, deleted := tx.deletedVIPIDs[existing.ID]; deleted {
+			needsEmptyIndexCheck = false
+			continue
+		}
+		if currentIndexKey, touched := tx.vipTupleIndexKeys[existing.ID]; touched && currentIndexKey != indexKey {
+			needsEmptyIndexCheck = false
+			continue
+		}
+		return false, datastore.ErrConflict
+	}
+
+	return needsEmptyIndexCheck, nil
+}
+
+func (tx *EtcdTransaction) releaseVIPTuple(ownerID, indexKey string) {
+	if indexKey == "" {
+		return
+	}
+	if tx.vipOriginalIndexes[ownerID] == indexKey {
+		tx.vipReleasedTuples[indexKey] = ownerID
+	}
+	delete(tx.vipTupleOwners, indexKey)
 }
 
 // CreateVIP adds a VIP creation operation to the transaction
@@ -74,24 +121,24 @@ func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error
 	if err != nil {
 		return fmt.Errorf("failed to marshal VIP: %w", err)
 	}
-	if err := tx.ds.checkVIPTupleAvailable(ctx, vip); err != nil {
+	needsEmptyIndexCheck, err := tx.checkVIPTupleAvailable(ctx, vip)
+	if err != nil {
 		return fmt.Errorf("failed to verify VIP tuple: %w", err)
 	}
 
 	// Add put operation to transaction
 	key := tx.ds.vipKey(vip.ID)
 	indexKey := tx.ds.vipTupleIndexKey(vip)
-	if owner, reserved := tx.vipTupleOwners[indexKey]; reserved && owner != vip.ID {
-		return datastore.ErrConflict
-	}
 	tx.checks = append(tx.checks, etcdTxnCheck{
 		cmp: clientv3.Compare(clientv3.Version(key), "=", 0),
 		err: datastore.ErrConflict,
 	})
-	tx.checks = append(tx.checks, etcdTxnCheck{
-		cmp: clientv3.Compare(clientv3.Version(indexKey), "=", 0),
-		err: datastore.ErrConflict,
-	})
+	if needsEmptyIndexCheck {
+		tx.checks = append(tx.checks, etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Version(indexKey), "=", 0),
+			err: datastore.ErrConflict,
+		})
+	}
 	tx.ops = append(tx.ops, clientv3.OpPut(key, string(data)), clientv3.OpPut(indexKey, vip.ID))
 	tx.createdVIPIDs[vip.ID] = struct{}{}
 	tx.vipTupleIndexKeys[vip.ID] = indexKey
@@ -229,25 +276,23 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 	if err != nil {
 		return fmt.Errorf("failed to marshal VIP: %w", err)
 	}
-	if err := tx.ds.checkVIPTupleAvailable(ctx, vip); err != nil {
+	needsEmptyIndexCheck, err := tx.checkVIPTupleAvailable(ctx, vip)
+	if err != nil {
 		return fmt.Errorf("failed to verify VIP tuple: %w", err)
 	}
 
 	// Add put operation to transaction
 	tx.ops = append(tx.ops, clientv3.OpPut(key, string(data)))
 	newIndexKey := tx.ds.vipTupleIndexKey(vip)
-	if owner, reserved := tx.vipTupleOwners[newIndexKey]; reserved && owner != vip.ID {
-		return datastore.ErrConflict
-	}
 	if currentIndexKey != newIndexKey {
-		if newIndexKey != originalIndexKey {
+		if newIndexKey != originalIndexKey && needsEmptyIndexCheck {
 			tx.checks = append(tx.checks, etcdTxnCheck{
 				cmp: clientv3.Compare(clientv3.Version(newIndexKey), "=", 0),
 				err: datastore.ErrConflict,
 			})
 		}
 		tx.ops = append(tx.ops, clientv3.OpDelete(currentIndexKey), clientv3.OpPut(newIndexKey, vip.ID))
-		delete(tx.vipTupleOwners, currentIndexKey)
+		tx.releaseVIPTuple(vip.ID, currentIndexKey)
 		tx.vipTupleIndexKeys[vip.ID] = newIndexKey
 		tx.vipTupleOwners[newIndexKey] = vip.ID
 	} else {
@@ -317,7 +362,7 @@ func (tx *EtcdTransaction) DeleteVIP(ctx context.Context, id string) error {
 		clientv3.OpDelete(backendPrefix, clientv3.WithPrefix()),
 		clientv3.OpDelete(indexKey),
 	)
-	delete(tx.vipTupleOwners, indexKey)
+	tx.releaseVIPTuple(id, indexKey)
 	delete(tx.vipTupleIndexKeys, id)
 	delete(tx.vipOriginalIndexes, id)
 	tx.deletedVIPIDs[id] = struct{}{}

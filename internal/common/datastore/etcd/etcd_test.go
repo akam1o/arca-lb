@@ -171,10 +171,19 @@ func TestEtcdDataStore_DeleteVIPDeletesBackendIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, resp.Kvs, 1)
 
+	ipIndexKey := ds.backendIPIndexKey(backend.VIPID, backend.IP)
+	resp, err = ds.client.Get(ctx, ipIndexKey)
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+
 	err = ds.DeleteVIP(ctx, vip.ID)
 	require.NoError(t, err)
 
 	resp, err = ds.client.Get(ctx, indexKey)
+	require.NoError(t, err)
+	assert.Empty(t, resp.Kvs)
+
+	resp, err = ds.client.Get(ctx, ipIndexKey)
 	require.NoError(t, err)
 	assert.Empty(t, resp.Kvs)
 
@@ -357,6 +366,11 @@ func TestEtcdDataStore_BackendIndexCleanupPreservesLiveBackend(t *testing.T) {
 	retrieved, err := ds.GetBackend(ctx, backend.ID)
 	require.NoError(t, err)
 	assert.Equal(t, backend.ID, retrieved.ID)
+
+	ipIndexKey := ds.backendIPIndexKey(backend.VIPID, backend.IP)
+	resp, err := ds.client.Get(ctx, ipIndexKey)
+	require.NoError(t, err)
+	assert.Len(t, resp.Kvs, 1)
 }
 
 func TestEtcdDataStore_InitRevisionDoesNotOverwriteExistingRevision(t *testing.T) {

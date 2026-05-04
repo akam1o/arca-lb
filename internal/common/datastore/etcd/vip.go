@@ -38,15 +38,21 @@ func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal VIP: %w", err)
 	}
+	if err := ds.checkVIPTupleAvailable(ctx, vip); err != nil {
+		return fmt.Errorf("failed to verify VIP tuple: %w", err)
+	}
 
 	// Store in etcd
 	key := ds.vipKey(vip.ID)
+	indexKey := ds.vipTupleIndexKey(vip)
 	err = ds.commitWithRevision(
 		ctx,
 		[]etcdTxnCheck{
 			{cmp: clientv3.Compare(clientv3.Version(key), "=", 0), err: datastore.ErrConflict},
+			{cmp: clientv3.Compare(clientv3.Version(indexKey), "=", 0), err: datastore.ErrConflict},
 		},
 		clientv3.OpPut(key, string(data)),
+		clientv3.OpPut(indexKey, vip.ID),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to put VIP to etcd: %w", err)
@@ -130,6 +136,9 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 	if err != nil {
 		return fmt.Errorf("VIP not found: %w", err)
 	}
+	if err := ds.ensureVIPTupleIndex(ctx, existing); err != nil {
+		return fmt.Errorf("failed to ensure VIP tuple index: %w", err)
+	}
 
 	// Preserve CreatedAt
 	vip.CreatedAt = existing.CreatedAt
@@ -142,15 +151,33 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal VIP: %w", err)
 	}
+	if err := ds.checkVIPTupleAvailable(ctx, vip); err != nil {
+		return fmt.Errorf("failed to verify VIP tuple: %w", err)
+	}
 
 	// Update in etcd only if the VIP still exists.
 	key := ds.vipKey(vip.ID)
+	oldIndexKey := ds.vipTupleIndexKey(existing)
+	newIndexKey := ds.vipTupleIndexKey(vip)
+	checks := []etcdTxnCheck{
+		{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
+		{cmp: clientv3.Compare(clientv3.Version(oldIndexKey), ">", 0), err: datastore.ErrNotFound},
+		{cmp: clientv3.Compare(clientv3.Value(oldIndexKey), "=", vip.ID), err: datastore.ErrNotFound},
+	}
+	ops := []clientv3.Op{clientv3.OpPut(key, string(data))}
+	if oldIndexKey != newIndexKey {
+		checks = append(checks, etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Version(newIndexKey), "=", 0),
+			err: datastore.ErrConflict,
+		})
+		ops = append(ops, clientv3.OpDelete(oldIndexKey), clientv3.OpPut(newIndexKey, vip.ID))
+	} else {
+		ops = append(ops, clientv3.OpPut(newIndexKey, vip.ID))
+	}
 	err = ds.commitWithRevision(
 		ctx,
-		[]etcdTxnCheck{
-			{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
-		},
-		clientv3.OpPut(key, string(data)),
+		checks,
+		ops...,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update VIP in etcd: %w", err)
@@ -161,18 +188,35 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 // DeleteVIP deletes a VIP and its associated backends from etcd
 func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
+	vip, err := ds.GetVIP(ctx, id)
+	if err != nil {
+		if errors.Is(err, datastore.ErrNotFound) {
+			if cleanupErr := ds.deleteBackendIndexesForVIP(ctx, id); cleanupErr != nil {
+				return cleanupErr
+			}
+		}
+		return fmt.Errorf("failed to delete VIP from etcd: %w", err)
+	}
+	if err := ds.ensureVIPTupleIndex(ctx, vip); err != nil {
+		return fmt.Errorf("failed to ensure VIP tuple index: %w", err)
+	}
+
 	vipKey := ds.vipKey(id)
 	backendPrefix := ds.backendPrefix(id)
+	indexKey := ds.vipTupleIndexKey(vip)
 
 	ops := []clientv3.Op{
 		clientv3.OpDelete(vipKey),
 		clientv3.OpDelete(backendPrefix, clientv3.WithPrefix()),
+		clientv3.OpDelete(indexKey),
 	}
 
-	err := ds.commitWithRevision(
+	err = ds.commitWithRevision(
 		ctx,
 		[]etcdTxnCheck{
 			{cmp: clientv3.Compare(clientv3.Version(vipKey), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.Version(indexKey), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.Value(indexKey), "=", id), err: datastore.ErrNotFound},
 		},
 		ops...,
 	)

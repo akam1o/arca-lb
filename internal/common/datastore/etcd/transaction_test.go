@@ -24,19 +24,19 @@ func TestCompactEtcdWriteOpsKeepsFinalWritePerKey(t *testing.T) {
 	assertOpPut(t, got[2], "/arca-lb/vip-index/TCP/81/192.0.2.10", "vip-1")
 }
 
-func TestCompactEtcdWriteOpsPreservesLastWritePosition(t *testing.T) {
+func TestCompactEtcdWriteOpsDropsWritesCoveredByLaterRangeDelete(t *testing.T) {
 	ops := []clientv3.Op{
 		clientv3.OpPut("/arca-lb/backends/vip-1/backend-1", "stale"),
+		clientv3.OpPut("/arca-lb/backend-index/backend-1", "vip-1"),
 		clientv3.OpDelete("/arca-lb/backends/vip-1/", clientv3.WithPrefix()),
-		clientv3.OpPut("/arca-lb/backends/vip-1/backend-1", "final"),
 	}
 
 	got := compactEtcdWriteOps(ops)
 	if len(got) != 2 {
 		t.Fatalf("len(compactEtcdWriteOps) = %d, want 2", len(got))
 	}
-	assertOpDelete(t, got[0], "/arca-lb/backends/vip-1/")
-	assertOpPut(t, got[1], "/arca-lb/backends/vip-1/backend-1", "final")
+	assertOpPut(t, got[0], "/arca-lb/backend-index/backend-1", "vip-1")
+	assertOpDelete(t, got[1], "/arca-lb/backends/vip-1/")
 }
 
 func assertOpPut(t *testing.T, op clientv3.Op, key, value string) {

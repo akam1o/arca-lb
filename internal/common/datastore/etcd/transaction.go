@@ -108,14 +108,13 @@ func compactEtcdWriteOps(ops []clientv3.Op) []clientv3.Op {
 		}
 		lastWriteIndexes[etcdWriteOpKeyFor(op)] = i
 	}
-	if len(lastWriteIndexes) == len(ops) {
-		return ops
-	}
-
 	compacted := make([]clientv3.Op, 0, len(ops))
 	for i, op := range ops {
 		if !isEtcdWriteOp(op) {
 			compacted = append(compacted, op)
+			continue
+		}
+		if isCoveredByLaterRangeDelete(ops, i, op) {
 			continue
 		}
 		if lastWriteIndexes[etcdWriteOpKeyFor(op)] == i {
@@ -124,6 +123,31 @@ func compactEtcdWriteOps(ops []clientv3.Op) []clientv3.Op {
 	}
 
 	return compacted
+}
+
+func isCoveredByLaterRangeDelete(ops []clientv3.Op, currentIndex int, op clientv3.Op) bool {
+	for i := currentIndex + 1; i < len(ops); i++ {
+		later := ops[i]
+		if !later.IsDelete() || len(later.RangeBytes()) == 0 {
+			continue
+		}
+		if etcdDeleteRangeCoversOp(later, op) {
+			return true
+		}
+	}
+	return false
+}
+
+func etcdDeleteRangeCoversOp(deleteOp, op clientv3.Op) bool {
+	start := string(deleteOp.KeyBytes())
+	end := string(deleteOp.RangeBytes())
+	key := string(op.KeyBytes())
+	rangeEnd := string(op.RangeBytes())
+
+	if rangeEnd == "" {
+		return key >= start && key < end
+	}
+	return key >= start && rangeEnd <= end
 }
 
 func isEtcdWriteOp(op clientv3.Op) bool {

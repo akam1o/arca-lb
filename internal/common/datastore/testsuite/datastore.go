@@ -618,6 +618,34 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	err = ds.DeleteBackend(ctx, committedBackend.ID)
 	require.NoError(t, err)
 
+	addThenDeleteVIP := &models.VIP{
+		VIP:      "192.168.1.151",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, addThenDeleteVIP)
+	require.NoError(t, err)
+
+	txAddBackendThenDeleteVIP, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	transientBackend := &models.Backend{
+		VIPID:  addThenDeleteVIP.ID,
+		IP:     "10.0.1.20",
+		Weight: 1,
+	}
+	err = txAddBackendThenDeleteVIP.AddBackend(ctx, transientBackend)
+	require.NoError(t, err)
+	err = txAddBackendThenDeleteVIP.DeleteVIP(ctx, addThenDeleteVIP.ID)
+	require.NoError(t, err)
+	err = txAddBackendThenDeleteVIP.Commit()
+	require.NoError(t, err)
+
+	_, err = ds.GetVIP(ctx, addThenDeleteVIP.ID)
+	require.ErrorIs(t, err, datastore.ErrNotFound)
+	_, err = ds.GetBackend(ctx, transientBackend.ID)
+	require.ErrorIs(t, err, datastore.ErrNotFound)
+
 	// A transactional backend still requires an existing parent VIP.
 	txMissingBackend, err := ds.BeginTx(ctx)
 	require.NoError(t, err)

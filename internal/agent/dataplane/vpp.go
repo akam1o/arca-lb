@@ -427,7 +427,11 @@ func (v *VPP) NeedsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.Virtua
 		}
 		return false, err
 	}
-	return !v.vipDetailsMatchDesired(vip, detail), nil
+	matchesDesired := v.vipDetailsMatchDesired(vip, detail)
+	if !matchesDesired {
+		v.markVIPNeedsVerificationLocked(key)
+	}
+	return !matchesDesired, nil
 }
 
 func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error {

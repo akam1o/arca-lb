@@ -35,6 +35,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "Path to agent configuration file")
 	flag.Parse()
@@ -50,7 +54,7 @@ func main() {
 	cfg, err := agentconfig.LoadV2Config(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Setup logging
@@ -75,7 +79,7 @@ func main() {
 	})
 	if err != nil {
 		logger.Error("failed to setup OpenTelemetry", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() {
 		otelShutdownCtx, otelShutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -89,7 +93,7 @@ func main() {
 	st, err := store.Open(cfg.Agent.StorePath)
 	if err != nil {
 		logger.Error("failed to open local store", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() {
 		if err := st.Close(); err != nil {
@@ -101,7 +105,7 @@ func main() {
 	dp, err := dataplane.New(cfg.DataPlane.Type, cfg.DataPlane.VPP)
 	if err != nil {
 		logger.Error("failed to create data plane", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() {
 		if err := dp.Close(); err != nil {
@@ -119,7 +123,7 @@ func main() {
 		})
 		if err != nil {
 			logger.Error("failed to create FRR router", "error", err)
-			os.Exit(1)
+			return 1
 		}
 	} else {
 		router = routing.NewNoop()
@@ -137,7 +141,7 @@ func main() {
 	}, logger)
 	if err != nil {
 		logger.Error("failed to create status updater", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	var rolloutCoordinator reconciler.RolloutCoordinator
@@ -151,7 +155,7 @@ func main() {
 		}, logger)
 		if err != nil {
 			logger.Error("failed to create rollout coordinator", "error", err)
-			os.Exit(1)
+			return 1
 		}
 		logger.Info("rollout coordinator enabled",
 			"lease_namespace", cfg.Rollout.LeaseNamespace,
@@ -184,7 +188,7 @@ func main() {
 	// Start health check engine
 	if err := hcEngine.Start(ctx); err != nil {
 		logger.Error("failed to start health check engine", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Start reconciler
@@ -208,7 +212,7 @@ func main() {
 	w, err := watcher.New(watcherCfg, handler, logger)
 	if err != nil {
 		logger.Error("failed to create watcher", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Start HTTP server for the container healthcheck and optional metrics before
@@ -237,7 +241,7 @@ func main() {
 	case err := <-watcherErrCh:
 		if err != nil {
 			logger.Error("watcher exited before initial sync", "error", err)
-			os.Exit(1)
+			return 1
 		}
 	case <-watcherSyncedCh:
 	}
@@ -246,12 +250,14 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	exitCode := 0
 	select {
 	case sig := <-sigCh:
 		logger.Info("received signal, shutting down", "signal", sig)
 	case err := <-watcherErrCh:
 		if err != nil {
 			logger.Error("watcher exited with error", "error", err)
+			exitCode = 1
 		}
 	}
 
@@ -267,6 +273,7 @@ func main() {
 	hcEngine.Stop()
 
 	logger.Info("agent shutdown complete")
+	return exitCode
 }
 
 func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {

@@ -646,6 +646,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             name, pool_id, "member create", mutate, initial_vip=vip
         ):
             return
+        self._push_member_active_status(vip, pool_id, [m])
         if is_draining:
             LOG.info("Marked member %s as DRAINING on VirtualIP %s",
                      address, name)
@@ -782,6 +783,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             name, pool_id, "member update", mutate, initial_vip=vip
         ):
             return
+        self._push_member_active_status(vip, pool_id, [m])
 
     def member_batch_update(self, pool_id, members):
         """Replace all members of a pool at once."""
@@ -849,6 +851,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             name, pool_id, "member batch update", mutate, initial_vip=vip
         ):
             return
+        self._push_member_active_status(vip, pool_id, member_dicts)
         self._push_deleted_member_statuses(
             {"metadata": {"annotations": status_annotations}},
             deleted_member_ids,
@@ -1137,6 +1140,22 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self._push_resource_active_status(
             f"pool/{pool_id}",
             lb_id=lb_id,
+            active_pool_ids=[pool_id],
+            active_member_ids=member_ids,
+        )
+
+    def _push_member_active_status(self, vip, pool_id, members):
+        annotations = vip.get("metadata", {}).get("annotations", {}) or {}
+        member_ids = [
+            self._member_id(self._as_dict(member))
+            for member in members
+        ]
+        self._push_resource_active_status(
+            vip.get("metadata", {}).get("name"),
+            lb_id=annotations.get(constants.ANNOTATION_LB_ID),
+            active_listener_ids=[annotations.get(
+                constants.ANNOTATION_LISTENER_ID
+            )],
             active_pool_ids=[pool_id],
             active_member_ids=member_ids,
         )

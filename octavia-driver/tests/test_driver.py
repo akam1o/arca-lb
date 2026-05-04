@@ -1502,6 +1502,46 @@ class TestDriverLifecycle(unittest.TestCase):
             {"member-1111": "10.0.1.1"},
         )
 
+    def test_member_create_reports_active_status(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": []},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+            "protocol_port": 80,
+            "weight": 100,
+        })
+        self.driver.member_create(member)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["members"], [{
+            "id": "member-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+
     def test_member_create_retries_conflict_with_latest_backends(self):
         existing_vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",
@@ -2181,6 +2221,49 @@ class TestDriverLifecycle(unittest.TestCase):
             constants.ANNOTATION_DRAINING_MEMBER_IDS, annotations
         )
 
+    def test_member_update_reports_active_status(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": [{"address": "10.0.1.1", "weight": 100}]},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+                constants.ANNOTATION_MEMBER_MAP: json.dumps({
+                    "member-1111": "10.0.1.1",
+                }),
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "10.0.1.1",
+            "protocol_port": 80,
+            "weight": 25,
+        })
+        self.driver.member_update(FakeObj({}), member)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["members"], [{
+            "id": "member-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+
     def test_member_update_rejects_protocol_port_mismatch(self):
         from octavia_lib.api.drivers import exceptions as driver_exc
         existing_vip = _make_vip(
@@ -2321,6 +2404,62 @@ class TestDriverLifecycle(unittest.TestCase):
             "monitorAddress": "192.0.2.10",
             "weight": 100,
         }])
+
+    def test_member_batch_update_reports_active_statuses(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "backends": []},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        members = [
+            FakeObj({
+                "member_id": "member-1111",
+                "pool_id": "pool-1111",
+                "address": "10.0.1.1",
+                "protocol_port": 80,
+                "weight": 100,
+            }),
+            FakeObj({
+                "member_id": "member-2222",
+                "pool_id": "pool-1111",
+                "address": "10.0.1.2",
+                "protocol_port": 80,
+                "weight": 100,
+            }),
+        ]
+
+        self.driver.member_batch_update("pool-1111", members)
+
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["members"], [
+            {
+                "id": "member-1111",
+                "provisioning_status": "ACTIVE",
+            },
+            {
+                "id": "member-2222",
+                "provisioning_status": "ACTIVE",
+            },
+        ])
 
     def test_member_batch_update_keeps_draining_members_out_of_backends(self):
         existing_vip = _make_vip(

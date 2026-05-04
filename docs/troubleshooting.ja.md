@@ -86,8 +86,8 @@
 
 1. **Watcher がイベントを受信していない**
    - Agent ログで watch エラーを確認。
-   - `kubernetes.watchNamespaces` の設定を確認。
-   - `kubernetes.labelSelector` の設定を確認。
+   - `kubernetes.namespace` の設定を確認。
+   - `kubernetes.resyncInterval` の設定を確認。
 
 2. **Reconciler のエラー**
    - Agent ログでリコンシリエーションエラーを確認。

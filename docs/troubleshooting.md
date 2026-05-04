@@ -86,8 +86,8 @@ This document covers common arca-lb issues and how to resolve them.
 
 1. **Watcher not receiving events**
    - Check Agent logs for watch errors.
-   - Verify `kubernetes.watchNamespaces` config.
-   - Verify `kubernetes.labelSelector` config.
+   - Verify `kubernetes.namespace` config.
+   - Verify `kubernetes.resyncInterval` config.
 
 2. **Reconciler errors**
    - Check Agent logs for reconciliation errors.

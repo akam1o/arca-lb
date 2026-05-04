@@ -31,13 +31,31 @@ func NewConfigSyncService(ds datastore.DataStore, logger *logrus.Logger) *Config
 
 // GetConfig returns the current configuration snapshot
 func (s *ConfigSyncService) GetConfig(ctx context.Context, req *pb.GetConfigRequest) (*pb.GetConfigResponse, error) {
-	s.logger.Info("GetConfig called")
+	s.logger.WithField("current_revision", req.CurrentRevision).Info("GetConfig called")
+
+	revision, err := s.datastore.GetRevision(ctx)
+	if err != nil {
+		s.logger.WithError(err).Error("Failed to get revision")
+		return nil, status.Errorf(codes.Internal, "failed to get revision: %v", err)
+	}
+
+	if req.CurrentRevision > 0 && req.CurrentRevision == revision {
+		return &pb.GetConfigResponse{
+			Unchanged: true,
+		}, nil
+	}
 
 	// Get configuration from datastore
 	config, err := s.datastore.GetConfig(ctx)
 	if err != nil {
 		s.logger.WithError(err).Error("Failed to get config")
 		return nil, status.Errorf(codes.Internal, "failed to get config: %v", err)
+	}
+
+	if req.CurrentRevision > 0 && req.CurrentRevision == config.Revision {
+		return &pb.GetConfigResponse{
+			Unchanged: true,
+		}, nil
 	}
 
 	// Convert to protobuf

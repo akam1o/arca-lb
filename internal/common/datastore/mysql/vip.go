@@ -88,7 +88,7 @@ func (ds *MySQLDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error 
 	}
 
 	// Create VIP in transaction
-	err := ds.db.Transaction(func(tx *gorm.DB) error {
+	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Create VIP
 		if err := tx.Create(&vipRecord).Error; err != nil {
 			return normalizeError(fmt.Errorf("failed to create VIP: %w", err))
@@ -150,8 +150,10 @@ func (ds *MySQLDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error 
 
 // GetVIP retrieves a VIP by ID from MySQL
 func (ds *MySQLDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, error) {
+	db := ds.db.WithContext(ctx)
+
 	var vipRecord VIPRecord
-	if err := ds.db.Where("id = ?", id).First(&vipRecord).Error; err != nil {
+	if err := db.Where("id = ?", id).First(&vipRecord).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, datastore.ErrNotFound
 		}
@@ -160,7 +162,7 @@ func (ds *MySQLDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, e
 
 	// Load health check
 	var hcRecord HealthCheckRecord
-	hcErr := ds.db.Where("vip_id = ?", id).First(&hcRecord).Error
+	hcErr := db.Where("vip_id = ?", id).First(&hcRecord).Error
 
 	vip := &models.VIP{
 		ID:        vipRecord.ID,
@@ -207,8 +209,10 @@ func (ds *MySQLDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, e
 
 // ListVIPs retrieves all VIPs from MySQL
 func (ds *MySQLDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
+	db := ds.db.WithContext(ctx)
+
 	var vipRecords []VIPRecord
-	if err := ds.db.Find(&vipRecords).Error; err != nil {
+	if err := db.Find(&vipRecords).Error; err != nil {
 		return nil, fmt.Errorf("failed to list VIPs: %w", err)
 	}
 
@@ -230,7 +234,7 @@ func (ds *MySQLDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
 
 		// Load health check
 		var hcRecord HealthCheckRecord
-		if err := ds.db.Where("vip_id = ?", vipRecord.ID).First(&hcRecord).Error; err == nil {
+		if err := db.Where("vip_id = ?", vipRecord.ID).First(&hcRecord).Error; err == nil {
 			var hcConfig models.HCConfig
 			if len(hcRecord.Config) > 0 {
 				if err := json.Unmarshal(hcRecord.Config, &hcConfig); err != nil {
@@ -347,7 +351,7 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 	}
 
 	// Update VIP in transaction
-	err = ds.db.Transaction(func(tx *gorm.DB) error {
+	err = ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Update VIP
 		result := tx.Model(&VIPRecord{}).
 			Where("id = ?", vip.ID).
@@ -446,7 +450,7 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 // DeleteVIP deletes a VIP and its associated backends from MySQL
 func (ds *MySQLDataStore) DeleteVIP(ctx context.Context, id string) error {
 	// Delete VIP in transaction (CASCADE will handle backends and health checks)
-	err := ds.db.Transaction(func(tx *gorm.DB) error {
+	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Delete VIP (CASCADE will delete health checks and backends)
 		result := tx.Where("id = ?", id).Delete(&VIPRecord{})
 		if result.Error != nil {

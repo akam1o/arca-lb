@@ -31,7 +31,7 @@ type MySQLTransaction struct {
 
 // BeginTx starts a new transaction
 func (ds *MySQLDataStore) BeginTx(ctx context.Context) (datastore.Transaction, error) {
-	tx := ds.db.Begin()
+	tx := ds.db.WithContext(ctx).Begin()
 	if tx.Error != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", tx.Error)
 	}
@@ -46,6 +46,8 @@ func (ds *MySQLDataStore) BeginTx(ctx context.Context) (datastore.Transaction, e
 
 // CreateVIP adds a VIP creation operation to the transaction
 func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	db := tx.tx.WithContext(ctx)
+
 	// Generate UUID if not set
 	if vip.ID == "" {
 		vip.ID = uuid.New().String()
@@ -82,7 +84,7 @@ func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) erro
 	}
 
 	// Create VIP
-	if err := tx.tx.Create(&vipRecord).Error; err != nil {
+	if err := db.Create(&vipRecord).Error; err != nil {
 		return normalizeError(fmt.Errorf("failed to create VIP: %w", err))
 	}
 
@@ -113,7 +115,7 @@ func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) erro
 			UpdatedAt:   now,
 		}
 
-		if err := tx.tx.Create(&hcRecord).Error; err != nil {
+		if err := db.Create(&hcRecord).Error; err != nil {
 			return normalizeError(fmt.Errorf("failed to create health check: %w", err))
 		}
 
@@ -126,6 +128,8 @@ func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) erro
 
 // AddBackend adds a backend creation operation to the transaction
 func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Backend) error {
+	db := tx.tx.WithContext(ctx)
+
 	// Generate UUID if not set
 	if backend.ID == "" {
 		backend.ID = uuid.New().String()
@@ -140,7 +144,7 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 
 	// Verify VIP exists
 	var count int64
-	if err := tx.tx.Table("vips").Where("id = ?", backend.VIPID).Count(&count).Error; err != nil {
+	if err := db.Table("vips").Where("id = ?", backend.VIPID).Count(&count).Error; err != nil {
 		return fmt.Errorf("failed to verify VIP: %w", err)
 	}
 	if count == 0 {
@@ -158,7 +162,7 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 	}
 
 	// Create backend
-	if err := tx.tx.Create(&backendRecord).Error; err != nil {
+	if err := db.Create(&backendRecord).Error; err != nil {
 		return normalizeError(fmt.Errorf("failed to create backend: %w", err))
 	}
 
@@ -173,13 +177,15 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 
 // UpdateVIP adds a VIP update operation to the transaction
 func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error {
+	db := tx.tx.WithContext(ctx)
+
 	if vip.ID == "" {
 		return fmt.Errorf("VIP ID is required")
 	}
 
 	// Check if VIP exists
 	var existingRecord VIPRecord
-	if err := tx.tx.Where("id = ?", vip.ID).First(&existingRecord).Error; err != nil {
+	if err := db.Where("id = ?", vip.ID).First(&existingRecord).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return datastore.ErrNotFound
 		}
@@ -190,7 +196,7 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 	vip.CreatedAt = existingRecord.CreatedAt
 
 	// Update VIP
-	result := tx.tx.Model(&VIPRecord{}).
+	result := db.Model(&VIPRecord{}).
 		Where("id = ?", vip.ID).
 		Updates(vipUpdateValues(vip, existingRecord))
 	if result.Error != nil {
@@ -209,7 +215,7 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 
 		// Check if health check already exists
 		var existingHC HealthCheckRecord
-		err = tx.tx.Where("vip_id = ?", vip.ID).First(&existingHC).Error
+		err = db.Where("vip_id = ?", vip.ID).First(&existingHC).Error
 		if err == nil {
 			// Update existing - use existing ID
 			hcRecord := HealthCheckRecord{
@@ -224,7 +230,7 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 				CreatedAt:   existingHC.CreatedAt,
 				UpdatedAt:   time.Now(),
 			}
-			if err := tx.tx.Model(&HealthCheckRecord{}).Where("vip_id = ?", vip.ID).Updates(&hcRecord).Error; err != nil {
+			if err := db.Model(&HealthCheckRecord{}).Where("vip_id = ?", vip.ID).Updates(&hcRecord).Error; err != nil {
 				return normalizeError(fmt.Errorf("failed to update health check: %w", err))
 			}
 			vip.HealthCheck.ID = existingHC.ID
@@ -246,7 +252,7 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 				CreatedAt:   time.Now(),
 				UpdatedAt:   time.Now(),
 			}
-			if err := tx.tx.Create(&hcRecord).Error; err != nil {
+			if err := db.Create(&hcRecord).Error; err != nil {
 				return normalizeError(fmt.Errorf("failed to create health check: %w", err))
 			}
 			vip.HealthCheck.ID = hcID
@@ -258,7 +264,7 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 		vip.HealthCheck.VIPID = vip.ID
 	} else {
 		// Delete existing health check if vip.HealthCheck is nil
-		if err := tx.tx.Where("vip_id = ?", vip.ID).Delete(&HealthCheckRecord{}).Error; err != nil {
+		if err := db.Where("vip_id = ?", vip.ID).Delete(&HealthCheckRecord{}).Error; err != nil {
 			return normalizeError(fmt.Errorf("failed to delete health check: %w", err))
 		}
 	}
@@ -274,8 +280,10 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 
 // DeleteVIP adds a VIP deletion operation to the transaction
 func (tx *MySQLTransaction) DeleteVIP(ctx context.Context, id string) error {
+	db := tx.tx.WithContext(ctx)
+
 	// Delete VIP (CASCADE will delete health checks and backends)
-	result := tx.tx.Where("id = ?", id).Delete(&VIPRecord{})
+	result := db.Where("id = ?", id).Delete(&VIPRecord{})
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete VIP: %w", result.Error)
 	}
@@ -296,17 +304,19 @@ func (tx *MySQLTransaction) DeleteVIP(ctx context.Context, id string) error {
 
 // Commit commits the transaction
 func (tx *MySQLTransaction) Commit() error {
+	db := tx.tx.WithContext(tx.ctx)
+
 	// Only increment revision and log change if operations were performed
 	if !tx.hasOps {
 		// No operations, just commit
-		if err := tx.tx.Commit().Error; err != nil {
+		if err := db.Commit().Error; err != nil {
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
 		return nil
 	}
 
 	// Increment revision first
-	newRevision, err := tx.ds.incrementRevisionInTx(tx.tx)
+	newRevision, err := tx.ds.incrementRevisionInTx(db)
 	if err != nil {
 		tx.tx.Rollback()
 		return fmt.Errorf("failed to increment revision: %w", err)
@@ -314,14 +324,14 @@ func (tx *MySQLTransaction) Commit() error {
 
 	// Log all change events with the new revision
 	for _, change := range tx.changes {
-		if err := tx.ds.logChangeWithRevision(tx.tx, change.EventType, change.VIPID, change.BackendID, newRevision); err != nil {
+		if err := tx.ds.logChangeWithRevision(db, change.EventType, change.VIPID, change.BackendID, newRevision); err != nil {
 			tx.tx.Rollback()
 			return fmt.Errorf("failed to log change: %w", err)
 		}
 	}
 
 	// Commit transaction
-	if err := tx.tx.Commit().Error; err != nil {
+	if err := db.Commit().Error; err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
@@ -330,7 +340,7 @@ func (tx *MySQLTransaction) Commit() error {
 
 // Rollback rolls back the transaction
 func (tx *MySQLTransaction) Rollback() error {
-	if err := tx.tx.Rollback().Error; err != nil {
+	if err := tx.tx.WithContext(tx.ctx).Rollback().Error; err != nil {
 		return fmt.Errorf("failed to rollback transaction: %w", err)
 	}
 	return nil

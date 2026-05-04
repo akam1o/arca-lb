@@ -383,6 +383,8 @@ func TestCreateVIP(t *testing.T) {
 					assert.Equal(t, models.HCTypeTLSHello, vip.HealthCheck.Type)
 					assert.Equal(t, 10, vip.HealthCheck.IntervalSec)
 					assert.Equal(t, 5, vip.HealthCheck.TimeoutSec)
+					assert.Equal(t, 3, vip.HealthCheck.RiseCount)
+					assert.Equal(t, 2, vip.HealthCheck.FallCount)
 				}
 			}
 		})

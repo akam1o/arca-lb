@@ -67,13 +67,13 @@ func validateHealthCheckRequest(req *HealthCheckRequest) error {
 
 	hcType := models.HCType(strings.ToLower(req.Type))
 	switch hcType {
-	case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP, models.HCTypePing:
+	case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP, models.HCTypePing, models.HCTypeTLSHello:
 	default:
 		return badRequestError("invalid health check type")
 	}
 
 	switch hcType {
-	case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP:
+	case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP, models.HCTypeTLSHello:
 		if req.Config == nil {
 			return badRequestError("health_check.config is required for this type")
 		}

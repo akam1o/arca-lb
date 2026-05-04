@@ -319,6 +319,18 @@ func TestHealthCheck_Validation(t *testing.T) {
 			wantError: false,
 		},
 		{
+			name: "valid TLS hello health check",
+			healthCheck: HealthCheck{
+				VIPID:       "vip-1",
+				Type:        HCTypeTLSHello,
+				IntervalSec: 10,
+				TimeoutSec:  5,
+				RiseCount:   3,
+				FallCount:   3,
+			},
+			wantError: false,
+		},
+		{
 			name: "valid Ping health check",
 			healthCheck: HealthCheck{
 				VIPID:       "vip-1",
@@ -512,4 +524,5 @@ func TestHCType_Constants(t *testing.T) {
 	assert.Equal(t, HCType("https"), HCTypeHTTPS)
 	assert.Equal(t, HCType("tcp"), HCTypeTCP)
 	assert.Equal(t, HCType("ping"), HCTypePing)
+	assert.Equal(t, HCType("tls-hello"), HCTypeTLSHello)
 }

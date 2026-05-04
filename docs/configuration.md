@@ -180,7 +180,7 @@ spec:
     - address: 10.0.1.2
       weight: 1
   healthCheck:
-    type: http               # http, https, tcp, ping
+    type: http               # http, https, tcp, ping, tls-hello
     intervalSeconds: 5
     timeoutSeconds: 3
     riseCount: 3
@@ -215,7 +215,7 @@ spec:
 
 | Field | Description | Required |
 |-------|-------------|----------|
-| `type` | Probe type (http, https, tcp, ping) | Yes |
+| `type` | Probe type (http, https, tcp, ping, tls-hello) | Yes |
 | `intervalSeconds` | Probe interval in seconds | No (default: 5) |
 | `timeoutSeconds` | Probe timeout in seconds | No (default: 3) |
 | `riseCount` | Consecutive successes to mark healthy | No (default: 3) |

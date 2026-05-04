@@ -171,7 +171,7 @@ spec:
     - address: 10.0.1.2
       weight: 1
   healthCheck:
-    type: http               # http, https, tcp, ping
+    type: http               # http, https, tcp, ping, tls-hello
     intervalSeconds: 5
     timeoutSeconds: 3
     riseCount: 3
@@ -206,7 +206,7 @@ spec:
 
 | フィールド | 説明 | 必須 |
 |----------|------|------|
-| `type` | プローブタイプ (http, https, tcp, ping) | はい |
+| `type` | プローブタイプ (http, https, tcp, ping, tls-hello) | はい |
 | `intervalSeconds` | プローブ間隔（秒） | いいえ (デフォルト: 5) |
 | `timeoutSeconds` | プローブタイムアウト（秒） | いいえ (デフォルト: 3) |
 | `riseCount` | 健全と判定する連続成功回数 | いいえ (デフォルト: 3) |

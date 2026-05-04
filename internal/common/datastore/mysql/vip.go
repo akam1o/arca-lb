@@ -35,7 +35,7 @@ func (VIPRecord) TableName() string {
 type HealthCheckRecord struct {
 	ID          string          `gorm:"primaryKey;type:char(36)"`
 	VIPID       string          `gorm:"type:char(36);not null;uniqueIndex"`
-	Type        string          `gorm:"type:enum('http','https','tcp','ping');not null"`
+	Type        string          `gorm:"type:enum('http','https','tcp','ping','tls-hello');not null"`
 	IntervalSec int             `gorm:"not null;default:5"`
 	TimeoutSec  int             `gorm:"not null;default:3"`
 	RiseCount   int             `gorm:"not null;default:3"`

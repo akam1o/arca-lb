@@ -328,6 +328,8 @@ func (s *ConfigSyncService) convertHCType(hcType models.HCType) pb.HCType {
 		return pb.HCType_HC_TYPE_TCP
 	case models.HCTypePing:
 		return pb.HCType_HC_TYPE_PING
+	case models.HCTypeTLSHello:
+		return pb.HCType_HC_TYPE_TLS_HELLO
 	default:
 		return pb.HCType_HC_TYPE_UNSPECIFIED
 	}

@@ -670,6 +670,8 @@ func (c *Client) convertProtoHCType(hcType pb.HCType) models.HCType {
 		return models.HCTypeTCP
 	case pb.HCType_HC_TYPE_PING:
 		return models.HCTypePing
+	case pb.HCType_HC_TYPE_TLS_HELLO:
+		return models.HCTypeTLSHello
 	default:
 		return models.HCTypeTCP
 	}

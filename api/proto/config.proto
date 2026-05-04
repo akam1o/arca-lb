@@ -37,6 +37,7 @@ enum HCType {
   HC_TYPE_HTTPS = 2;
   HC_TYPE_TCP = 3;
   HC_TYPE_PING = 4;
+  HC_TYPE_TLS_HELLO = 5;
 }
 
 // VIP represents a Virtual IP configuration
@@ -63,7 +64,7 @@ message HealthCheck {
   int32 fall_count = 7;
   // config is a JSON string containing type-specific configuration
   // For HTTP/HTTPS: {"path": "/health", "method": "GET", "headers": {...}, "skip_verify": false}
-  // For TCP: {"port": 80}
+  // For TCP/TLS hello: {"port": 80}
   // For Ping: {}
   string config = 8;
   google.protobuf.Timestamp created_at = 9;

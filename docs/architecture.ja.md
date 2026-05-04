@@ -74,7 +74,7 @@ Agent は各ロードバランサーノードに DaemonSet として配置され
 2. **VIP 別 Reconciler**: VIP ごとに goroutine を生成し、イベント受信時に desired state との差分を計算して DataPlane + Router を同期
 3. **DataPlane (インターフェース)**: VPP 制御を抽象化。実装: `VPPDataPlane` (本番), `NoopDataPlane` (テスト)
 4. **Router (インターフェース)**: FRR/BGP 経路管理を抽象化。実装: `FRRRouter` (本番), `NoopRouter` (テスト)
-5. **HealthCheck Engine**: VIP ごとにプローブ (HTTP/HTTPS, TCP, Ping) を実行し、状態遷移時にコールバックで Reconcile をトリガー
+5. **HealthCheck Engine**: VIP ごとにプローブ (HTTP/HTTPS, TCP, Ping, TLS hello) を実行し、状態遷移時にコールバックで Reconcile をトリガー
 6. **bbolt Store**: ローカルの組み込み KVS で VIP 状態とヘルスチェック結果をキャッシュ。K8s API 接続断時のフォールバックを提供
 7. **Metrics / Telemetry**: Prometheus エンドポイント + OpenTelemetry (OTLP) によるトレースとメトリクス
 

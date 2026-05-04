@@ -79,6 +79,38 @@ func TestCreateVIP(t *testing.T) {
 			expectedStatus: http.StatusCreated,
 		},
 		{
+			name: "with tls hello health check",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.102",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "tls-hello",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"port": 8443,
+					},
+				},
+			},
+			expectedStatus: http.StatusCreated,
+		},
+		{
+			name: "tls hello health check without port",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.102",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "tls-hello",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config":   map[string]interface{}{},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "invalid health check config",
 			requestBody: map[string]interface{}{
 				"vip":      "192.168.1.101",
@@ -345,6 +377,12 @@ func TestCreateVIP(t *testing.T) {
 					assert.Equal(t, 5, vip.HealthCheck.TimeoutSec)
 					assert.Equal(t, 2, vip.HealthCheck.RiseCount)
 					assert.Equal(t, 4, vip.HealthCheck.FallCount)
+				}
+				if tt.name == "with tls hello health check" {
+					require.NotNil(t, vip.HealthCheck)
+					assert.Equal(t, models.HCTypeTLSHello, vip.HealthCheck.Type)
+					assert.Equal(t, 10, vip.HealthCheck.IntervalSec)
+					assert.Equal(t, 5, vip.HealthCheck.TimeoutSec)
 				}
 			}
 		})

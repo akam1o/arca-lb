@@ -13,7 +13,7 @@
 - **Operator pattern**: Kubernetes Operator handles validation, status, and lifecycle
 - **High-performance data plane**: Wire-rate packet processing powered by the VPP L4 LB plugin
 - **Pluggable interfaces**: DataPlane and Router interfaces for testability and extension
-- **Flexible health checks**: Supports HTTP/HTTPS, TCP, and Ping probes with per-VIP configuration
+- **Flexible health checks**: Supports HTTP/HTTPS, TCP, Ping, and TLS hello probes with per-VIP configuration
 - **Automatic route announcements**: BGP advertisements through FRR integration
 - **Scalable**: One Agent per LB node, deployed as a DaemonSet
 - **Observable**: OpenTelemetry traces/metrics, Prometheus endpoint, structured logging

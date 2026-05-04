@@ -154,21 +154,36 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if admin_state is False:
             # Remove all backends to effectively disable.
             for vip in vips:
-                name = vip["metadata"]["name"]
-
-                def mutate(_current_vip, spec, _annotations):
-                    spec["backends"] = []
-
-                self._update_virtualip_with_retry(
-                    name, mutate, initial_vip=vip
+                self._set_virtualip_admin_state(
+                    vip,
+                    constants.ANNOTATION_LB_ADMIN_STATE_UP,
+                    admin_state,
+                    clear_backends=True,
                 )
             LOG.info("Loadbalancer %s disabled, cleared backends from %d VIPs",
                      lb_id, len(vips))
         elif admin_state is True:
             restored = 0
+
+            def prepare_restore_update(_current_spec, current_annotations):
+                self._set_admin_state_annotation(
+                    current_annotations,
+                    constants.ANNOTATION_LB_ADMIN_STATE_UP,
+                    admin_state,
+                )
+
             for vip in vips:
                 try:
-                    restored += self._restore_virtualip_backends([vip])
+                    if self._virtualip_pool_id(vip):
+                        restored += self._restore_virtualip_backends(
+                            [vip], prepare_update=prepare_restore_update
+                        )
+                    else:
+                        self._set_virtualip_admin_state(
+                            vip,
+                            constants.ANNOTATION_LB_ADMIN_STATE_UP,
+                            admin_state,
+                        )
                 except Exception:
                     metadata = vip.get("metadata", {})
                     annotations = metadata.get("annotations", {})
@@ -263,6 +278,11 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             constants.ANNOTATION_LISTENER_ID: listener_id,
             constants.ANNOTATION_PROJECT_ID: lst.get("project_id", ""),
         }
+        self._set_admin_state_annotation(
+            annotations,
+            constants.ANNOTATION_LISTENER_ADMIN_STATE_UP,
+            lst.get("admin_state_up"),
+        )
         pool_id = self._listener_default_pool_id(lst)
         if pool_id:
             annotations[constants.ANNOTATION_POOL_ID] = pool_id
@@ -381,6 +401,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         elif port_changed and annotations.get(constants.ANNOTATION_POOL_ID):
             should_restore_pool = True
 
+        admin_state = lst.get("admin_state_up")
+
         def prepare_restore_update(current_spec, current_annotations):
             if mapped_protocol:
                 current_spec["protocol"] = mapped_protocol
@@ -388,8 +410,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 current_spec["port"] = port
             if pool_id:
                 current_annotations[constants.ANNOTATION_POOL_ID] = pool_id
+            self._set_admin_state_annotation(
+                current_annotations,
+                constants.ANNOTATION_LISTENER_ADMIN_STATE_UP,
+                admin_state,
+            )
 
-        admin_state = lst.get("admin_state_up")
         if admin_state is False:
             spec["backends"] = []
         elif not pool_detached and (admin_state is True or should_restore_pool):
@@ -443,6 +469,11 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 )
             elif pool_id:
                 current_annotations[constants.ANNOTATION_POOL_ID] = pool_id
+            self._set_admin_state_annotation(
+                current_annotations,
+                constants.ANNOTATION_LISTENER_ADMIN_STATE_UP,
+                admin_state,
+            )
             if admin_state is False:
                 current_spec["backends"] = []
             status_pool_id = (
@@ -645,9 +676,11 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 backends, address, backend, is_draining
             )
 
-            spec["backends"] = backends
             self._remember_member_mapping(annotations, m)
             self._set_member_draining_state(annotations, m, is_draining)
+            spec["backends"] = self._backends_for_admin_state(
+                annotations, backends
+            )
             self._refresh_health_check_port(
                 spec, pool_id, current_vip, extra_members=[m]
             )
@@ -781,10 +814,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             backends = self._backends_with_member_state(
                 spec.get("backends", []), address, backend, is_draining
             )
-            spec["backends"] = backends
 
             self._remember_member_mapping(annotations, m)
             self._set_member_draining_state(annotations, m, is_draining)
+            spec["backends"] = self._backends_for_admin_state(
+                annotations, backends
+            )
             self._refresh_health_check_port(
                 spec, pool_id, current_vip, extra_members=[m]
             )
@@ -846,10 +881,12 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     new_member_map[member_id] = m.get("address")
                     if is_draining:
                         draining_member_ids.add(member_id)
-            spec["backends"] = backends
             self._set_member_map_annotation(annotations, new_member_map)
             self._set_draining_member_ids_annotation(
                 annotations, draining_member_ids
+            )
+            spec["backends"] = self._backends_for_admin_state(
+                annotations, backends
             )
             self._refresh_health_check_port(
                 spec, pool_id, current_vip, extra_members=member_dicts, pool={}
@@ -1274,6 +1311,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 constants.ANNOTATION_LB_ID,
                 constants.ANNOTATION_LISTENER_ID,
                 constants.ANNOTATION_PROJECT_ID,
+                constants.ANNOTATION_LISTENER_ADMIN_STATE_UP,
             ):
                 if key in desired_annotations:
                     current_annotations[key] = desired_annotations[key]
@@ -1322,6 +1360,41 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return (
             (vip or {}).get("metadata", {}).get("annotations", {}) or {}
         ).get(constants.ANNOTATION_POOL_ID)
+
+    def _set_virtualip_admin_state(self, vip, annotation_key, admin_state,
+                                   clear_backends=False):
+        name = vip["metadata"]["name"]
+
+        def mutate(_current_vip, spec, annotations):
+            self._set_admin_state_annotation(
+                annotations, annotation_key, admin_state
+            )
+            if clear_backends:
+                spec["backends"] = []
+
+        self._update_virtualip_with_retry(name, mutate, initial_vip=vip)
+
+    @staticmethod
+    def _set_admin_state_annotation(annotations, annotation_key, admin_state):
+        if admin_state is True:
+            annotations[annotation_key] = "true"
+        elif admin_state is False:
+            annotations[annotation_key] = "false"
+
+    @classmethod
+    def _backends_for_admin_state(cls, annotations, backends):
+        if not cls._virtualip_admin_state_allows_backends(annotations):
+            return []
+        return backends
+
+    @staticmethod
+    def _virtualip_admin_state_allows_backends(annotations):
+        return (
+            annotations.get(constants.ANNOTATION_LB_ADMIN_STATE_UP) != "false"
+            and annotations.get(
+                constants.ANNOTATION_LISTENER_ADMIN_STATE_UP
+            ) != "false"
+        )
 
     @staticmethod
     def _virtualip_has_pool_state(spec, annotations):
@@ -1578,12 +1651,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     if member_id:
                         member_map[member_id] = member.get("address")
 
-                spec["backends"] = backends
                 self._set_member_map_annotation(
                     current_annotations, member_map
                 )
                 self._set_draining_member_ids_annotation(
                     current_annotations, draining_member_ids
+                )
+                spec["backends"] = self._backends_for_admin_state(
+                    current_annotations, backends
                 )
                 hm, hm_known = self._pool_health_monitor(pool, pool_id)
                 if hm:

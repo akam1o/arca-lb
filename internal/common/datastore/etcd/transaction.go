@@ -95,6 +95,48 @@ func (tx *EtcdTransaction) releaseVIPTuple(ownerID, indexKey string) {
 	delete(tx.vipTupleOwners, indexKey)
 }
 
+type etcdWriteOpKey struct {
+	key      string
+	rangeEnd string
+}
+
+func compactEtcdWriteOps(ops []clientv3.Op) []clientv3.Op {
+	lastWriteIndexes := make(map[etcdWriteOpKey]int, len(ops))
+	for i, op := range ops {
+		if !isEtcdWriteOp(op) {
+			continue
+		}
+		lastWriteIndexes[etcdWriteOpKeyFor(op)] = i
+	}
+	if len(lastWriteIndexes) == len(ops) {
+		return ops
+	}
+
+	compacted := make([]clientv3.Op, 0, len(ops))
+	for i, op := range ops {
+		if !isEtcdWriteOp(op) {
+			compacted = append(compacted, op)
+			continue
+		}
+		if lastWriteIndexes[etcdWriteOpKeyFor(op)] == i {
+			compacted = append(compacted, op)
+		}
+	}
+
+	return compacted
+}
+
+func isEtcdWriteOp(op clientv3.Op) bool {
+	return op.IsPut() || op.IsDelete()
+}
+
+func etcdWriteOpKeyFor(op clientv3.Op) etcdWriteOpKey {
+	return etcdWriteOpKey{
+		key:      string(op.KeyBytes()),
+		rangeEnd: string(op.RangeBytes()),
+	}
+}
+
 // CreateVIP adds a VIP creation operation to the transaction
 func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error {
 	// Generate UUID if not set
@@ -394,12 +436,13 @@ func (tx *EtcdTransaction) DeleteVIP(ctx context.Context, id string) error {
 
 // Commit commits the transaction
 func (tx *EtcdTransaction) Commit() error {
-	if len(tx.ops) == 0 {
+	ops := compactEtcdWriteOps(tx.ops)
+	if len(ops) == 0 {
 		return nil
 	}
 
 	if !tx.committed {
-		if err := tx.ds.commitWithRevision(tx.ctx, tx.checks, tx.ops...); err != nil {
+		if err := tx.ds.commitWithRevision(tx.ctx, tx.checks, ops...); err != nil {
 			if errors.Is(err, datastore.ErrNotFound) {
 				if cleanupErr := tx.cleanupDeletedVIPIndexes(); cleanupErr != nil {
 					return cleanupErr

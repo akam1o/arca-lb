@@ -203,6 +203,22 @@ func run() int {
 		logger:        logger,
 	}
 
+	shutdownAgent := func(metricsServer *http.Server) {
+		cancel()
+		if metricsServer != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer shutdownCancel()
+
+			if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+				logger.Error("failed to shutdown agent HTTP server", "error", err)
+			}
+		}
+		reconMgr.Stop()
+		hcEngine.Stop()
+
+		logger.Info("agent shutdown complete")
+	}
+
 	// Create and start K8s watcher
 	watcherCfg := watcher.Config{
 		Kubeconfig:     cfg.Kubernetes.Kubeconfig,
@@ -212,6 +228,7 @@ func run() int {
 	w, err := watcher.New(watcherCfg, handler, logger)
 	if err != nil {
 		logger.Error("failed to create watcher", "error", err)
+		shutdownAgent(nil)
 		return 1
 	}
 
@@ -241,8 +258,9 @@ func run() int {
 	case err := <-watcherErrCh:
 		if err != nil {
 			logger.Error("watcher exited before initial sync", "error", err)
-			return 1
 		}
+		shutdownAgent(metricsServer)
+		return 1
 	case <-watcherSyncedCh:
 	}
 
@@ -261,18 +279,7 @@ func run() int {
 		}
 	}
 
-	// Graceful shutdown
-	cancel()
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-
-	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("failed to shutdown agent HTTP server", "error", err)
-	}
-	reconMgr.Stop()
-	hcEngine.Stop()
-
-	logger.Info("agent shutdown complete")
+	shutdownAgent(metricsServer)
 	return exitCode
 }
 

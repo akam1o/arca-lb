@@ -418,13 +418,13 @@ func (v *VPP) NeedsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.Virtua
 		if existingAttrs != desiredAttrs {
 			return true, nil
 		}
-		if !v.shouldVerifyCachedVIP(entry, v.currentTime()) {
-			return false, nil
-		}
 	}
 
 	detail, exists, err := v.lookupVIP(ctx, vip)
 	if err != nil || !exists {
+		if entry := v.vips[key]; entry != nil && !exists {
+			entry.lastVerified = time.Time{}
+		}
 		return false, err
 	}
 	return !v.vipDetailsMatchDesired(vip, detail), nil

@@ -183,9 +183,9 @@ CRD スキーマと任意の Admission Webhook が以下を検証します：
 - `dscp` は指定する場合 1〜63 の範囲であること
 - バックエンドの `weight` は 1〜100 の範囲であること
 - バックエンドの `address` は有効な IP アドレスであること
-- ヘルスチェックの `type` は `http`, `https`, `tcp`, `ping` のいずれかであること
+- ヘルスチェックの `type` は `http`, `https`, `tcp`, `ping`, `tls-hello` のいずれかであること
 - ヘルスチェックの `type` が `http` または `https` の場合、`http` が必須であること
-- ヘルスチェックの `type` が `tcp` の場合、`tcp` が必須であること
+- ヘルスチェックの `type` が `tcp` または `tls-hello` の場合、`tcp` が必須であること
 - ヘルスチェックの probe port は 1〜65535 の範囲であること
 - ヘルスチェックの `timeoutSeconds` は `intervalSeconds` より小さいこと
 

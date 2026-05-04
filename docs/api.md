@@ -183,9 +183,9 @@ The CRD schema and optional admission webhook enforce:
 - `dscp`, when set, must be between 1 and 63
 - Backend `weight` must be between 1 and 100
 - Backend `address` must be a valid IP address
-- HealthCheck `type` must be one of: `http`, `https`, `tcp`, `ping`
+- HealthCheck `type` must be one of: `http`, `https`, `tcp`, `ping`, `tls-hello`
 - HealthCheck `http` is required when `type` is `http` or `https`
-- HealthCheck `tcp` is required when `type` is `tcp`
+- HealthCheck `tcp` is required when `type` is `tcp` or `tls-hello`
 - HealthCheck probe ports must be between 1 and 65535
 - HealthCheck `timeoutSeconds` must be less than `intervalSeconds`
 

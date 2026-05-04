@@ -74,7 +74,7 @@ The Agent runs as a DaemonSet on each load balancer node:
 2. **Per-VIP Reconciler**: Spawns one goroutine per VIP; on each event, computes the desired state diff and syncs DataPlane + Router
 3. **DataPlane (interface)**: Abstracts VPP control. Implementations: `VPPDataPlane` (production), `NoopDataPlane` (testing)
 4. **Router (interface)**: Abstracts FRR/BGP route management. Implementations: `FRRRouter` (production), `NoopRouter` (testing)
-5. **HealthCheck Engine**: Runs probes (HTTP/HTTPS, TCP, Ping) per VIP, fires callbacks on state transitions to trigger reconciliation
+5. **HealthCheck Engine**: Runs probes (HTTP/HTTPS, TCP, Ping, TLS hello) per VIP, fires callbacks on state transitions to trigger reconciliation
 6. **bbolt Store**: Local embedded key-value store for caching VIP state and health check results; provides resilience against K8s API unavailability
 7. **Metrics / Telemetry**: Prometheus endpoint + OpenTelemetry (OTLP) for traces and metrics
 

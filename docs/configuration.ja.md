@@ -51,6 +51,7 @@ metrics:
 
 telemetry:
   otlpEndpoint: ""         # 空 = 無効
+  otlpInsecure: false      # plaintext collector の場合のみ true
 
 log:
   level: "info"            # "debug", "info", "warn", "error"
@@ -85,6 +86,8 @@ log:
 ### Routing 設定
 
 `routing.type` が `frr` の場合、Agent は `vtysh` 経由で VIP の static route を管理します。Kubernetes デプロイでは FRR はノード上で稼働している前提で、Agent は `/run/frr` の runtime socket directory をマウントして利用します。Agent は FRR プロセスの起動や BGP peer の設定は行いません。
+
+同梱の `config/agent/daemonset.yaml` は FRR 必須の本番向けマニフェストです。開発用途やデータプレーンのみの検証で `routing.enabled: false` または `routing.type: noop` が必要な場合は、Pod が `vtysh` を待機せず `/run/frr` もマウントしない `config/agent-no-frr/` をデプロイしてください。
 
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
@@ -126,6 +129,7 @@ log:
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `telemetry.otlpEndpoint` | OTLP コレクターエンドポイント（空 = 無効） | `""` |
+| `telemetry.otlpInsecure` | TLS を使わない plaintext OTLP collector へトレースを送信する | `false` |
 
 ### Log 設定
 
@@ -167,7 +171,7 @@ spec:
     - address: 10.0.1.2
       weight: 1
   healthCheck:
-    type: http               # http, https, tcp, ping
+    type: http               # http, https, tcp, ping, tls-hello
     intervalSeconds: 5
     timeoutSeconds: 3
     riseCount: 3
@@ -202,7 +206,7 @@ spec:
 
 | フィールド | 説明 | 必須 |
 |----------|------|------|
-| `type` | プローブタイプ (http, https, tcp, ping) | はい |
+| `type` | プローブタイプ (http, https, tcp, ping, tls-hello) | はい |
 | `intervalSeconds` | プローブ間隔（秒） | いいえ (デフォルト: 5) |
 | `timeoutSeconds` | プローブタイムアウト（秒） | いいえ (デフォルト: 3) |
 | `riseCount` | 健全と判定する連続成功回数 | いいえ (デフォルト: 3) |

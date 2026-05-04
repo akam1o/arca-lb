@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	bucketHCState    = []byte("hc_state")
-	bucketLastConfig = []byte("last_config")
+	bucketHCState       = []byte("hc_state")
+	bucketLastConfig    = []byte("last_config")
+	bucketPendingConfig = []byte("pending_config")
 )
 
 // BackendHealthRecord is the persistent health state of a single backend.
@@ -39,7 +40,7 @@ func Open(path string) (*Store, error) {
 
 	// Ensure buckets exist
 	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketHCState, bucketLastConfig} {
+		for _, b := range [][]byte{bucketHCState, bucketLastConfig, bucketPendingConfig} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -143,6 +144,17 @@ func (s *Store) SaveLastConfig(vipKey string, data []byte) error {
 	})
 }
 
+// CommitLastConfig atomically marks a VIP config as applied and clears any
+// pending intent for the same VIP.
+func (s *Store) CommitLastConfig(vipKey string, data []byte) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(bucketLastConfig).Put([]byte(vipKey), data); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketPendingConfig).Delete([]byte(vipKey))
+	})
+}
+
 // LoadLastConfig loads the last-applied config for a VIP.
 func (s *Store) LoadLastConfig(vipKey string) ([]byte, error) {
 	var result []byte
@@ -177,5 +189,52 @@ func (s *Store) LoadAllLastConfigs() (map[string][]byte, error) {
 func (s *Store) DeleteLastConfig(vipKey string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketLastConfig).Delete([]byte(vipKey))
+	})
+}
+
+// --- Pending Config ---
+
+// SavePendingConfig persists the raw JSON of a desired VIP config before
+// external dataplane or route side effects are attempted.
+func (s *Store) SavePendingConfig(vipKey string, data []byte) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketPendingConfig).Put([]byte(vipKey), data)
+	})
+}
+
+// LoadPendingConfig loads the pending config for a VIP.
+func (s *Store) LoadPendingConfig(vipKey string) ([]byte, error) {
+	var result []byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(bucketPendingConfig).Get([]byte(vipKey))
+		if v != nil {
+			result = make([]byte, len(v))
+			copy(result, v)
+		}
+		return nil
+	})
+	return result, err
+}
+
+// LoadAllPendingConfigs returns all persisted pending VIP configs keyed by
+// "namespace/name".
+func (s *Store) LoadAllPendingConfigs() (map[string][]byte, error) {
+	result := make(map[string][]byte)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketPendingConfig)
+		return b.ForEach(func(k, v []byte) error {
+			value := make([]byte, len(v))
+			copy(value, v)
+			result[string(k)] = value
+			return nil
+		})
+	})
+	return result, err
+}
+
+// DeletePendingConfig removes the pending config for a VIP.
+func (s *Store) DeletePendingConfig(vipKey string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketPendingConfig).Delete([]byte(vipKey))
 	})
 }

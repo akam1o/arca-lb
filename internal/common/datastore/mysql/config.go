@@ -16,7 +16,7 @@ func (ds *MySQLDataStore) GetConfig(ctx context.Context) (*models.Config, error)
 	var config *models.Config
 
 	// Use transaction to ensure consistent snapshot (REPEATABLE READ)
-	err := ds.db.Transaction(func(tx *gorm.DB) error {
+	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Get revision
 		var revision int64
 		if err := tx.Table("system_metadata").

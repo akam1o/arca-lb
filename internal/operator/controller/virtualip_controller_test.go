@@ -44,6 +44,64 @@ func TestValidateSpecL3DSRRejectsInvalidDSCPOverride(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsInvalidCoreFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*v1alpha1.VirtualIPSpec)
+	}{
+		{
+			name: "invalid address",
+			mutate: func(spec *v1alpha1.VirtualIPSpec) {
+				spec.Address = "not-an-ip"
+			},
+		},
+		{
+			name: "invalid port",
+			mutate: func(spec *v1alpha1.VirtualIPSpec) {
+				spec.Port = 0
+			},
+		},
+		{
+			name: "invalid protocol",
+			mutate: func(spec *v1alpha1.VirtualIPSpec) {
+				spec.Protocol = "SCTP"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := validVirtualIPSpec()
+			tt.mutate(&spec)
+
+			if err := validateSpec(&spec); err == nil {
+				t.Fatal("expected invalid core field to be rejected")
+			}
+		})
+	}
+}
+
+func TestValidateSpecRejectsInvalidHTTPExpectedCodes(t *testing.T) {
+	for _, code := range []int{99, 600} {
+		spec := validVirtualIPSpec()
+		spec.HealthCheck = &v1alpha1.HealthCheckSpec{
+			Type:            v1alpha1.HCTypeHTTP,
+			IntervalSeconds: 5,
+			TimeoutSeconds:  3,
+			RiseCount:       3,
+			FallCount:       2,
+			HTTP: &v1alpha1.HTTPHealthCheck{
+				Port:          8080,
+				ExpectedCodes: []int{code},
+			},
+		}
+
+		if err := validateSpec(&spec); err == nil {
+			t.Fatalf("expected HTTP expected code %d to be rejected", code)
+		}
+	}
+}
+
 func TestApplyDefaultsUsesBackendWeightOne(t *testing.T) {
 	vip := &v1alpha1.VirtualIP{
 		Spec: v1alpha1.VirtualIPSpec{

@@ -2,7 +2,9 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -40,6 +42,50 @@ func TestV2ManagerRecreatesVIPAfterDelete(t *testing.T) {
 	recreated := newV2TestVIP("default", "web", "uid-2")
 	mgr.OnVIPUpdate(recreated)
 	waitFor(t, func() bool { return dp.applyCount() == 2 }, "recreated VIP apply")
+}
+
+func TestV2ManagerQueuesRecreateUntilDeleteCleanupSucceeds(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.setRemoveErr(errors.New("vpp remove failed"))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, routing.NewNoop(), nil, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return dp.applyCount() == 1 }, "initial VIP apply")
+
+	mgr.mu.Lock()
+	mgr.vips[vipKey].deleteRetryInterval = 10 * time.Millisecond
+	mgr.mu.Unlock()
+
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return dp.removeCount() >= 1 }, "failed delete cleanup")
+
+	recreated := newV2TestVIP("default", "web", "uid-2")
+	recreated.Generation = 2
+	recreated.Spec.Port = 443
+	mgr.OnVIPUpdate(recreated)
+
+	time.Sleep(50 * time.Millisecond)
+	if got := dp.applyCount(); got != 1 {
+		t.Fatalf("apply count = %d, want recreated VIP queued until delete cleanup succeeds", got)
+	}
+
+	dp.setRemoveErr(nil)
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.removeCount() >= 2 &&
+			dp.applyCount() == 2 &&
+			last != nil &&
+			last.UID == "uid-2" &&
+			last.Spec.Port == 443
+	}, "queued recreated VIP apply after delete cleanup retry")
 }
 
 func TestV2ReconcilerReportsStatusAndWithdrawsRouteWhenDataPlaneFails(t *testing.T) {
@@ -124,6 +170,95 @@ func TestV2ReconcilerReportsRouteFailureInStatus(t *testing.T) {
 	}
 }
 
+func TestV2ReconcilerSkipsExternalEffectsWhenLastConfigPersistFails(t *testing.T) {
+	dp := newRecordingDataPlane()
+	router := routing.NewNoop()
+	statusUpdater := &recordingStatusUpdater{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("store.Close: %v", err)
+	}
+
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return statusUpdater.updateCount() == 1 }, "status update after last config persist failure")
+
+	if got := dp.applyCount(); got != 0 {
+		t.Fatalf("dataplane applies = %d, want 0 after persist failure", got)
+	}
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route was announced despite last config persist failure")
+	}
+	serving := findTestCondition(statusUpdater.lastConditions(), agentstatus.ConditionServing)
+	if serving == nil {
+		t.Fatal("Serving condition missing")
+	}
+	if serving.Status != metav1.ConditionUnknown {
+		t.Fatalf("Serving status = %s, want Unknown", serving.Status)
+	}
+	if serving.Reason != "LastConfigPersistFailed" {
+		t.Fatalf("Serving reason = %q, want LastConfigPersistFailed", serving.Reason)
+	}
+}
+
+func TestV2ReconcilerKeepsLastConfigWhenDataplaneApplyFails(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.applyErr = errors.New("apply failed")
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, routing.NewNoop(), st, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vipKey := "default/web"
+	oldConfig := []byte(`{"address":"203.0.113.10","port":80,"protocol":"TCP"}`)
+	if err := st.SaveLastConfig(vipKey, oldConfig); err != nil {
+		t.Fatalf("SaveLastConfig: %v", err)
+	}
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vip.Spec.Address = "203.0.113.20"
+	vip.Spec.Port = 443
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return dp.applyCount() == 1 }, "failed VIP apply")
+
+	last, err := st.LoadLastConfig(vipKey)
+	if err != nil {
+		t.Fatalf("LoadLastConfig: %v", err)
+	}
+	if string(last) != string(oldConfig) {
+		t.Fatalf("last config = %q, want previous applied config %q", last, oldConfig)
+	}
+
+	pending, err := st.LoadPendingConfig(vipKey)
+	if err != nil {
+		t.Fatalf("LoadPendingConfig: %v", err)
+	}
+	var pendingSpec v1alpha1.VirtualIPSpec
+	if err := json.Unmarshal(pending, &pendingSpec); err != nil {
+		t.Fatalf("decode pending config: %v", err)
+	}
+	if pendingSpec.Address != "203.0.113.20" || pendingSpec.Port != 443 {
+		t.Fatalf("pending config = %#v, want new desired address and port", pendingSpec)
+	}
+}
+
 func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 	events := &eventRecorder{}
 	dp := newRecordingDataPlane()
@@ -180,13 +315,263 @@ func TestV2ReconcilerRollingRecreatesTuningDrift(t *testing.T) {
 	}
 }
 
+func TestV2ReconcilerDrainsSameAddressDisruptiveUpdate(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	dp.recordApplies = true
+	router := newRecordingRouter(events)
+	rollouts := &recordingRolloutCoordinator{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetRolloutCoordinator(rollouts)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return dp.applyCount() == 1 && router.announceCount() == 1
+	}, "initial VIP apply")
+
+	updated := vip.DeepCopy()
+	updated.Generation = 2
+	updated.Spec.Port = 443
+	mgr.OnVIPUpdate(updated)
+
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.applyCount() == 2 &&
+			router.withdrawCount() == 1 &&
+			router.announceCount() == 2 &&
+			last != nil &&
+			last.Spec.Port == 443
+	}, "same-address disruptive update")
+
+	got := events.snapshot()
+	want := []string{
+		"apply:default/web:80",
+		"announce:203.0.113.10",
+		"withdraw:203.0.113.10",
+		"apply:default/web:443",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+	if got := rollouts.keysSnapshot(); len(got) != 1 || got[0] != "vip-address/203.0.113.10" {
+		t.Fatalf("rollout keys = %#v, want address-scoped key", got)
+	}
+}
+
+func TestV2ReconcilerDrainsStaleRetainedVIPBeforeApply(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	dp.recordApplies = true
+	dp.retainedDrain = true
+	router := newRecordingRouter(events)
+	rollouts := &recordingRolloutCoordinator{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetRolloutCoordinator(rollouts)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+
+	waitFor(t, func() bool {
+		return dp.applyCount() == 1 &&
+			router.withdrawCount() == 1 &&
+			router.announceCount() == 1
+	}, "retained stale VIP drain and apply")
+
+	got := events.snapshot()
+	want := []string{
+		"withdraw:203.0.113.10",
+		"apply:default/web:80",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+	if got := rollouts.keysSnapshot(); len(got) != 1 || got[0] != "vip-address/203.0.113.10" {
+		t.Fatalf("rollout keys = %#v, want address-scoped key", got)
+	}
+	if got := dp.retainedCheckCount(); got != 1 {
+		t.Fatalf("retained drain checks = %d, want 1", got)
+	}
+}
+
+func TestV2ReconcilerConservativelyDrainsWhenUpdatePlanFails(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	dp.recordApplies = true
+	router := newRecordingRouter(events)
+	rollouts := &recordingRolloutCoordinator{}
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+	mgr.SetRolloutCoordinator(rollouts)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return dp.applyCount() == 1 && router.announceCount() == 1
+	}, "initial VIP apply")
+
+	if err := st.SaveLastConfig(vipKey, []byte("{invalid-json")); err != nil {
+		t.Fatalf("SaveLastConfig: %v", err)
+	}
+	mgr.mu.RLock()
+	vr := mgr.vips[vipKey]
+	mgr.mu.RUnlock()
+	vr.setLastAppliedVIP(nil)
+
+	updated := vip.DeepCopy()
+	updated.Generation = 2
+	updated.Spec.Port = 443
+	mgr.OnVIPUpdate(updated)
+
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.applyCount() == 2 &&
+			router.withdrawCount() == 1 &&
+			router.announceCount() == 2 &&
+			last != nil &&
+			last.Spec.Port == 443
+	}, "conservative drain after VIP update planning failure")
+
+	got := events.snapshot()
+	want := []string{
+		"apply:default/web:80",
+		"announce:203.0.113.10",
+		"withdraw:203.0.113.10",
+		"apply:default/web:443",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+	if got := rollouts.keysSnapshot(); len(got) != 1 || got[0] != "vip-address/203.0.113.10" {
+		t.Fatalf("rollout keys = %#v, want conservative address-scoped key", got)
+	}
+}
+
+func TestV2ReconcilerDrainsDisruptiveUpdateWithServingSibling(t *testing.T) {
+	events := &eventRecorder{}
+	dp := newRecordingDataPlane()
+	dp.events = events
+	dp.recordApplies = true
+	router := newRecordingRouter(events)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	web80 := newV2TestVIP("default", "web-80", "uid-80")
+	web80.Spec.Port = 80
+	mgr.OnVIPUpdate(web80)
+	waitFor(t, func() bool {
+		return dp.applyCount() == 1 && router.announceCount() == 1
+	}, "initial shared address VIP apply")
+
+	web443 := newV2TestVIP("default", "web-443", "uid-443")
+	web443.Spec.Port = 443
+	mgr.OnVIPUpdate(web443)
+	waitFor(t, func() bool { return dp.applyCount() == 2 }, "sibling VIP apply")
+
+	updated := web80.DeepCopy()
+	updated.Generation = 2
+	updated.Spec.Port = 8080
+	mgr.OnVIPUpdate(updated)
+
+	waitFor(t, func() bool {
+		last := dp.lastAppliedVIP()
+		return dp.applyCount() == 3 &&
+			router.withdrawCount() == 1 &&
+			router.announceCount() == 2 &&
+			last != nil &&
+			last.Name == "web-80" &&
+			last.Spec.Port == 8080
+	}, "same-address disruptive update with sibling")
+
+	got := events.snapshot()
+	want := []string{
+		"apply:default/web-80:80",
+		"announce:203.0.113.10",
+		"apply:default/web-443:443",
+		"withdraw:203.0.113.10",
+		"apply:default/web-80:8080",
+		"announce:203.0.113.10",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %#v, want %#v", got, want)
+		}
+	}
+}
+
 func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T) {
 	events := &eventRecorder{}
 	dp := newRecordingDataPlane()
 	dp.events = events
 	router := newRecordingRouter(events)
+	statusUpdater := &recordingStatusUpdater{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
 	mgr.SetTuningDriftConfig(TuningDriftConfig{
 		Policy:        TuningDriftPolicyRollingRecreate,
 		DrainDuration: time.Millisecond,
@@ -215,7 +600,9 @@ func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T
 	if err := mgr.Reconcile("default/web-80"); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	waitFor(t, func() bool { return dp.applyCount() == 3 }, "tuning drift reconcile")
+	waitFor(t, func() bool {
+		return dp.applyCount() == 3 && statusUpdater.updateCount() == 3
+	}, "blocked tuning drift status update")
 
 	if got := dp.recreateCount(); got != 0 {
 		t.Fatalf("recreate count = %d, want 0 while sibling keeps shared address serving", got)
@@ -228,6 +615,21 @@ func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T
 	}
 	if drifts := dp.TuningDrifts("default/web-80"); len(drifts) == 0 {
 		t.Fatal("tuning drift should remain pending when rolling recreate is skipped")
+	}
+	conditions := statusUpdater.lastConditions()
+	dataPlane := findTestCondition(conditions, agentstatus.ConditionDataPlaneReady)
+	if dataPlane == nil {
+		t.Fatal("DataPlaneReady condition missing")
+	}
+	if dataPlane.Status != metav1.ConditionFalse || dataPlane.Reason != "TuningDriftRepairBlocked" {
+		t.Fatalf("DataPlaneReady condition = %+v, want False TuningDriftRepairBlocked", dataPlane)
+	}
+	route := findTestCondition(conditions, agentstatus.ConditionRouteAdvertised)
+	if route == nil {
+		t.Fatal("RouteAdvertised condition missing")
+	}
+	if route.Status != metav1.ConditionTrue || route.Reason != "Advertised" {
+		t.Fatalf("RouteAdvertised condition = %+v, want True Advertised", route)
 	}
 
 	got := events.snapshot()
@@ -242,11 +644,147 @@ func TestV2ReconcilerSkipsRollingRecreateWhenSharedAddressIsServing(t *testing.T
 	}
 }
 
+func TestV2ReconcilerReportsTuningDriftRepairFailure(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.drifts = []dataplane.VIPTuningDrift{{
+		Field:   "new_flows_table_length",
+		Current: "1024",
+		Desired: "2048",
+	}}
+	router := newRecordingRouter(nil)
+	statusUpdater := &recordingStatusUpdater{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyPreserve,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return router.IsAnnounced(vip.Spec.Address) && statusUpdater.updateCount() == 1
+	}, "initial VIP route announcement")
+
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+	dp.setRecreateErr(errors.New("recreate failed"))
+	if err := mgr.Reconcile("default/web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		return dp.recreateCount() == 1 && statusUpdater.updateCount() == 2
+	}, "status update after tuning drift repair failure")
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should remain withdrawn after failed VIP recreate")
+	}
+
+	conditions := statusUpdater.lastConditions()
+	serving := findTestCondition(conditions, agentstatus.ConditionServing)
+	if serving == nil {
+		t.Fatal("Serving condition missing")
+	}
+	if serving.Status != metav1.ConditionUnknown || serving.Reason != "DataPlaneApplyFailed" {
+		t.Fatalf("Serving condition = %+v, want Unknown DataPlaneApplyFailed", serving)
+	}
+	dataPlane := findTestCondition(conditions, agentstatus.ConditionDataPlaneReady)
+	if dataPlane == nil {
+		t.Fatal("DataPlaneReady condition missing")
+	}
+	if dataPlane.Status != metav1.ConditionFalse || dataPlane.Reason != "DataPlaneApplyFailed" {
+		t.Fatalf("DataPlaneReady condition = %+v, want False DataPlaneApplyFailed", dataPlane)
+	}
+	route := findTestCondition(conditions, agentstatus.ConditionRouteAdvertised)
+	if route == nil {
+		t.Fatal("RouteAdvertised condition missing")
+	}
+	if route.Status != metav1.ConditionFalse || route.Reason != "NotAdvertised" {
+		t.Fatalf("RouteAdvertised condition = %+v, want False NotAdvertised", route)
+	}
+}
+
+func TestV2ReconcilerRestoresRouteForRetainedOldVIPAfterDeleteFailure(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.drifts = []dataplane.VIPTuningDrift{{
+		Field:   "new_flows_table_length",
+		Current: "1024",
+		Desired: "2048",
+	}}
+	router := newRecordingRouter(nil)
+	statusUpdater := &recordingStatusUpdater{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, nil, nil, time.Hour, logger)
+	mgr.SetStatusUpdater(statusUpdater)
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyPreserve,
+		DrainDuration: time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		return router.IsAnnounced(vip.Spec.Address) && statusUpdater.updateCount() == 1
+	}, "initial VIP route announcement")
+
+	mgr.SetTuningDriftConfig(TuningDriftConfig{
+		Policy:        TuningDriftPolicyRollingRecreate,
+		DrainDuration: time.Millisecond,
+	})
+	dp.setRouteSafeRecreateErr(errors.New("delete failed"))
+	if err := mgr.Reconcile("default/web"); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		return dp.recreateCount() == 1 && statusUpdater.updateCount() == 2
+	}, "status update after route-safe tuning drift repair failure")
+	if !router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should be restored while old VIP is retained")
+	}
+
+	conditions := statusUpdater.lastConditions()
+	serving := findTestCondition(conditions, agentstatus.ConditionServing)
+	if serving == nil {
+		t.Fatal("Serving condition missing")
+	}
+	if serving.Status != metav1.ConditionUnknown || serving.Reason != "RetainedOldVIP" {
+		t.Fatalf("Serving condition = %+v, want Unknown RetainedOldVIP", serving)
+	}
+	dataPlane := findTestCondition(conditions, agentstatus.ConditionDataPlaneReady)
+	if dataPlane == nil {
+		t.Fatal("DataPlaneReady condition missing")
+	}
+	if dataPlane.Status != metav1.ConditionFalse || dataPlane.Reason != "RetainedOldVIP" {
+		t.Fatalf("DataPlaneReady condition = %+v, want False RetainedOldVIP", dataPlane)
+	}
+	route := findTestCondition(conditions, agentstatus.ConditionRouteAdvertised)
+	if route == nil {
+		t.Fatal("RouteAdvertised condition missing")
+	}
+	if route.Status != metav1.ConditionTrue || route.Reason != "Advertised" {
+		t.Fatalf("RouteAdvertised condition = %+v, want True Advertised", route)
+	}
+}
+
 func TestRouteCoordinatorSuppressesAnnouncementsDuringAddressDrain(t *testing.T) {
 	events := &eventRecorder{}
 	router := newRecordingRouter(events)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	routes := newRouteCoordinator(router, logger)
+	routes := newRouteCoordinator(router, logger, time.Hour)
 	ctx := context.Background()
 
 	advertised, err := routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
@@ -300,6 +838,59 @@ func TestRouteCoordinatorSuppressesAnnouncementsDuringAddressDrain(t *testing.T)
 		if got[i] != want[i] {
 			t.Fatalf("events = %#v, want %#v", got, want)
 		}
+	}
+}
+
+func TestRouteCoordinatorReplaysAdvertisedRouteAfterVerificationInterval(t *testing.T) {
+	now := time.Unix(100, 0)
+	router := newRecordingRouter(nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	routes := newRouteCoordinator(router, logger, 30*time.Second)
+	routes.now = func() time.Time {
+		return now
+	}
+	ctx := context.Background()
+
+	advertised, err := routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing: %v", err)
+	}
+	if !advertised {
+		t.Fatal("initial serving VIP should advertise the address route")
+	}
+	if got := router.announceCount(); got != 1 {
+		t.Fatalf("announce count = %d, want 1", got)
+	}
+
+	router.dropAnnounced("203.0.113.10")
+	now = now.Add(29 * time.Second)
+	advertised, err = routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing before verification interval: %v", err)
+	}
+	if !advertised {
+		t.Fatal("cached route state should still report advertised before verification interval")
+	}
+	if got := router.announceCount(); got != 1 {
+		t.Fatalf("announce count before verification interval = %d, want 1", got)
+	}
+	if router.IsAnnounced("203.0.113.10") {
+		t.Fatal("router should still simulate an out-of-band route loss before verification interval")
+	}
+
+	now = now.Add(2 * time.Second)
+	advertised, err = routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing after verification interval: %v", err)
+	}
+	if !advertised {
+		t.Fatal("route should remain advertised after replay")
+	}
+	if got := router.announceCount(); got != 2 {
+		t.Fatalf("announce count after verification interval = %d, want 2", got)
+	}
+	if !router.IsAnnounced("203.0.113.10") {
+		t.Fatal("route should be re-announced after verification interval")
 	}
 }
 
@@ -382,6 +973,47 @@ func TestV2DeletePreservesStateAndDataplaneWhenRouteCleanupFails(t *testing.T) {
 	assertHealthStatePresent(t, st, vipKey, "10.0.0.1")
 }
 
+func TestV2DeleteRetriesRouteCleanupFailure(t *testing.T) {
+	dp := newRecordingDataPlane()
+	router := newRecordingRouter(nil)
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		data, err := st.LoadLastConfig(vipKey)
+		return err == nil && len(data) > 0 && router.IsAnnounced(vip.Spec.Address)
+	}, "initial VIP apply and last config persistence")
+	if err := st.SaveHealthState(vipKey, "10.0.0.1", &store.BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatalf("SaveHealthState: %v", err)
+	}
+
+	router.setWithdrawErr(errors.New("vtysh withdraw failed"))
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return router.withdrawCount() == 1 }, "failed route withdrawal")
+	router.setWithdrawErr(nil)
+
+	waitFor(t, func() bool {
+		return router.withdrawCount() >= 2 &&
+			dp.removeCount() == 1 &&
+			lastConfigAbsent(st, vipKey) &&
+			healthStateAbsent(st, vipKey, "10.0.0.1")
+	}, "delete cleanup retry")
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should be withdrawn after cleanup retry succeeds")
+	}
+	assertLastConfigAbsent(t, st, vipKey)
+	assertHealthStateAbsent(t, st, vipKey, "10.0.0.1")
+}
+
 func TestV2DeletePreservesStateWhenDataplaneCleanupFails(t *testing.T) {
 	dp := newRecordingDataPlane()
 	dp.removeErr = errors.New("vpp remove failed")
@@ -414,6 +1046,46 @@ func TestV2DeletePreservesStateWhenDataplaneCleanupFails(t *testing.T) {
 	}
 	assertLastConfigPresent(t, st, vipKey)
 	assertHealthStatePresent(t, st, vipKey, "10.0.0.1")
+}
+
+func TestV2DeleteRetriesDataplaneCleanupFailure(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.setRemoveErr(errors.New("vpp remove failed"))
+	router := newRecordingRouter(nil)
+	st := openTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, router, st, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+	defer mgr.Stop()
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool {
+		data, err := st.LoadLastConfig(vipKey)
+		return err == nil && len(data) > 0 && router.IsAnnounced(vip.Spec.Address)
+	}, "initial VIP apply and last config persistence")
+	if err := st.SaveHealthState(vipKey, "10.0.0.1", &store.BackendHealthRecord{State: "up"}); err != nil {
+		t.Fatalf("SaveHealthState: %v", err)
+	}
+
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return dp.removeCount() == 1 }, "failed dataplane removal")
+	dp.setRemoveErr(nil)
+
+	waitFor(t, func() bool {
+		return dp.removeCount() >= 2 &&
+			lastConfigAbsent(st, vipKey) &&
+			healthStateAbsent(st, vipKey, "10.0.0.1")
+	}, "dataplane cleanup retry")
+	if router.IsAnnounced(vip.Spec.Address) {
+		t.Fatal("route should remain withdrawn after dataplane cleanup retry succeeds")
+	}
+	assertLastConfigAbsent(t, st, vipKey)
+	assertHealthStateAbsent(t, st, vipKey, "10.0.0.1")
 }
 
 func TestV2ReconcilerDrainsPreviousAddressBeforeDataplaneUpdateAndRetries(t *testing.T) {
@@ -555,7 +1227,7 @@ func TestV2ReconcilerCoalescesBurstUpdatesToLatestSpec(t *testing.T) {
 	vr := newVIPReconciler(
 		"default/web",
 		dp,
-		newRouteCoordinator(router, logger),
+		newRouteCoordinator(router, logger, time.Hour),
 		nil,
 		nil,
 		nil,
@@ -695,16 +1367,56 @@ func assertHealthStatePresent(t *testing.T, st *store.Store, vipKey, backendAddr
 	}
 }
 
+func assertLastConfigAbsent(t *testing.T, st *store.Store, vipKey string) {
+	t.Helper()
+
+	if lastConfigAbsent(st, vipKey) {
+		return
+	}
+	t.Fatalf("last config for %s is still present", vipKey)
+}
+
+func lastConfigAbsent(st *store.Store, vipKey string) bool {
+	data, err := st.LoadLastConfig(vipKey)
+	if err != nil {
+		return false
+	}
+	return len(data) == 0
+}
+
+func assertHealthStateAbsent(t *testing.T, st *store.Store, vipKey, backendAddr string) {
+	t.Helper()
+
+	if healthStateAbsent(st, vipKey, backendAddr) {
+		return
+	}
+	t.Fatalf("health state for %s/%s is still present", vipKey, backendAddr)
+}
+
+func healthStateAbsent(st *store.Store, vipKey, backendAddr string) bool {
+	rec, err := st.LoadHealthState(vipKey, backendAddr)
+	if err != nil {
+		return false
+	}
+	return rec == nil
+}
+
 type recordingDataPlane struct {
-	mu        sync.Mutex
-	applies   int
-	removals  int
-	applyErr  error
-	removeErr error
-	recreates int
-	drifts    []dataplane.VIPTuningDrift
-	events    *eventRecorder
-	lastVIP   *v1alpha1.VirtualIP
+	mu            sync.Mutex
+	applies       int
+	removals      int
+	applyErr      error
+	removeErr     error
+	recreates     int
+	recreateErr   error
+	recreateSafe  bool
+	drifts        []dataplane.VIPTuningDrift
+	retainedDrain bool
+	retainedErr   error
+	retainedCheck int
+	events        *eventRecorder
+	recordApplies bool
+	lastVIP       *v1alpha1.VirtualIP
 }
 
 func newRecordingDataPlane() *recordingDataPlane {
@@ -716,6 +1428,9 @@ func (r *recordingDataPlane) ApplyVIP(_ context.Context, vip *v1alpha1.VirtualIP
 	defer r.mu.Unlock()
 	r.applies++
 	r.lastVIP = vip.DeepCopy()
+	if r.recordApplies {
+		r.events.record("apply:" + vip.Namespace + "/" + vip.Name + ":" + fmt.Sprint(vip.Spec.Port))
+	}
 	return r.applyErr
 }
 
@@ -762,9 +1477,67 @@ func (r *recordingDataPlane) RecreateVIP(_ context.Context, vip *v1alpha1.Virtua
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.recreates++
+	if r.recreateErr != nil {
+		if r.recreateSafe {
+			return &dataplane.VIPRecreateError{
+				Stage:              dataplane.VIPRecreateStageDelete,
+				RouteSafeToRestore: true,
+				Err:                r.recreateErr,
+			}
+		}
+		return r.recreateErr
+	}
 	r.drifts = nil
 	r.events.record("recreate:" + vip.Namespace + "/" + vip.Name)
 	return nil
+}
+
+func (r *recordingDataPlane) setRecreateErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recreateErr = err
+	r.recreateSafe = false
+}
+
+func (r *recordingDataPlane) setRouteSafeRecreateErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recreateErr = err
+	r.recreateSafe = true
+}
+
+func (r *recordingDataPlane) NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool, error) {
+	if current == nil || desired == nil || current.Spec.Address != desired.Spec.Address {
+		return false, nil
+	}
+	return current.Spec.Port != desired.Spec.Port ||
+		current.Spec.Protocol != desired.Spec.Protocol ||
+		current.Spec.EncapType != desired.Spec.EncapType ||
+		!sameUint8Ptr(current.Spec.DSCP, desired.Spec.DSCP), nil
+}
+
+func (r *recordingDataPlane) NeedsDrainForRetainedVIP(_ context.Context, _ *v1alpha1.VirtualIP) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.retainedCheck++
+	return r.retainedDrain, r.retainedErr
+}
+
+func (r *recordingDataPlane) retainedCheckCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.retainedCheck
+}
+
+func sameUint8Ptr(a, b *uint8) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return *a == *b
+	}
 }
 
 func (r *recordingDataPlane) applyCount() int {
@@ -786,6 +1559,12 @@ func (r *recordingDataPlane) removeCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.removals
+}
+
+func (r *recordingDataPlane) setRemoveErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.removeErr = err
 }
 
 func (r *recordingDataPlane) recreateCount() int {
@@ -841,6 +1620,12 @@ func (r *recordingRouter) IsAnnounced(vipAddress string) bool {
 	return r.announced[vipAddress]
 }
 
+func (r *recordingRouter) dropAnnounced(vipAddress string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.announced, vipAddress)
+}
+
 func (r *recordingRouter) Close() error {
 	return nil
 }
@@ -855,6 +1640,12 @@ func (r *recordingRouter) withdrawCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.withdraws
+}
+
+func (r *recordingRouter) setWithdrawErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.withdrawErr = err
 }
 
 type recordingStatusUpdater struct {

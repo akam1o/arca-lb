@@ -35,6 +35,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "Path to agent configuration file")
 	flag.Parse()
@@ -50,7 +54,7 @@ func main() {
 	cfg, err := agentconfig.LoadV2Config(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Setup logging
@@ -70,14 +74,17 @@ func main() {
 		ServiceName:    "arca-lb-agent",
 		ServiceVersion: "2.0.0",
 		OTLPEndpoint:   cfg.Telemetry.OTLPEndpoint,
+		OTLPInsecure:   cfg.Telemetry.OTLPInsecure,
 		MetricsEnabled: cfg.Metrics.Enabled,
 	})
 	if err != nil {
 		logger.Error("failed to setup OpenTelemetry", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() {
-		if err := otelShutdown.Shutdown(ctx); err != nil {
+		otelShutdownCtx, otelShutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer otelShutdownCancel()
+		if err := otelShutdown.Shutdown(otelShutdownCtx); err != nil {
 			logger.Error("failed to shutdown OpenTelemetry", "error", err)
 		}
 	}()
@@ -86,7 +93,7 @@ func main() {
 	st, err := store.Open(cfg.Agent.StorePath)
 	if err != nil {
 		logger.Error("failed to open local store", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() {
 		if err := st.Close(); err != nil {
@@ -98,7 +105,7 @@ func main() {
 	dp, err := dataplane.New(cfg.DataPlane.Type, cfg.DataPlane.VPP)
 	if err != nil {
 		logger.Error("failed to create data plane", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() {
 		if err := dp.Close(); err != nil {
@@ -116,7 +123,7 @@ func main() {
 		})
 		if err != nil {
 			logger.Error("failed to create FRR router", "error", err)
-			os.Exit(1)
+			return 1
 		}
 	} else {
 		router = routing.NewNoop()
@@ -134,7 +141,7 @@ func main() {
 	}, logger)
 	if err != nil {
 		logger.Error("failed to create status updater", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	var rolloutCoordinator reconciler.RolloutCoordinator
@@ -148,7 +155,7 @@ func main() {
 		}, logger)
 		if err != nil {
 			logger.Error("failed to create rollout coordinator", "error", err)
-			os.Exit(1)
+			return 1
 		}
 		logger.Info("rollout coordinator enabled",
 			"lease_namespace", cfg.Rollout.LeaseNamespace,
@@ -181,7 +188,7 @@ func main() {
 	// Start health check engine
 	if err := hcEngine.Start(ctx); err != nil {
 		logger.Error("failed to start health check engine", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Start reconciler
@@ -196,6 +203,22 @@ func main() {
 		logger:        logger,
 	}
 
+	shutdownAgent := func(metricsServer *http.Server) {
+		cancel()
+		if metricsServer != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer shutdownCancel()
+
+			if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+				logger.Error("failed to shutdown agent HTTP server", "error", err)
+			}
+		}
+		reconMgr.Stop()
+		hcEngine.Stop()
+
+		logger.Info("agent shutdown complete")
+	}
+
 	// Create and start K8s watcher
 	watcherCfg := watcher.Config{
 		Kubeconfig:     cfg.Kubernetes.Kubeconfig,
@@ -205,7 +228,8 @@ func main() {
 	w, err := watcher.New(watcherCfg, handler, logger)
 	if err != nil {
 		logger.Error("failed to create watcher", "error", err)
-		os.Exit(1)
+		shutdownAgent(nil)
+		return 1
 	}
 
 	// Start HTTP server for the container healthcheck and optional metrics before
@@ -234,8 +258,9 @@ func main() {
 	case err := <-watcherErrCh:
 		if err != nil {
 			logger.Error("watcher exited before initial sync", "error", err)
-			os.Exit(1)
 		}
+		shutdownAgent(metricsServer)
+		return 1
 	case <-watcherSyncedCh:
 	}
 
@@ -243,27 +268,19 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	exitCode := 0
 	select {
 	case sig := <-sigCh:
 		logger.Info("received signal, shutting down", "signal", sig)
 	case err := <-watcherErrCh:
 		if err != nil {
 			logger.Error("watcher exited with error", "error", err)
+			exitCode = 1
 		}
 	}
 
-	// Graceful shutdown
-	cancel()
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-
-	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("failed to shutdown agent HTTP server", "error", err)
-	}
-	reconMgr.Stop()
-	hcEngine.Stop()
-
-	logger.Info("agent shutdown complete")
+	shutdownAgent(metricsServer)
+	return exitCode
 }
 
 func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {
@@ -315,7 +332,9 @@ func (h *vipEventHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	if vip.Spec.HealthCheck != nil {
 		if err := h.hcEngine.UpdateVIP(vip); err != nil {
 			h.logger.Error("failed to update health check", "vip", vipKey, "error", err)
+			h.hcEngine.StopVIP(vipKey)
 			h.updateHealthCheckCondition(vip, metav1.ConditionFalse, "InvalidHealthCheck", err.Error())
+			h.reconciler.OnVIPUpdate(vip)
 			return
 		}
 		h.updateHealthCheckCondition(vip, metav1.ConditionTrue, "Configured", "Health check configured")
@@ -358,6 +377,19 @@ func (h *vipEventHandler) updateHealthCheckCondition(vip *v1alpha1.VirtualIP, st
 	}
 }
 
+type retainedConfigSource string
+
+const (
+	retainedConfigLastApplied retainedConfigSource = "last-applied"
+	retainedConfigPending     retainedConfigSource = "pending"
+)
+
+type retainedConfig struct {
+	key    string
+	source retainedConfigSource
+	vip    *v1alpha1.VirtualIP
+}
+
 func cleanupStaleLastConfigs(
 	ctx context.Context,
 	st *store.Store,
@@ -375,7 +407,11 @@ func cleanupStaleLastConfigs(
 	if err != nil {
 		return fmt.Errorf("failed to load last-applied configs: %w", err)
 	}
-	if len(lastConfigs) == 0 {
+	pendingConfigs, err := st.LoadAllPendingConfigs()
+	if err != nil {
+		return fmt.Errorf("failed to load pending configs: %w", err)
+	}
+	if len(lastConfigs) == 0 && len(pendingConfigs) == 0 {
 		return nil
 	}
 
@@ -385,6 +421,10 @@ func cleanupStaleLastConfigs(
 	for i := range currentVIPs {
 		currentVIP := &currentVIPs[i]
 		key := healthcheck.KeyForVIP(currentVIP)
+		if !currentVIP.DeletionTimestamp.IsZero() {
+			logger.Info("treating terminating VirtualIP as stale during initial cleanup", "vip", key)
+			continue
+		}
 		currentByKey[key] = currentVIP
 		if err := vipvalidation.Validate(currentVIP); err != nil {
 			logger.Warn("ignoring invalid current VirtualIP for stale route protection", "vip", key, "error", err)
@@ -395,26 +435,41 @@ func cleanupStaleLastConfigs(
 	}
 
 	var firstErr error
-	decodedLastConfigs := make(map[string]*v1alpha1.VirtualIP, len(lastConfigs))
+	retainedConfigs := make([]retainedConfig, 0, len(lastConfigs)+len(pendingConfigs))
 	for key, data := range lastConfigs {
-		vip, err := virtualIPFromLastConfig(key, data)
+		vip, err := virtualIPFromRetainedConfig(key, data, retainedConfigLastApplied)
 		if err != nil {
-			logger.Warn("failed to decode stale last-applied config", "vip", key, "error", err)
+			logger.Warn("failed to decode retained VIP config", "vip", key, "source", retainedConfigLastApplied, "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		decodedLastConfigs[key] = vip
+		retainedConfigs = append(retainedConfigs, retainedConfig{key: key, source: retainedConfigLastApplied, vip: vip})
+	}
+	for key, data := range pendingConfigs {
+		vip, err := virtualIPFromRetainedConfig(key, data, retainedConfigPending)
+		if err != nil {
+			logger.Warn("failed to decode retained VIP config", "vip", key, "source", retainedConfigPending, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		retainedConfigs = append(retainedConfigs, retainedConfig{key: key, source: retainedConfigPending, vip: vip})
 	}
 
-	for key, vip := range decodedLastConfigs {
+	for _, retained := range retainedConfigs {
+		key := retained.key
+		vip := retained.vip
 		if _, ok := currentByKey[key]; ok && !currentValidByKey[key] && vip.Spec.Address != "" {
 			currentAddresses[vip.Spec.Address] = struct{}{}
 		}
 	}
 
-	for key, vip := range decodedLastConfigs {
+	for _, retained := range retainedConfigs {
+		key := retained.key
+		vip := retained.vip
 		if currentVIP, ok := currentByKey[key]; ok {
 			// Invalid current specs are ignored by the event handler; keep the
 			// last known good dataplane state for this key until a valid spec arrives.
@@ -429,8 +484,10 @@ func cleanupStaleLastConfigs(
 
 		_, addressInUse := currentAddresses[vip.Spec.Address]
 		withdrawRoute := !addressInUse
+		_, currentKeyExists := currentByKey[key]
+		deleteHealthStates := !currentKeyExists
 		cleanup := func(ctx context.Context) error {
-			return cleanupRetainedVIP(ctx, st, dp, router, key, vip, withdrawRoute, logger)
+			return cleanupRetainedVIP(ctx, st, dp, router, key, retained.source, vip, withdrawRoute, deleteHealthStates, logger)
 		}
 		var cleanupErr error
 		if rollouts != nil {
@@ -455,11 +512,13 @@ func cleanupRetainedVIP(
 	dp dataplane.DataPlane,
 	router routing.Router,
 	key string,
+	source retainedConfigSource,
 	vip *v1alpha1.VirtualIP,
 	withdrawRoute bool,
+	deleteHealthStates bool,
 	logger *slog.Logger,
 ) error {
-	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "address", vip.Spec.Address, "withdraw_route", withdrawRoute)
+	logger.Info("cleaning stale retained VIP from dataplane", "vip", key, "source", source, "address", vip.Spec.Address, "withdraw_route", withdrawRoute)
 	if withdrawRoute && router != nil {
 		if err := router.WithdrawVIP(ctx, vip.Spec.Address); err != nil {
 			return fmt.Errorf("failed to withdraw stale retained VIP route: %w", err)
@@ -468,8 +527,20 @@ func cleanupRetainedVIP(
 	if err := dp.RemoveVIP(ctx, vip); err != nil {
 		return fmt.Errorf("failed to remove stale retained VIP from dataplane: %w", err)
 	}
-	if err := st.DeleteLastConfig(key); err != nil {
-		return fmt.Errorf("failed to delete stale last-applied config: %w", err)
+	switch source {
+	case retainedConfigLastApplied:
+		if err := st.DeleteLastConfig(key); err != nil {
+			return fmt.Errorf("failed to delete stale last-applied config: %w", err)
+		}
+	case retainedConfigPending:
+		if err := st.DeletePendingConfig(key); err != nil {
+			return fmt.Errorf("failed to delete stale pending config: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown retained config source %q", source)
+	}
+	if !deleteHealthStates {
+		return nil
 	}
 	if err := st.DeleteHealthStatesForVIP(key); err != nil {
 		return fmt.Errorf("failed to delete stale health states: %w", err)
@@ -484,7 +555,7 @@ func rolloutKeyForCleanup(key string, vip *v1alpha1.VirtualIP) string {
 	return "virtualip/" + key
 }
 
-func virtualIPFromLastConfig(key string, data []byte) (*v1alpha1.VirtualIP, error) {
+func virtualIPFromRetainedConfig(key string, data []byte, source retainedConfigSource) (*v1alpha1.VirtualIP, error) {
 	namespace, name, ok := strings.Cut(key, "/")
 	if !ok || namespace == "" || name == "" {
 		return nil, fmt.Errorf("invalid namespaced VIP key %q", key)
@@ -492,7 +563,7 @@ func virtualIPFromLastConfig(key string, data []byte) (*v1alpha1.VirtualIP, erro
 
 	var spec v1alpha1.VirtualIPSpec
 	if err := json.Unmarshal(data, &spec); err != nil {
-		return nil, fmt.Errorf("failed to decode last-applied config for %s: %w", key, err)
+		return nil, fmt.Errorf("failed to decode %s config for %s: %w", source, key, err)
 	}
 
 	return &v1alpha1.VirtualIP{
@@ -540,6 +611,10 @@ func retainedVIPTuningDriftConfig(vpp map[string]interface{}, logger *slog.Logge
 		drain, err := durationSetting(value)
 		if err != nil {
 			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", err)
+			continue
+		}
+		if drain <= 0 {
+			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", "must be positive")
 			continue
 		}
 		cfg.DrainDuration = drain

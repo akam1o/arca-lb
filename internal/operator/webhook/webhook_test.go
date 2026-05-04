@@ -157,6 +157,27 @@ func TestValidateVirtualIP_HTTPHealthCheck_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateVirtualIP_HTTPHealthCheck_InvalidExpectedCodes(t *testing.T) {
+	for _, code := range []int{99, 600} {
+		vip := validVIP()
+		vip.Spec.HealthCheck = &v1alpha1.HealthCheckSpec{
+			Type:            v1alpha1.HCTypeHTTP,
+			IntervalSeconds: 5,
+			TimeoutSeconds:  3,
+			RiseCount:       3,
+			FallCount:       2,
+			HTTP: &v1alpha1.HTTPHealthCheck{
+				Port:          8080,
+				Path:          "/healthz",
+				ExpectedCodes: []int{code},
+			},
+		}
+		if err := validateVirtualIP(vip); err == nil {
+			t.Errorf("expected error for HTTP expected code %d", code)
+		}
+	}
+}
+
 func TestValidateVirtualIP_TLSHelloHealthCheck_Valid(t *testing.T) {
 	vip := validVIP()
 	vip.Spec.HealthCheck = &v1alpha1.HealthCheckSpec{

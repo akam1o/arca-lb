@@ -19,25 +19,27 @@ import (
 
 // VPPConfig holds VPP-specific configuration.
 type VPPConfig struct {
-	SocketPath            string
-	ConnectTimeout        time.Duration
-	ReconnectInterval     time.Duration
-	EncapType             string
-	DSCP                  uint8
-	ServiceType           string
-	NewFlowsTableLength   uint32
-	FailOnAllBackendsDown bool
+	SocketPath                string
+	ConnectTimeout            time.Duration
+	ReconnectInterval         time.Duration
+	EncapType                 string
+	DSCP                      uint8
+	ServiceType               string
+	NewFlowsTableLength       uint32
+	FailOnAllBackendsDown     bool
+	StateVerificationInterval time.Duration
 }
 
 func vppConfigFromMap(m map[string]interface{}) VPPConfig {
 	cfg := VPPConfig{
-		SocketPath:          "/run/vpp/api.sock",
-		ConnectTimeout:      10 * time.Second,
-		ReconnectInterval:   5 * time.Second,
-		EncapType:           "L3DSR",
-		DSCP:                10,
-		ServiceType:         "CLUSTERIP",
-		NewFlowsTableLength: 65537,
+		SocketPath:                "/run/vpp/api.sock",
+		ConnectTimeout:            10 * time.Second,
+		ReconnectInterval:         5 * time.Second,
+		EncapType:                 "L3DSR",
+		DSCP:                      10,
+		ServiceType:               "CLUSTERIP",
+		NewFlowsTableLength:       65536,
+		StateVerificationInterval: 30 * time.Second,
 	}
 	if m == nil {
 		return cfg
@@ -57,7 +59,33 @@ func vppConfigFromMap(m map[string]interface{}) VPPConfig {
 	if v, ok := m["new_flows_table_length"].(int); ok {
 		cfg.NewFlowsTableLength = uint32(v)
 	}
+	if v, ok := vppDurationSetting(m["state_verification_interval"]); ok {
+		cfg.StateVerificationInterval = v
+	}
 	return cfg
+}
+
+func vppDurationSetting(value interface{}) (time.Duration, bool) {
+	switch v := value.(type) {
+	case nil:
+		return 0, false
+	case time.Duration:
+		return v, true
+	case string:
+		if v == "" {
+			return 0, false
+		}
+		d, err := time.ParseDuration(v)
+		return d, err == nil
+	case int:
+		return time.Duration(v) * time.Second, true
+	case int64:
+		return time.Duration(v) * time.Second, true
+	case float64:
+		return time.Duration(v * float64(time.Second)), true
+	default:
+		return 0, false
+	}
 }
 
 // VPP implements DataPlane using fd.io VPP.
@@ -68,7 +96,12 @@ type VPP struct {
 
 	addBackendFn    func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error
 	removeBackendFn func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error
+	addVIPFn        func(context.Context, *v1alpha1.VirtualIP) error
 	deleteVIPFn     func(context.Context, *v1alpha1.VirtualIP) error
+	vipExistsFn     func(context.Context, *v1alpha1.VirtualIP) (bool, error)
+	lookupVIPFn     func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error)
+	dumpBackendsFn  func(context.Context, *v1alpha1.VirtualIP, []v1alpha1.BackendSpec) (map[string]v1alpha1.BackendSpec, error)
+	now             func() time.Time
 
 	mu   sync.RWMutex
 	vips map[string]*vipEntry // key: namespace/name
@@ -77,8 +110,9 @@ type VPP struct {
 }
 
 type vipEntry struct {
-	vip      *v1alpha1.VirtualIP
-	backends map[string]v1alpha1.BackendSpec // key: address
+	vip          *v1alpha1.VirtualIP
+	backends     map[string]v1alpha1.BackendSpec // key: address
+	lastVerified time.Time
 }
 
 type vipAttributes struct {
@@ -113,11 +147,36 @@ func (v *VPP) vipKey(vip *v1alpha1.VirtualIP) string {
 	return vip.Namespace + "/" + vip.Name
 }
 
+func (v *VPP) currentTime() time.Time {
+	if v.now != nil {
+		return v.now()
+	}
+	return time.Now()
+}
+
+func (v *VPP) stateVerificationInterval() time.Duration {
+	if v.config.StateVerificationInterval > 0 {
+		return v.config.StateVerificationInterval
+	}
+	return 30 * time.Second
+}
+
+func (v *VPP) shouldVerifyCachedVIP(entry *vipEntry, now time.Time) bool {
+	if entry == nil {
+		return false
+	}
+	return entry.lastVerified.IsZero() ||
+		!now.Before(entry.lastVerified.Add(v.stateVerificationInterval()))
+}
+
 func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
 	key := v.vipKey(vip)
+	now := v.currentTime()
+	verifiedNow := false
+	verifiedMissing := false
 	desiredAttrs, err := v.effectiveVIPAttributes(vip)
 	if err != nil {
 		return fmt.Errorf("invalid desired VIP attributes for %s: %w", key, err)
@@ -130,22 +189,38 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 			return fmt.Errorf("invalid existing VIP attributes for %s: %w", key, err)
 		}
 		if existingAttrs != desiredAttrs {
-			if err := v.deleteVIPLocked(ctx, existing.vip); err != nil {
-				return fmt.Errorf("failed to delete existing VIP for update: %w", err)
+			if err := v.deleteCachedVIPForAttributeChangeLocked(ctx, key, existing); err != nil {
+				return err
 			}
-			delete(v.vips, key)
-			v.clearTuningDriftsLocked(key)
 			exists = false
+			existing = nil
+		} else if v.shouldVerifyCachedVIP(existing, now) {
+			refreshed, found, err := v.refreshCachedVIPLocked(ctx, key, vip, healthyBackends, now)
+			if err != nil {
+				v.markVIPNeedsVerificationLocked(key)
+				return fmt.Errorf("failed to verify cached VIP for %s: %w", key, err)
+			}
+			if found {
+				existing = refreshed
+				verifiedNow = true
+			} else {
+				exists = false
+				existing = nil
+				verifiedMissing = true
+			}
 		}
 	}
 
 	if !exists {
-		adopted, err := v.adoptExistingVIPLocked(ctx, vip, healthyBackends)
-		if err != nil {
-			return fmt.Errorf("failed to inspect existing VIP for %s: %w", key, err)
+		adopted := false
+		if !verifiedMissing {
+			adopted, err = v.adoptExistingVIPLocked(ctx, vip, healthyBackends, now)
+			if err != nil {
+				return fmt.Errorf("failed to inspect existing VIP for %s: %w", key, err)
+			}
 		}
 		if !adopted {
-			if err := v.addVIPLocked(ctx, vip); err != nil {
+			if err := v.addVIP(ctx, vip); err != nil {
 				return fmt.Errorf("failed to add VIP: %w", err)
 			}
 
@@ -158,12 +233,17 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 		} else {
 			existing = v.vips[key]
 		}
+		verifiedNow = true
 	}
 
 	if err := v.reconcileBackendsLocked(ctx, key, existing, vip, healthyBackends); err != nil {
+		v.markVIPNeedsVerificationLocked(key)
 		return err
 	}
 	existing.vip = vip.DeepCopy()
+	if verifiedNow {
+		existing.lastVerified = now
+	}
 
 	return nil
 }
@@ -196,28 +276,90 @@ func (v *VPP) RemoveVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 	return nil
 }
 
-func (v *VPP) adoptExistingVIPLocked(ctx context.Context, vip *v1alpha1.VirtualIP, desiredBackends []v1alpha1.BackendSpec) (bool, error) {
-	detail, exists, err := v.lookupVIPLocked(ctx, vip)
+func (v *VPP) deleteCachedVIPForAttributeChangeLocked(ctx context.Context, key string, entry *vipEntry) error {
+	if entry == nil || entry.vip == nil {
+		delete(v.vips, key)
+		v.clearTuningDriftsLocked(key)
+		return nil
+	}
+
+	_, exists, err := v.lookupVIP(ctx, entry.vip)
+	if err != nil {
+		return fmt.Errorf("failed to inspect existing VIP for update: %w", err)
+	}
+	if exists {
+		if err := v.deleteVIP(ctx, entry.vip); err != nil {
+			return fmt.Errorf("failed to delete existing VIP for update: %w", err)
+		}
+	}
+	delete(v.vips, key)
+	v.clearTuningDriftsLocked(key)
+	return nil
+}
+
+func (v *VPP) refreshCachedVIPLocked(ctx context.Context, key string, vip *v1alpha1.VirtualIP, desiredBackends []v1alpha1.BackendSpec, now time.Time) (*vipEntry, bool, error) {
+	detail, exists, err := v.lookupVIP(ctx, vip)
+	if err != nil {
+		return nil, false, err
+	}
+	if !exists {
+		delete(v.vips, key)
+		v.clearTuningDriftsLocked(key)
+		v.logger.Warn("cached VPP VIP is missing, recreating", "vip", key)
+		return nil, false, nil
+	}
+	if !v.vipDetailsMatchDesired(vip, detail) {
+		if err := v.deleteVIP(ctx, vip); err != nil {
+			return nil, true, fmt.Errorf("failed to delete cached VIP with stale attributes: %w", err)
+		}
+		delete(v.vips, key)
+		v.clearTuningDriftsLocked(key)
+		return nil, false, nil
+	}
+
+	backends, err := v.dumpBackends(ctx, vip, desiredBackends)
+	if err != nil {
+		return nil, true, err
+	}
+	entry := &vipEntry{
+		vip:          vip.DeepCopy(),
+		backends:     backends,
+		lastVerified: now,
+	}
+	v.vips[key] = entry
+	v.setTuningDriftsLocked(key, v.detectTuningDrifts(vip, detail))
+	return entry, true, nil
+}
+
+func (v *VPP) markVIPNeedsVerificationLocked(key string) {
+	if entry := v.vips[key]; entry != nil {
+		entry.lastVerified = time.Time{}
+	}
+}
+
+func (v *VPP) adoptExistingVIPLocked(ctx context.Context, vip *v1alpha1.VirtualIP, desiredBackends []v1alpha1.BackendSpec, now time.Time) (bool, error) {
+	detail, exists, err := v.lookupVIP(ctx, vip)
 	if err != nil || !exists {
 		return exists, err
 	}
 	if !v.vipDetailsMatchDesired(vip, detail) {
-		if err := v.deleteVIPLocked(ctx, vip); err != nil {
+		if err := v.deleteVIP(ctx, vip); err != nil {
 			return false, fmt.Errorf("failed to delete retained VIP with stale attributes: %w", err)
 		}
 		v.clearTuningDriftsLocked(v.vipKey(vip))
 		return false, nil
 	}
 
-	backends, err := v.dumpBackendsLocked(ctx, vip, desiredBackends)
+	backends, err := v.dumpBackends(ctx, vip, desiredBackends)
 	if err != nil {
 		return false, err
 	}
 
 	key := v.vipKey(vip)
 	v.vips[key] = &vipEntry{
-		vip:      vip.DeepCopy(),
-		backends: backends,
+		vip:          vip.DeepCopy(),
+		backends:     backends,
+		lastVerified: now,
 	}
 	drifts := v.detectTuningDrifts(vip, detail)
 	v.setTuningDriftsLocked(key, drifts)
@@ -238,19 +380,88 @@ func (v *VPP) TuningDrifts(vipKey string) []VIPTuningDrift {
 	return out
 }
 
+func (v *VPP) NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool, error) {
+	if current == nil || desired == nil || current.Spec.Address != desired.Spec.Address {
+		return false, nil
+	}
+
+	currentAttrs, err := v.effectiveVIPAttributes(current)
+	if err != nil {
+		return false, fmt.Errorf("invalid current VIP attributes for %s: %w", v.vipKey(current), err)
+	}
+	desiredAttrs, err := v.effectiveVIPAttributes(desired)
+	if err != nil {
+		return false, fmt.Errorf("invalid desired VIP attributes for %s: %w", v.vipKey(desired), err)
+	}
+	return currentAttrs != desiredAttrs, nil
+}
+
+func (v *VPP) NeedsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error) {
+	if vip == nil {
+		return false, nil
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	key := v.vipKey(vip)
+	desiredAttrs, err := v.effectiveVIPAttributes(vip)
+	if err != nil {
+		return false, fmt.Errorf("invalid desired VIP attributes for %s: %w", key, err)
+	}
+
+	if entry := v.vips[key]; entry != nil {
+		existingAttrs, err := v.effectiveVIPAttributes(entry.vip)
+		if err != nil {
+			return false, fmt.Errorf("invalid cached VIP attributes for %s: %w", key, err)
+		}
+		if existingAttrs != desiredAttrs {
+			return true, nil
+		}
+	}
+
+	detail, exists, err := v.lookupVIP(ctx, vip)
+	if err != nil || !exists {
+		if entry := v.vips[key]; entry != nil && !exists {
+			entry.lastVerified = time.Time{}
+		}
+		return false, err
+	}
+	matchesDesired := v.vipDetailsMatchDesired(vip, detail)
+	if !matchesDesired {
+		v.markVIPNeedsVerificationLocked(key)
+	}
+	return !matchesDesired, nil
+}
+
 func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
 	key := v.vipKey(vip)
-	if err := v.deleteVIPLocked(ctx, vip); err != nil {
-		return fmt.Errorf("failed to delete VIP before recreate: %w", err)
+	deleteTarget := vip
+	if entry, ok := v.vips[key]; ok {
+		deleteTarget = entry.vip
+	}
+	if err := v.deleteVIP(ctx, deleteTarget); err != nil {
+		retained, inspectErr := v.vipExists(ctx, deleteTarget)
+		if inspectErr != nil {
+			retained = false
+		}
+		return &VIPRecreateError{
+			Stage:              VIPRecreateStageDelete,
+			RouteSafeToRestore: retained,
+			Err:                fmt.Errorf("failed to delete VIP before recreate: %w", err),
+		}
 	}
 	delete(v.vips, key)
 
-	if err := v.addVIPLocked(ctx, vip); err != nil {
+	if err := v.addVIP(ctx, vip); err != nil {
 		v.clearTuningDriftsLocked(key)
-		return fmt.Errorf("failed to add VIP during recreate: %w", err)
+		return &VIPRecreateError{
+			Stage: VIPRecreateStageAdd,
+			Err:   fmt.Errorf("failed to add VIP during recreate: %w", err),
+		}
 	}
 
 	entry := &vipEntry{
@@ -260,7 +471,10 @@ func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyB
 	v.vips[key] = entry
 	v.clearTuningDriftsLocked(key)
 	if err := v.reconcileBackendsLocked(ctx, key, entry, vip, healthyBackends); err != nil {
-		return err
+		return &VIPRecreateError{
+			Stage: VIPRecreateStageBackends,
+			Err:   err,
+		}
 	}
 
 	return nil
@@ -357,11 +571,39 @@ func (v *VPP) removeBackend(ctx context.Context, vip *v1alpha1.VirtualIP, backen
 	return v.removeBackendLocked(ctx, vip, backend)
 }
 
+func (v *VPP) addVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
+	if v.addVIPFn != nil {
+		return v.addVIPFn(ctx, vip)
+	}
+	return v.addVIPLocked(ctx, vip)
+}
+
 func (v *VPP) deleteVIP(ctx context.Context, vip *v1alpha1.VirtualIP) error {
 	if v.deleteVIPFn != nil {
 		return v.deleteVIPFn(ctx, vip)
 	}
 	return v.deleteVIPLocked(ctx, vip)
+}
+
+func (v *VPP) lookupVIP(ctx context.Context, vip *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+	if v.lookupVIPFn != nil {
+		return v.lookupVIPFn(ctx, vip)
+	}
+	return v.lookupVIPLocked(ctx, vip)
+}
+
+func (v *VPP) dumpBackends(ctx context.Context, vip *v1alpha1.VirtualIP, desiredBackends []v1alpha1.BackendSpec) (map[string]v1alpha1.BackendSpec, error) {
+	if v.dumpBackendsFn != nil {
+		return v.dumpBackendsFn(ctx, vip, desiredBackends)
+	}
+	return v.dumpBackendsLocked(ctx, vip, desiredBackends)
+}
+
+func (v *VPP) vipExists(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error) {
+	if v.vipExistsFn != nil {
+		return v.vipExistsFn(ctx, vip)
+	}
+	return v.vipExistsLocked(ctx, vip)
 }
 
 func (v *VPP) AddBackend(ctx context.Context, vip *v1alpha1.VirtualIP, backend v1alpha1.BackendSpec) error {
@@ -549,14 +791,9 @@ func (v *VPP) effectiveVIPAttributes(vip *v1alpha1.VirtualIP) (vipAttributes, er
 		encapType = string(vip.Spec.EncapType)
 	}
 
-	dscp := v.config.DSCP
-	if encapType == "L3DSR" {
-		if vip.Spec.DSCP != nil {
-			dscp = *vip.Spec.DSCP
-		}
-		if dscp == 0 {
-			return vipAttributes{}, fmt.Errorf("invalid dscp=0 for L3DSR; must be 1-63")
-		}
+	dscp, err := v.effectiveDSCP(encapType, vip)
+	if err != nil {
+		return vipAttributes{}, err
 	}
 
 	return vipAttributes{
@@ -568,6 +805,21 @@ func (v *VPP) effectiveVIPAttributes(vip *v1alpha1.VirtualIP) (vipAttributes, er
 		serviceType:         v.config.ServiceType,
 		newFlowsTableLength: v.config.NewFlowsTableLength,
 	}, nil
+}
+
+func (v *VPP) effectiveDSCP(encapType string, vip *v1alpha1.VirtualIP) (uint8, error) {
+	if encapType != "L3DSR" {
+		return 0, nil
+	}
+
+	dscp := v.config.DSCP
+	if vip.Spec.DSCP != nil {
+		dscp = *vip.Spec.DSCP
+	}
+	if dscp == 0 {
+		return 0, fmt.Errorf("invalid dscp=0 for L3DSR; must be 1-63")
+	}
+	return dscp, nil
 }
 
 func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
@@ -587,14 +839,9 @@ func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
 		encapType = string(vip.Spec.EncapType)
 	}
 
-	dscp := v.config.DSCP
-	if encapType == "L3DSR" {
-		if vip.Spec.DSCP != nil {
-			dscp = *vip.Spec.DSCP
-		}
-		if dscp == 0 {
-			return fmt.Errorf("invalid dscp=0 for L3DSR; must be 1-63")
-		}
+	dscp, err := v.effectiveDSCP(encapType, vip)
+	if err != nil {
+		return err
 	}
 
 	req := &lb.LbAddDelVip{
@@ -636,9 +883,9 @@ func (v *VPP) deleteVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error 
 		encapType = string(vip.Spec.EncapType)
 	}
 
-	dscp := v.config.DSCP
-	if encapType == "L3DSR" && vip.Spec.DSCP != nil {
-		dscp = *vip.Spec.DSCP
+	dscp, err := v.effectiveDSCP(encapType, vip)
+	if err != nil {
+		return err
 	}
 
 	req := &lb.LbAddDelVip{
@@ -756,11 +1003,12 @@ func (v *VPP) vipDetailsMatchDesired(vip *v1alpha1.VirtualIP, detail *lb.LbVipDe
 	if err != nil {
 		return false
 	}
+	dscpMatches := attrs.encapType != "L3DSR" || uint8(detail.Dscp) == attrs.dscp
 	// Flow table length is intentionally excluded here. A retained VIP with
 	// matching forwarding attributes can be adopted first and recreated later
 	// through a drained rolling repair.
 	return detail.Encap == encapToAPI(attrs.encapType) &&
-		uint8(detail.Dscp) == attrs.dscp &&
+		dscpMatches &&
 		detail.SrvType == serviceTypeToAPI(attrs.serviceType) &&
 		detail.TargetPort == uint16(attrs.port)
 }

@@ -51,6 +51,7 @@ metrics:
 
 telemetry:
   otlpEndpoint: ""         # empty = disabled
+  otlpInsecure: false      # true only for plaintext collectors
 
 log:
   level: "info"            # "debug", "info", "warn", "error"
@@ -88,6 +89,12 @@ When `routing.type` is `frr`, the Agent uses `vtysh` to manage static VIP
 routes. In Kubernetes deployments, FRR is expected to run on the node and expose
 its runtime socket directory at `/run/frr`; the Agent does not start FRR or
 configure BGP peers.
+
+The bundled `config/agent/daemonset.yaml` is the FRR-required production
+manifest. If `routing.enabled: false` or `routing.type: noop` is needed for
+development or data-plane-only validation, deploy
+`config/agent-no-frr/` instead so the Pod does not wait on `vtysh` or mount
+`/run/frr`.
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -131,6 +138,7 @@ the cluster.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `telemetry.otlpEndpoint` | OTLP collector endpoint (empty = disabled) | `""` |
+| `telemetry.otlpInsecure` | Disable TLS when exporting traces to a plaintext OTLP collector | `false` |
 
 ### Log settings
 
@@ -172,7 +180,7 @@ spec:
     - address: 10.0.1.2
       weight: 1
   healthCheck:
-    type: http               # http, https, tcp, ping
+    type: http               # http, https, tcp, ping, tls-hello
     intervalSeconds: 5
     timeoutSeconds: 3
     riseCount: 3
@@ -207,7 +215,7 @@ spec:
 
 | Field | Description | Required |
 |-------|-------------|----------|
-| `type` | Probe type (http, https, tcp, ping) | Yes |
+| `type` | Probe type (http, https, tcp, ping, tls-hello) | Yes |
 | `intervalSeconds` | Probe interval in seconds | No (default: 5) |
 | `timeoutSeconds` | Probe timeout in seconds | No (default: 3) |
 | `riseCount` | Consecutive successes to mark healthy | No (default: 3) |

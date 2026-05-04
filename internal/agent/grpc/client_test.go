@@ -678,3 +678,30 @@ func TestConvertProtoToConfigParsesHealthCheckConfig(t *testing.T) {
 		t.Fatalf("expected_codes = %#v, want [200 204]", hcConfig["expected_codes"])
 	}
 }
+
+func TestConvertProtoHCType(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	client := NewClient(&config.Config{}, logger, nil)
+
+	tests := []struct {
+		name string
+		in   pb.HCType
+		want models.HCType
+	}{
+		{name: "http", in: pb.HCType_HC_TYPE_HTTP, want: models.HCTypeHTTP},
+		{name: "https", in: pb.HCType_HC_TYPE_HTTPS, want: models.HCTypeHTTPS},
+		{name: "tcp", in: pb.HCType_HC_TYPE_TCP, want: models.HCTypeTCP},
+		{name: "ping", in: pb.HCType_HC_TYPE_PING, want: models.HCTypePing},
+		{name: "tls hello", in: pb.HCType_HC_TYPE_TLS_HELLO, want: models.HCTypeTLSHello},
+		{name: "unknown", in: pb.HCType_HC_TYPE_UNSPECIFIED, want: models.HCTypeTCP},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := client.convertProtoHCType(tt.in); got != tt.want {
+				t.Fatalf("convertProtoHCType(%s) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
+	}
+}

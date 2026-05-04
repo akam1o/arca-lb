@@ -15,8 +15,10 @@ var migrationsFS embed.FS
 
 // applyMigrations applies all migration files in order
 func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
+	db := ds.db.WithContext(ctx)
+
 	// Create schema_migrations table if not exists
-	if err := ds.db.Exec(`
+	if err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version VARCHAR(255) NOT NULL PRIMARY KEY,
 			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -42,7 +44,7 @@ func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
 
 		// Check if migration already applied
 		var count int64
-		if err := ds.db.Table("schema_migrations").Where("version = ?", version).Count(&count).Error; err != nil {
+		if err := db.Table("schema_migrations").Where("version = ?", version).Count(&count).Error; err != nil {
 			return fmt.Errorf("failed to check migration status: %w", err)
 		}
 
@@ -57,12 +59,12 @@ func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
 		}
 
 		// Execute migration
-		if err := ds.db.Exec(string(content)).Error; err != nil {
+		if err := db.Exec(string(content)).Error; err != nil {
 			return fmt.Errorf("failed to apply migration %s: %w", version, err)
 		}
 
 		// Record migration
-		if err := ds.db.Table("schema_migrations").Create(map[string]interface{}{
+		if err := db.Table("schema_migrations").Create(map[string]interface{}{
 			"version": version,
 		}).Error; err != nil {
 			return fmt.Errorf("failed to record migration %s: %w", version, err)

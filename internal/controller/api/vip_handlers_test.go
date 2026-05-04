@@ -79,6 +79,38 @@ func TestCreateVIP(t *testing.T) {
 			expectedStatus: http.StatusCreated,
 		},
 		{
+			name: "with tls hello health check",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.102",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "tls-hello",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"port": 8443,
+					},
+				},
+			},
+			expectedStatus: http.StatusCreated,
+		},
+		{
+			name: "tls hello health check without port",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.102",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "tls-hello",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config":   map[string]interface{}{},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "invalid health check config",
 			requestBody: map[string]interface{}{
 				"vip":      "192.168.1.101",
@@ -125,6 +157,42 @@ func TestCreateVIP(t *testing.T) {
 					"config": map[string]interface{}{
 						"port":           8080,
 						"expected_codes": []float64{200.5},
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check expected code below range",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"port":           8080,
+						"expected_codes": []int{99},
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check expected code above range",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"port":           8080,
+						"expected_codes": []int{600},
 					},
 				},
 			},
@@ -260,6 +328,16 @@ func TestCreateVIP(t *testing.T) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
+		{
+			name: "invalid dscp for default L3DSR",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.100",
+				"port":     80,
+				"protocol": "TCP",
+				"dscp":     0,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -299,6 +377,12 @@ func TestCreateVIP(t *testing.T) {
 					assert.Equal(t, 5, vip.HealthCheck.TimeoutSec)
 					assert.Equal(t, 2, vip.HealthCheck.RiseCount)
 					assert.Equal(t, 4, vip.HealthCheck.FallCount)
+				}
+				if tt.name == "with tls hello health check" {
+					require.NotNil(t, vip.HealthCheck)
+					assert.Equal(t, models.HCTypeTLSHello, vip.HealthCheck.Type)
+					assert.Equal(t, 10, vip.HealthCheck.IntervalSec)
+					assert.Equal(t, 5, vip.HealthCheck.TimeoutSec)
 				}
 			}
 		})
@@ -478,6 +562,14 @@ func TestUpdateVIP(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
+			name:  "invalid dscp for default L3DSR",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"dscp": 0,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name:  "datastore error",
 			vipID: "vip-1",
 			requestBody: map[string]interface{}{
@@ -525,6 +617,41 @@ func TestUpdateVIP(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateVIPClearsDSCP(t *testing.T) {
+	server, mockDS := setupTestServer()
+	ctx := context.TODO()
+
+	dscp := uint8(10)
+	vip := &models.VIP{
+		ID:        "vip-1",
+		VIP:       "192.168.1.100",
+		Port:      80,
+		Protocol:  models.ProtocolTCP,
+		EncapType: models.EncapTypeL3DSR,
+		DSCP:      &dscp,
+	}
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
+
+	body, err := json.Marshal(map[string]interface{}{
+		"dscp": nil,
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/vips/vip-1", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var updatedVIP models.VIP
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &updatedVIP))
+	require.Nil(t, updatedVIP.DSCP)
+
+	storedVIP, err := mockDS.GetVIP(ctx, "vip-1")
+	require.NoError(t, err)
+	require.Nil(t, storedVIP.DSCP)
 }
 
 func TestDeleteVIP(t *testing.T) {

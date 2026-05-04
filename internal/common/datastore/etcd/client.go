@@ -120,8 +120,24 @@ func (ds *EtcdDataStore) Close() error {
 	return nil
 }
 
+func (ds *EtcdDataStore) contextWithRequestTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ds == nil || ds.requestTimeout <= 0 {
+		return ctx, func() {}
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, ds.requestTimeout)
+}
+
 // GetConfig retrieves the complete configuration for agent distribution
 func (ds *EtcdDataStore) GetConfig(ctx context.Context) (*models.Config, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	vips, err := ds.ListVIPs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list VIPs: %w", err)

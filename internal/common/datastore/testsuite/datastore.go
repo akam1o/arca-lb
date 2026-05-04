@@ -25,8 +25,16 @@ func RunDataStoreTests(t *testing.T, factory DataStoreFactory) {
 		testVIPNullableFields(t, factory)
 	})
 
+	t.Run("VIP Uniqueness", func(t *testing.T) {
+		testVIPUniqueness(t, factory)
+	})
+
 	t.Run("Backend CRUD", func(t *testing.T) {
 		testBackendCRUD(t, factory)
+	})
+
+	t.Run("Backend Uniqueness", func(t *testing.T) {
+		testBackendUniqueness(t, factory)
 	})
 
 	t.Run("Revision Management", func(t *testing.T) {
@@ -35,6 +43,10 @@ func RunDataStoreTests(t *testing.T, factory DataStoreFactory) {
 
 	t.Run("Transaction", func(t *testing.T) {
 		testTransaction(t, factory)
+	})
+
+	t.Run("Transaction VIP Tuple Index", func(t *testing.T) {
+		testTransactionVIPTupleIndex(t, factory)
 	})
 
 	t.Run("Watch", func(t *testing.T) {
@@ -180,6 +192,63 @@ func testVIPNullableFields(t *testing.T, factory DataStoreFactory) {
 	assert.Nil(t, updated.DSCP)
 }
 
+func testVIPUniqueness(t *testing.T, factory DataStoreFactory) {
+	ctx := context.Background()
+	ds, cleanup := factory(ctx, t)
+	defer cleanup()
+
+	vip := &models.VIP{
+		VIP:      "192.168.1.130",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err := ds.CreateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	duplicate := &models.VIP{
+		VIP:      vip.VIP,
+		Port:     vip.Port,
+		Protocol: vip.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, duplicate)
+	require.ErrorIs(t, err, datastore.ErrConflict)
+
+	other := &models.VIP{
+		VIP:      "192.168.1.131",
+		Port:     81,
+		Protocol: models.ProtocolUDP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, other)
+	require.NoError(t, err)
+
+	other.VIP = vip.VIP
+	other.Port = vip.Port
+	other.Protocol = vip.Protocol
+	err = ds.UpdateVIP(ctx, other)
+	require.ErrorIs(t, err, datastore.ErrConflict)
+
+	retrieved, err := ds.GetVIP(ctx, other.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "192.168.1.131", retrieved.VIP)
+	assert.Equal(t, 81, retrieved.Port)
+	assert.Equal(t, models.ProtocolUDP, retrieved.Protocol)
+
+	err = ds.DeleteVIP(ctx, vip.ID)
+	require.NoError(t, err)
+
+	replacement := &models.VIP{
+		VIP:      vip.VIP,
+		Port:     vip.Port,
+		Protocol: vip.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, replacement)
+	require.NoError(t, err)
+}
+
 func testBackendCRUD(t *testing.T, factory DataStoreFactory) {
 	ctx := context.Background()
 	ds, cleanup := factory(ctx, t)
@@ -304,6 +373,65 @@ func testBackendCRUD(t *testing.T, factory DataStoreFactory) {
 	assert.ErrorIs(t, err, datastore.ErrNotFound)
 }
 
+func testBackendUniqueness(t *testing.T, factory DataStoreFactory) {
+	ctx := context.Background()
+	ds, cleanup := factory(ctx, t)
+	defer cleanup()
+
+	vip := &models.VIP{
+		VIP:      "192.168.1.210",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err := ds.CreateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	backend := &models.Backend{
+		VIPID:  vip.ID,
+		IP:     "10.0.1.1",
+		Weight: 10,
+	}
+	err = ds.AddBackend(ctx, backend)
+	require.NoError(t, err)
+
+	duplicate := &models.Backend{
+		VIPID:  vip.ID,
+		IP:     backend.IP,
+		Weight: 1,
+	}
+	err = ds.AddBackend(ctx, duplicate)
+	require.ErrorIs(t, err, datastore.ErrConflict)
+
+	other := &models.Backend{
+		VIPID:  vip.ID,
+		IP:     "10.0.1.2",
+		Weight: 20,
+	}
+	err = ds.AddBackend(ctx, other)
+	require.NoError(t, err)
+
+	other.IP = backend.IP
+	err = ds.UpdateBackend(ctx, other)
+	require.ErrorIs(t, err, datastore.ErrConflict)
+
+	retrieved, err := ds.GetBackend(ctx, other.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.1.2", retrieved.IP)
+	assert.Equal(t, 20, retrieved.Weight)
+
+	err = ds.DeleteBackend(ctx, backend.ID)
+	require.NoError(t, err)
+
+	replacement := &models.Backend{
+		VIPID:  vip.ID,
+		IP:     backend.IP,
+		Weight: 1,
+	}
+	err = ds.AddBackend(ctx, replacement)
+	require.NoError(t, err)
+}
+
 func testRevisionManagement(t *testing.T, factory DataStoreFactory) {
 	ctx := context.Background()
 	ds, cleanup := factory(ctx, t)
@@ -408,6 +536,22 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	require.NoError(t, err)
 	assert.Equal(t, 8080, updatedVIP.Port)
 
+	txDuplicateVIPTuple, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+
+	duplicateVIPTuple := &models.VIP{
+		VIP:      updatedVIP.VIP,
+		Port:     updatedVIP.Port,
+		Protocol: updatedVIP.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = txDuplicateVIPTuple.CreateVIP(ctx, duplicateVIPTuple)
+	if err == nil {
+		err = txDuplicateVIPTuple.Commit()
+	}
+	require.ErrorIs(t, err, datastore.ErrConflict)
+	_ = txDuplicateVIPTuple.Rollback()
+
 	// A backend created in a transaction should be fully usable after commit.
 	txBackend, err := ds.BeginTx(ctx)
 	require.NoError(t, err)
@@ -452,12 +596,55 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	assert.Equal(t, committedBackend.VIPID, retrievedBackend.VIPID)
 	assert.Equal(t, committedBackend.IP, retrievedBackend.IP)
 
+	txDuplicateBackendIP, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+
+	duplicateBackendIP := &models.Backend{
+		VIPID:  vip.ID,
+		IP:     committedBackend.IP,
+		Weight: 1,
+	}
+	err = txDuplicateBackendIP.AddBackend(ctx, duplicateBackendIP)
+	if err == nil {
+		err = txDuplicateBackendIP.Commit()
+	}
+	require.ErrorIs(t, err, datastore.ErrConflict)
+	_ = txDuplicateBackendIP.Rollback()
+
 	committedBackend.Weight = 20
 	err = ds.UpdateBackend(ctx, committedBackend)
 	require.NoError(t, err)
 
 	err = ds.DeleteBackend(ctx, committedBackend.ID)
 	require.NoError(t, err)
+
+	addThenDeleteVIP := &models.VIP{
+		VIP:      "192.168.1.151",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, addThenDeleteVIP)
+	require.NoError(t, err)
+
+	txAddBackendThenDeleteVIP, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	transientBackend := &models.Backend{
+		VIPID:  addThenDeleteVIP.ID,
+		IP:     "10.0.1.20",
+		Weight: 1,
+	}
+	err = txAddBackendThenDeleteVIP.AddBackend(ctx, transientBackend)
+	require.NoError(t, err)
+	err = txAddBackendThenDeleteVIP.DeleteVIP(ctx, addThenDeleteVIP.ID)
+	require.NoError(t, err)
+	err = txAddBackendThenDeleteVIP.Commit()
+	require.NoError(t, err)
+
+	_, err = ds.GetVIP(ctx, addThenDeleteVIP.ID)
+	require.ErrorIs(t, err, datastore.ErrNotFound)
+	_, err = ds.GetBackend(ctx, transientBackend.ID)
+	require.ErrorIs(t, err, datastore.ErrNotFound)
 
 	// A transactional backend still requires an existing parent VIP.
 	txMissingBackend, err := ds.BeginTx(ctx)
@@ -519,6 +706,201 @@ func testTransaction(t *testing.T, factory DataStoreFactory) {
 	// Backend should still not be visible after rollback
 	_, err = ds.GetBackend(ctx, backend.ID)
 	assert.Error(t, err)
+}
+
+func testTransactionVIPTupleIndex(t *testing.T, factory DataStoreFactory) {
+	ctx := context.Background()
+	ds, cleanup := factory(ctx, t)
+	defer cleanup()
+
+	updatedTwice := &models.VIP{
+		VIP:      "192.168.1.220",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err := ds.CreateVIP(ctx, updatedTwice)
+	require.NoError(t, err)
+
+	txUpdateTwice, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	updatedTwice.Port = 81
+	err = txUpdateTwice.UpdateVIP(ctx, updatedTwice)
+	require.NoError(t, err)
+	updatedTwice.Port = 82
+	err = txUpdateTwice.UpdateVIP(ctx, updatedTwice)
+	require.NoError(t, err)
+	require.NoError(t, txUpdateTwice.Commit())
+
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      updatedTwice.VIP,
+		Port:     81,
+		Protocol: updatedTwice.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.NoError(t, err)
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      updatedTwice.VIP,
+		Port:     82,
+		Protocol: updatedTwice.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.ErrorIs(t, err, datastore.ErrConflict)
+
+	reverted := &models.VIP{
+		VIP:      "192.168.1.221",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, reverted)
+	require.NoError(t, err)
+
+	txRevert, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	reverted.Port = 81
+	err = txRevert.UpdateVIP(ctx, reverted)
+	require.NoError(t, err)
+	reverted.Port = 80
+	err = txRevert.UpdateVIP(ctx, reverted)
+	require.NoError(t, err)
+	require.NoError(t, txRevert.Commit())
+
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      reverted.VIP,
+		Port:     81,
+		Protocol: reverted.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.NoError(t, err)
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      reverted.VIP,
+		Port:     80,
+		Protocol: reverted.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.ErrorIs(t, err, datastore.ErrConflict)
+
+	deletedAfterUpdate := &models.VIP{
+		VIP:      "192.168.1.222",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, deletedAfterUpdate)
+	require.NoError(t, err)
+
+	txDeleteAfterUpdate, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	deletedAfterUpdate.Port = 81
+	err = txDeleteAfterUpdate.UpdateVIP(ctx, deletedAfterUpdate)
+	require.NoError(t, err)
+	err = txDeleteAfterUpdate.DeleteVIP(ctx, deletedAfterUpdate.ID)
+	require.NoError(t, err)
+	require.NoError(t, txDeleteAfterUpdate.Commit())
+
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      deletedAfterUpdate.VIP,
+		Port:     80,
+		Protocol: deletedAfterUpdate.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.NoError(t, err)
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      deletedAfterUpdate.VIP,
+		Port:     81,
+		Protocol: deletedAfterUpdate.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.NoError(t, err)
+
+	reusedAfterDelete := &models.VIP{
+		VIP:      "192.168.1.223",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, reusedAfterDelete)
+	require.NoError(t, err)
+	deletedForReuse := &models.VIP{
+		VIP:      "192.168.1.224",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, deletedForReuse)
+	require.NoError(t, err)
+
+	oldReusedAfterDeleteVIP := reusedAfterDelete.VIP
+	txReuseAfterDelete, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	err = txReuseAfterDelete.DeleteVIP(ctx, deletedForReuse.ID)
+	require.NoError(t, err)
+	reusedAfterDelete.VIP = deletedForReuse.VIP
+	reusedAfterDelete.Port = deletedForReuse.Port
+	err = txReuseAfterDelete.UpdateVIP(ctx, reusedAfterDelete)
+	require.NoError(t, err)
+	require.NoError(t, txReuseAfterDelete.Commit())
+
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      oldReusedAfterDeleteVIP,
+		Port:     reusedAfterDelete.Port,
+		Protocol: reusedAfterDelete.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.NoError(t, err)
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      deletedForReuse.VIP,
+		Port:     deletedForReuse.Port,
+		Protocol: deletedForReuse.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.ErrorIs(t, err, datastore.ErrConflict)
+
+	reusedAfterMove := &models.VIP{
+		VIP:      "192.168.1.225",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, reusedAfterMove)
+	require.NoError(t, err)
+	movedForReuse := &models.VIP{
+		VIP:      "192.168.1.226",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err = ds.CreateVIP(ctx, movedForReuse)
+	require.NoError(t, err)
+
+	oldReusedAfterMoveVIP := reusedAfterMove.VIP
+	oldMovedForReuseVIP := movedForReuse.VIP
+	txReuseAfterMove, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	movedForReuse.Port = 81
+	err = txReuseAfterMove.UpdateVIP(ctx, movedForReuse)
+	require.NoError(t, err)
+	reusedAfterMove.VIP = oldMovedForReuseVIP
+	reusedAfterMove.Port = 80
+	err = txReuseAfterMove.UpdateVIP(ctx, reusedAfterMove)
+	require.NoError(t, err)
+	require.NoError(t, txReuseAfterMove.Commit())
+
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      oldReusedAfterMoveVIP,
+		Port:     reusedAfterMove.Port,
+		Protocol: reusedAfterMove.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.NoError(t, err)
+	err = ds.CreateVIP(ctx, &models.VIP{
+		VIP:      oldMovedForReuseVIP,
+		Port:     81,
+		Protocol: movedForReuse.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	})
+	require.ErrorIs(t, err, datastore.ErrConflict)
 }
 
 func testWatch(t *testing.T, factory DataStoreFactory) {

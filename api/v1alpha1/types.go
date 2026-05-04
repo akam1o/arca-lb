@@ -128,6 +128,8 @@ type HTTPHealthCheck struct {
 
 	// ExpectedCodes is the set of HTTP status codes that indicate success.
 	// +optional
+	// +kubebuilder:validation:items:Minimum=100
+	// +kubebuilder:validation:items:Maximum=599
 	ExpectedCodes []int `json:"expectedCodes,omitempty"`
 
 	// SkipTLSVerify skips TLS certificate verification (HTTPS only).
@@ -181,6 +183,7 @@ type VirtualIPSpec struct {
 
 	// Backends is the list of real servers.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.all(b1, self.exists_one(b2, b2.address == b1.address))",message="spec.backends addresses must be unique"
 	Backends []BackendSpec `json:"backends,omitempty"`
 
 	// HealthCheck configures health checking for the backends.
@@ -276,7 +279,8 @@ type VirtualIP struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   VirtualIPSpec   `json:"spec,omitempty"`
+	// +kubebuilder:validation:Required
+	Spec   VirtualIPSpec   `json:"spec"`
 	Status VirtualIPStatus `json:"status,omitempty"`
 }
 

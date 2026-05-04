@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	"go.fd.io/govpp/binapi/ip_types"
 	"go.fd.io/govpp/binapi/lb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -29,6 +31,31 @@ func newTestVIP(name, addr string, port int) *v1alpha1.VirtualIP {
 				{Address: "10.0.1.2", Weight: 100},
 			},
 		},
+	}
+}
+
+func testVPPConfig() VPPConfig {
+	return VPPConfig{
+		EncapType:                 "L3DSR",
+		DSCP:                      10,
+		ServiceType:               "CLUSTERIP",
+		NewFlowsTableLength:       65536,
+		StateVerificationInterval: 30 * time.Second,
+	}
+}
+
+func vppDetailForTest(t *testing.T, vpp *VPP, vip *v1alpha1.VirtualIP) *lb.LbVipDetails {
+	t.Helper()
+	attrs, err := vpp.effectiveVIPAttributes(vip)
+	if err != nil {
+		t.Fatalf("effectiveVIPAttributes: %v", err)
+	}
+	return &lb.LbVipDetails{
+		Encap:           encapToAPI(attrs.encapType),
+		Dscp:            ip_types.IPDscp(attrs.dscp),
+		SrvType:         serviceTypeToAPI(attrs.serviceType),
+		TargetPort:      uint16(attrs.port),
+		FlowTableLength: uint16(attrs.newFlowsTableLength),
 	}
 }
 
@@ -168,7 +195,7 @@ func TestVPPSameVIPAttributes(t *testing.T) {
 			EncapType:           "L3DSR",
 			DSCP:                10,
 			ServiceType:         "CLUSTERIP",
-			NewFlowsTableLength: 65537,
+			NewFlowsTableLength: 65536,
 		},
 	}
 
@@ -204,6 +231,272 @@ func TestVPPSameVIPAttributes(t *testing.T) {
 	if vpp.sameVIPAttributes(base, encapChanged) {
 		t.Fatal("encapType change should require VIP recreation")
 	}
+
+	nonL3DSR := base.DeepCopy()
+	nonL3DSR.Spec.EncapType = v1alpha1.EncapTypeNAT4
+	nonL3DSRWithDSCP := nonL3DSR.DeepCopy()
+	ignoredDSCP := uint8(11)
+	nonL3DSRWithDSCP.Spec.DSCP = &ignoredDSCP
+	if !vpp.sameVIPAttributes(nonL3DSR, nonL3DSRWithDSCP) {
+		t.Fatal("non-L3DSR DSCP change should not require VIP recreation")
+	}
+
+	attrs, err := vpp.effectiveVIPAttributes(nonL3DSRWithDSCP)
+	if err != nil {
+		t.Fatalf("effectiveVIPAttributes: %v", err)
+	}
+	if attrs.dscp != 0 {
+		t.Fatalf("non-L3DSR effective DSCP = %d, want 0", attrs.dscp)
+	}
+
+	detail := vppDetailForTest(t, vpp, nonL3DSRWithDSCP)
+	detail.Dscp = ip_types.IPDscp(vpp.config.DSCP)
+	if !vpp.vipDetailsMatchDesired(nonL3DSRWithDSCP, detail) {
+		t.Fatal("non-L3DSR retained VIP should match regardless of dump DSCP")
+	}
+}
+
+func TestVPPNeedsDrainForRetainedVIPDetectsStaleAttributes(t *testing.T) {
+	vpp := &VPP{
+		config: testVPPConfig(),
+		vips:   make(map[string]*vipEntry),
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	retained := vppDetailForTest(t, vpp, vip)
+	retained.Dscp = ip_types.IPDscp(vpp.config.DSCP + 1)
+	vpp.lookupVIPFn = func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		return retained, true, nil
+	}
+
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if !needsDrain {
+		t.Fatal("stale retained VIP attributes should require route drain")
+	}
+}
+
+func TestVPPNeedsDrainForRetainedVIPAllowsMatchingOrMissingVIP(t *testing.T) {
+	vpp := &VPP{
+		config: testVPPConfig(),
+		vips:   make(map[string]*vipEntry),
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	retained := vppDetailForTest(t, vpp, vip)
+	vpp.lookupVIPFn = func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		return retained, true, nil
+	}
+
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if needsDrain {
+		t.Fatal("matching retained VIP should not require route drain")
+	}
+
+	vpp.lookupVIPFn = func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		return nil, false, nil
+	}
+	needsDrain, err = vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP for missing VIP: %v", err)
+	}
+	if needsDrain {
+		t.Fatal("missing retained VIP should not require route drain")
+	}
+}
+
+func TestVPPNeedsDrainForRetainedVIPDetectsCachedAttributeChange(t *testing.T) {
+	vpp := &VPP{
+		config: testVPPConfig(),
+		vips:   make(map[string]*vipEntry),
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip:      vip.DeepCopy(),
+		backends: make(map[string]v1alpha1.BackendSpec),
+	}
+
+	updated := vip.DeepCopy()
+	dscp := uint8(vpp.config.DSCP + 1)
+	updated.Spec.DSCP = &dscp
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), updated)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if !needsDrain {
+		t.Fatal("cached VIP attribute change should require route drain")
+	}
+}
+
+func TestVPPNeedsDrainForRetainedVIPChecksExpiredCachedVIP(t *testing.T) {
+	now := time.Unix(100, 0)
+	lookupCalls := 0
+	vpp := &VPP{
+		config: testVPPConfig(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip:          vip.DeepCopy(),
+		backends:     make(map[string]v1alpha1.BackendSpec),
+		lastVerified: now.Add(-31 * time.Second),
+	}
+	retained := vppDetailForTest(t, vpp, vip)
+	retained.Dscp = ip_types.IPDscp(vpp.config.DSCP + 1)
+	vpp.lookupVIPFn = func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		lookupCalls++
+		return retained, true, nil
+	}
+
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if !needsDrain {
+		t.Fatal("expired cached VIP with stale live attributes should require route drain")
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookupCalls)
+	}
+}
+
+func TestVPPNeedsDrainForRetainedVIPChecksFreshCachedVIP(t *testing.T) {
+	now := time.Unix(100, 0)
+	lookupCalls := 0
+	vpp := &VPP{
+		config: testVPPConfig(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip:          vip.DeepCopy(),
+		backends:     make(map[string]v1alpha1.BackendSpec),
+		lastVerified: now.Add(-10 * time.Second),
+	}
+	retained := vppDetailForTest(t, vpp, vip)
+	retained.Dscp = ip_types.IPDscp(vpp.config.DSCP + 1)
+	vpp.lookupVIPFn = func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		lookupCalls++
+		return retained, true, nil
+	}
+
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if !needsDrain {
+		t.Fatal("fresh cached VIP with stale live attributes should require route drain")
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookupCalls)
+	}
+}
+
+func TestVPPApplyVIPRecreatesFreshCachedVIPAfterDrainCheck(t *testing.T) {
+	now := time.Unix(100, 0)
+	lookupCalls := 0
+	deleteVIPCalls := 0
+	addVIPCalls := 0
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		deleteVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			deleteVIPCalls++
+			return nil
+		},
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			addVIPCalls++
+			return nil
+		},
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip:          vip.DeepCopy(),
+		backends:     make(map[string]v1alpha1.BackendSpec),
+		lastVerified: now.Add(-10 * time.Second),
+	}
+	retained := vppDetailForTest(t, vpp, vip)
+	retained.Dscp = ip_types.IPDscp(vpp.config.DSCP + 1)
+	vpp.lookupVIPFn = func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		lookupCalls++
+		return retained, true, nil
+	}
+
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if !needsDrain {
+		t.Fatal("fresh cached VIP with stale live attributes should require route drain")
+	}
+	if got := vpp.vips[key].lastVerified; !got.IsZero() {
+		t.Fatalf("lastVerified = %v, want reset for apply verification", got)
+	}
+
+	if err := vpp.ApplyVIP(context.Background(), vip, nil); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if lookupCalls != 2 {
+		t.Fatalf("lookup calls = %d, want drain check and apply verification", lookupCalls)
+	}
+	if deleteVIPCalls != 1 {
+		t.Fatalf("delete VIP calls = %d, want 1", deleteVIPCalls)
+	}
+	if addVIPCalls != 1 {
+		t.Fatalf("add VIP calls = %d, want 1", addVIPCalls)
+	}
+	if got := vpp.vips[key].lastVerified; !got.Equal(now) {
+		t.Fatalf("lastVerified = %v, want %v", got, now)
+	}
+}
+
+func TestVPPNeedsDrainForRetainedVIPMarksMissingCachedVIPForVerification(t *testing.T) {
+	now := time.Unix(100, 0)
+	vpp := &VPP{
+		config: testVPPConfig(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		lookupVIPFn: func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+			return nil, false, nil
+		},
+	}
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip:          vip.DeepCopy(),
+		backends:     make(map[string]v1alpha1.BackendSpec),
+		lastVerified: now.Add(-10 * time.Second),
+	}
+
+	needsDrain, err := vpp.NeedsDrainForRetainedVIP(context.Background(), vip)
+	if err != nil {
+		t.Fatalf("NeedsDrainForRetainedVIP: %v", err)
+	}
+	if needsDrain {
+		t.Fatal("missing cached VIP should not require route drain")
+	}
+	if got := vpp.vips[key].lastVerified; !got.IsZero() {
+		t.Fatalf("lastVerified = %v, want reset for apply verification", got)
+	}
 }
 
 func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
@@ -212,7 +505,7 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 			EncapType:           "GRE4",
 			DSCP:                0,
 			ServiceType:         "CLUSTERIP",
-			NewFlowsTableLength: 65537,
+			NewFlowsTableLength: 65536,
 		},
 		vips: make(map[string]*vipEntry),
 	}
@@ -244,6 +537,161 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 	}
 	if entry.vip.Spec.DSCP == nil || *entry.vip.Spec.DSCP != existingDSCP {
 		t.Fatalf("existing VIP was changed: dscp=%v", entry.vip.Spec.DSCP)
+	}
+}
+
+func TestVPPApplyVIPSkipsStateVerificationBeforeInterval(t *testing.T) {
+	now := time.Unix(100, 0)
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		lookupVIPFn: func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+			t.Fatal("lookupVIP should not be called before verification interval")
+			return nil, false, nil
+		},
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			t.Fatal("addVIP should not be called before verification interval")
+			return nil
+		},
+		addBackendFn: func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error {
+			t.Fatal("addBackend should not be called when cached backends match")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	lastVerified := now.Add(-10 * time.Second)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+			"10.0.1.2": vip.Spec.Backends[1],
+		},
+		lastVerified: lastVerified,
+	}
+
+	if err := vpp.ApplyVIP(context.Background(), vip, vip.Spec.Backends); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if got := vpp.vips[key].lastVerified; !got.Equal(lastVerified) {
+		t.Fatalf("lastVerified = %v, want unchanged %v", got, lastVerified)
+	}
+}
+
+func TestVPPApplyVIPRecreatesMissingCachedVIPAfterVerificationInterval(t *testing.T) {
+	now := time.Unix(100, 0)
+	lookupCalls := 0
+	addVIPCalls := 0
+	var added []string
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		lookupVIPFn: func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+			lookupCalls++
+			return nil, false, nil
+		},
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			addVIPCalls++
+			return nil
+		},
+		addBackendFn: func(_ context.Context, _ *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
+			added = append(added, be.Address)
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+			"10.0.1.2": vip.Spec.Backends[1],
+		},
+		lastVerified: now.Add(-31 * time.Second),
+	}
+
+	if err := vpp.ApplyVIP(context.Background(), vip, vip.Spec.Backends); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookupCalls)
+	}
+	if addVIPCalls != 1 {
+		t.Fatalf("add VIP calls = %d, want 1", addVIPCalls)
+	}
+	if len(added) != 2 {
+		t.Fatalf("added backends = %v, want two backends", added)
+	}
+	if got := vpp.vips[key].lastVerified; !got.Equal(now) {
+		t.Fatalf("lastVerified = %v, want %v", got, now)
+	}
+}
+
+func TestVPPApplyVIPRefreshesCachedBackendsFromVPP(t *testing.T) {
+	now := time.Unix(100, 0)
+	var added []string
+	dumpCalls := 0
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		now: func() time.Time {
+			return now
+		},
+		dumpBackendsFn: func(_ context.Context, _ *v1alpha1.VirtualIP, _ []v1alpha1.BackendSpec) (map[string]v1alpha1.BackendSpec, error) {
+			dumpCalls++
+			return map[string]v1alpha1.BackendSpec{
+				"10.0.1.1": {Address: "10.0.1.1", Weight: 100},
+			}, nil
+		},
+		addBackendFn: func(_ context.Context, _ *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
+			added = append(added, be.Address)
+			return nil
+		},
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			t.Fatal("addVIP should not be called when VPP VIP exists")
+			return nil
+		},
+	}
+	vpp.lookupVIPFn = func(_ context.Context, vip *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+		return vppDetailForTest(t, vpp, vip), true, nil
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+			"10.0.1.2": vip.Spec.Backends[1],
+		},
+		lastVerified: now.Add(-31 * time.Second),
+	}
+
+	if err := vpp.ApplyVIP(context.Background(), vip, vip.Spec.Backends); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if dumpCalls != 1 {
+		t.Fatalf("dump calls = %d, want 1", dumpCalls)
+	}
+	if len(added) != 1 || added[0] != "10.0.1.2" {
+		t.Fatalf("added backends = %v, want [10.0.1.2]", added)
+	}
+	if got := len(vpp.vips[key].backends); got != 2 {
+		t.Fatalf("cached backend count = %d, want 2 after reconcile", got)
+	}
+	if got := vpp.vips[key].lastVerified; !got.Equal(now) {
+		t.Fatalf("lastVerified = %v, want %v", got, now)
 	}
 }
 
@@ -292,6 +740,66 @@ func TestVPPRemoveVIPUsesTrackedAppliedSpec(t *testing.T) {
 	}
 }
 
+func TestVPPRecreateVIPMarksRouteSafeWhenDeleteFailsAndVIPIsRetained(t *testing.T) {
+	deleteErr := errors.New("delete failed")
+	var deleted *v1alpha1.VirtualIP
+	inspected := false
+	vpp := &VPP{
+		vips:         make(map[string]*vipEntry),
+		tuningDrifts: map[string][]VIPTuningDrift{},
+		deleteVIPFn: func(_ context.Context, vip *v1alpha1.VirtualIP) error {
+			deleted = vip.DeepCopy()
+			return deleteErr
+		},
+		vipExistsFn: func(_ context.Context, _ *v1alpha1.VirtualIP) (bool, error) {
+			inspected = true
+			return true, nil
+		},
+	}
+
+	applied := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(applied)
+	vpp.vips[key] = &vipEntry{
+		vip:      applied.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{},
+	}
+	vpp.tuningDrifts[key] = []VIPTuningDrift{{
+		Field:   "new_flows_table_length",
+		Current: "1024",
+		Desired: "2048",
+	}}
+
+	err := vpp.RecreateVIP(context.Background(), applied.DeepCopy(), nil)
+	if err == nil {
+		t.Fatal("expected recreate delete failure")
+	}
+	if !errors.Is(err, deleteErr) {
+		t.Fatalf("RecreateVIP error = %v, want wrapped delete error", err)
+	}
+	if !RouteSafeToRestoreAfterVIPRecreate(err) {
+		t.Fatal("delete failure with retained VIP should be route-safe to restore")
+	}
+	var recreateErr *VIPRecreateError
+	if !errors.As(err, &recreateErr) {
+		t.Fatalf("RecreateVIP error = %T, want VIPRecreateError", err)
+	}
+	if recreateErr.Stage != VIPRecreateStageDelete {
+		t.Fatalf("recreate stage = %s, want delete", recreateErr.Stage)
+	}
+	if deleted == nil || deleted.Spec.Port != applied.Spec.Port {
+		t.Fatalf("deleted VIP = %+v, want tracked applied VIP", deleted)
+	}
+	if !inspected {
+		t.Fatal("retained VIP was not inspected after delete failure")
+	}
+	if _, ok := vpp.vips[key]; !ok {
+		t.Fatal("tracked VIP should remain after delete failure")
+	}
+	if drifts := vpp.TuningDrifts(key); len(drifts) != 1 {
+		t.Fatalf("tuning drifts = %+v, want retained drift for retry", drifts)
+	}
+}
+
 func TestVPPDetectsFlowTableLengthTuningDrift(t *testing.T) {
 	vpp := &VPP{
 		config: VPPConfig{
@@ -318,15 +826,15 @@ func TestVPPDetectTuningDriftsUsesDumpWidthForFlowTableLength(t *testing.T) {
 			EncapType:           "L3DSR",
 			DSCP:                10,
 			ServiceType:         "CLUSTERIP",
-			NewFlowsTableLength: 65537,
+			NewFlowsTableLength: 65536,
 		},
 	}
 
 	vip := newTestVIP("test-vip", "203.0.113.1", 80)
-	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 1}); len(drifts) != 0 {
+	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 0}); len(drifts) != 0 {
 		t.Fatalf("drift count = %d, want 0 when dump-width representation matches", len(drifts))
 	}
-	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 2}); len(drifts) != 1 {
+	if drifts := vpp.detectTuningDrifts(vip, &lb.LbVipDetails{FlowTableLength: 1}); len(drifts) != 1 {
 		t.Fatalf("drift count = %d, want 1 when dump-width representation differs", len(drifts))
 	}
 }

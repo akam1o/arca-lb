@@ -63,6 +63,7 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 	tests := []struct {
 		name          string
 		setupMock     func(*testutil.MockDataStore)
+		request       *pb.GetConfigRequest
 		expectedError codes.Code
 		validate      func(*testing.T, *pb.GetConfigResponse)
 	}{
@@ -178,6 +179,20 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "unchanged when current revision matches",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetRevision(7)
+				mock.SetGetConfigError(errors.New("GetConfig should not be called"))
+			},
+			request: &pb.GetConfigRequest{
+				CurrentRevision: 7,
+			},
+			validate: func(t *testing.T, resp *pb.GetConfigResponse) {
+				assert.True(t, resp.Unchanged)
+				assert.Nil(t, resp.Config)
+			},
+		},
+		{
 			name: "datastore error",
 			setupMock: func(mock *testutil.MockDataStore) {
 				mock.SetGetConfigError(datastore.ErrNotFound)
@@ -196,7 +211,12 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			resp, err := client.GetConfig(ctx, &pb.GetConfigRequest{})
+			req := tt.request
+			if req == nil {
+				req = &pb.GetConfigRequest{}
+			}
+
+			resp, err := client.GetConfig(ctx, req)
 
 			if tt.expectedError != codes.OK {
 				require.Error(t, err)
@@ -505,6 +525,29 @@ func TestConfigSyncService_RegisterAgent(t *testing.T) {
 			if tt.validate != nil {
 				tt.validate(t, resp)
 			}
+		})
+	}
+}
+
+func TestConfigSyncService_ConvertHCType(t *testing.T) {
+	service := &ConfigSyncService{}
+
+	tests := []struct {
+		name string
+		in   models.HCType
+		want pb.HCType
+	}{
+		{name: "http", in: models.HCTypeHTTP, want: pb.HCType_HC_TYPE_HTTP},
+		{name: "https", in: models.HCTypeHTTPS, want: pb.HCType_HC_TYPE_HTTPS},
+		{name: "tcp", in: models.HCTypeTCP, want: pb.HCType_HC_TYPE_TCP},
+		{name: "ping", in: models.HCTypePing, want: pb.HCType_HC_TYPE_PING},
+		{name: "tls hello", in: models.HCTypeTLSHello, want: pb.HCType_HC_TYPE_TLS_HELLO},
+		{name: "unknown", in: models.HCType("smtp"), want: pb.HCType_HC_TYPE_UNSPECIFIED},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, service.convertHCType(tt.in))
 		})
 	}
 }

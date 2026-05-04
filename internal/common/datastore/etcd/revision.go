@@ -15,6 +15,9 @@ type etcdTxnCheck struct {
 
 // initRevision initializes the revision counter in etcd if it doesn't exist
 func (ds *EtcdDataStore) initRevision(ctx context.Context) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	key := ds.revisionKey()
 
 	_, err := ds.client.Txn(ctx).If(
@@ -31,6 +34,9 @@ func (ds *EtcdDataStore) initRevision(ctx context.Context) error {
 
 // GetRevision retrieves the current revision number
 func (ds *EtcdDataStore) GetRevision(ctx context.Context) (int64, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	key := ds.revisionKey()
 	resp, err := ds.client.Get(ctx, key)
 	if err != nil {
@@ -51,6 +57,9 @@ func (ds *EtcdDataStore) GetRevision(ctx context.Context) (int64, error) {
 
 // IncrementRevision atomically increments the revision number using Compare-and-Swap
 func (ds *EtcdDataStore) IncrementRevision(ctx context.Context) (int64, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	key := ds.revisionKey()
 
 	for {
@@ -97,6 +106,9 @@ func (ds *EtcdDataStore) IncrementRevision(ctx context.Context) (int64, error) {
 }
 
 func (ds *EtcdDataStore) commitWithRevision(ctx context.Context, checks []etcdTxnCheck, ops ...clientv3.Op) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	key := ds.revisionKey()
 
 	for {
@@ -145,6 +157,9 @@ func (ds *EtcdDataStore) commitWithRevision(ctx context.Context, checks []etcdTx
 }
 
 func (ds *EtcdDataStore) firstFailedEtcdTxnCheck(ctx context.Context, checks []etcdTxnCheck) (*etcdTxnCheck, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	for i := range checks {
 		txnResp, err := ds.client.Txn(ctx).If(checks[i].cmp).Then(clientv3.OpGet(ds.revisionKey())).Commit()
 		if err != nil {

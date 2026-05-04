@@ -4,6 +4,7 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
@@ -74,6 +75,60 @@ type TuningDriftReporter interface {
 // after the reconciler has drained traffic from the local node.
 type VIPRecreator interface {
 	RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error
+}
+
+// VIPRecreateStage identifies the phase that failed during a VIP recreate.
+type VIPRecreateStage string
+
+const (
+	VIPRecreateStageDelete   VIPRecreateStage = "delete"
+	VIPRecreateStageAdd      VIPRecreateStage = "add"
+	VIPRecreateStageBackends VIPRecreateStage = "backends"
+)
+
+// VIPRecreateError annotates recreate failures with whether the old VIP is
+// still forwarding traffic and the address route can be safely restored.
+type VIPRecreateError struct {
+	Stage              VIPRecreateStage
+	RouteSafeToRestore bool
+	Err                error
+}
+
+func (e *VIPRecreateError) Error() string {
+	if e == nil || e.Err == nil {
+		return "VIP recreate failed"
+	}
+	if e.Stage == "" {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("VIP recreate %s failed: %v", e.Stage, e.Err)
+}
+
+func (e *VIPRecreateError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// RouteSafeToRestoreAfterVIPRecreate reports whether a recreate failure left
+// the previous VIP confirmed in place, allowing the caller to re-advertise it.
+func RouteSafeToRestoreAfterVIPRecreate(err error) bool {
+	var recreateErr *VIPRecreateError
+	return errors.As(err, &recreateErr) && recreateErr.RouteSafeToRestore
+}
+
+// VIPUpdateDrainChecker is optionally implemented by data planes that need
+// route drain coordination before applying some in-place VIP updates.
+type VIPUpdateDrainChecker interface {
+	NeedsDrainForVIPUpdate(current, desired *v1alpha1.VirtualIP) (bool, error)
+}
+
+// RetainedVIPDrainChecker is optionally implemented by data planes that can
+// detect retained VIPs whose forwarding attributes need a route drain before
+// they can be safely replaced.
+type RetainedVIPDrainChecker interface {
+	NeedsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error)
 }
 
 // New creates a DataPlane from a type name and config.

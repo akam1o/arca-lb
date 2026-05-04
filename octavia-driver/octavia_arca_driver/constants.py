@@ -23,6 +23,8 @@ ANNOTATION_HM_ID = "arca.io/octavia-healthmonitor-id"
 ANNOTATION_PROJECT_ID = "arca.io/octavia-project-id"
 ANNOTATION_MEMBER_MAP = "arca.io/octavia-member-map"
 ANNOTATION_DRAINING_MEMBER_IDS = "arca.io/octavia-draining-member-ids"
+ANNOTATION_LB_ADMIN_STATE_UP = "arca.io/octavia-loadbalancer-admin-state-up"
+ANNOTATION_LISTENER_ADMIN_STATE_UP = "arca.io/octavia-listener-admin-state-up"
 
 MANAGED_ANNOTATIONS = {
     ANNOTATION_LB_ID,
@@ -32,6 +34,8 @@ MANAGED_ANNOTATIONS = {
     ANNOTATION_PROJECT_ID,
     ANNOTATION_MEMBER_MAP,
     ANNOTATION_DRAINING_MEMBER_IDS,
+    ANNOTATION_LB_ADMIN_STATE_UP,
+    ANNOTATION_LISTENER_ADMIN_STATE_UP,
 }
 
 # Mapping from Octavia protocol strings to VirtualIP protocol values.

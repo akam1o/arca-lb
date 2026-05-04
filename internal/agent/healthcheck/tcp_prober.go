@@ -74,8 +74,7 @@ func (p *TCPProber) parseConfig(config models.HCConfig) error {
 func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	startTime := time.Now()
 
-	// Create address
-	address := fmt.Sprintf("%s:%d", target, p.port)
+	address := tcpProbeAddress(target, p.port)
 
 	// Create dialer with timeout
 	dialer := &net.Dialer{

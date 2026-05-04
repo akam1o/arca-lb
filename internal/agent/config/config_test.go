@@ -269,6 +269,35 @@ func TestValidation(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "invalid VPP flow table length",
+			cfg: &Config{
+				Agent: AgentConfig{
+					ID:                "test-agent",
+					ReconcileInterval: 30 * time.Second,
+					HeartbeatInterval: 10 * time.Second,
+				},
+				Controller: ControllerConfig{
+					Address: "localhost:50051",
+				},
+				VPP: VPPConfig{
+					SocketPath: "/run/vpp/api.sock",
+					LB: VPPLBConfig{
+						NewFlowsTableLength: 65537,
+					},
+				},
+				HealthCheck: HealthCheckConfig{
+					WorkerCount:         4,
+					DefaultTimeout:      3 * time.Second,
+					MaxConcurrentChecks: 100,
+				},
+				Log: LogConfig{
+					Level:  "info",
+					Format: "json",
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

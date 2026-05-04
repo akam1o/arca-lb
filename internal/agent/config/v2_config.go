@@ -81,6 +81,7 @@ type MetricsSettings struct {
 // TelemetrySettings configures OpenTelemetry.
 type TelemetrySettings struct {
 	OTLPEndpoint string `yaml:"otlpEndpoint"`
+	OTLPInsecure bool   `yaml:"otlpInsecure"`
 }
 
 // LogSettings configures logging.
@@ -132,6 +133,11 @@ func applyV2EnvOverrides(cfg *V2Config) {
 	}
 	if v := os.Getenv("ARCA_OTLP_ENDPOINT"); v != "" {
 		cfg.Telemetry.OTLPEndpoint = v
+	}
+	if v := os.Getenv("ARCA_OTLP_INSECURE"); v != "" {
+		if insecure, err := strconv.ParseBool(v); err == nil {
+			cfg.Telemetry.OTLPInsecure = insecure
+		}
 	}
 	if v := os.Getenv("ARCA_METRICS_ADDRESS"); v != "" {
 		cfg.Metrics.Address = v
@@ -291,8 +297,31 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 
 	if value, ok := vpp["new_flows_table_length"]; ok {
 		tableLength, ok := v2IntegerSetting(value)
-		if !ok || tableLength < 1 || tableLength > int64(^uint32(0)) {
-			return fmt.Errorf("dataplane.vpp.new_flows_table_length must be an integer between 1 and %d", uint64(^uint32(0)))
+		if !ok || tableLength < 1 || tableLength > int64(^uint32(0)) || !isPowerOfTwo(tableLength) {
+			return fmt.Errorf("dataplane.vpp.new_flows_table_length must be a power-of-two integer between 1 and %d", uint64(^uint32(0)))
+		}
+	}
+
+	if value, ok := vpp["retained_vip_tuning_drift_policy"]; ok {
+		policy, ok := value.(string)
+		if !ok || (policy != "" && !validV2VPPTuningDriftPolicy(policy)) {
+			return fmt.Errorf("dataplane.vpp.retained_vip_tuning_drift_policy must be one of preserve, rolling_recreate")
+		}
+	}
+
+	if value, ok := vpp["state_verification_interval"]; ok {
+		interval, ok := v2DurationSetting(value)
+		if !ok || interval <= 0 {
+			return fmt.Errorf("dataplane.vpp.state_verification_interval must be a positive duration")
+		}
+	}
+
+	for _, key := range []string{"retained_vip_tuning_drift_drain", "rolling_recreate_drain"} {
+		if value, ok := vpp[key]; ok {
+			drain, ok := v2DurationSetting(value)
+			if !ok || drain <= 0 {
+				return fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
+			}
 		}
 	}
 
@@ -314,6 +343,39 @@ func validV2VPPServiceType(value string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func validV2VPPTuningDriftPolicy(value string) bool {
+	switch value {
+	case "preserve", "rolling_recreate":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPowerOfTwo(value int64) bool {
+	return value > 0 && value&(value-1) == 0
+}
+
+func v2DurationSetting(value interface{}) (time.Duration, bool) {
+	if seconds, ok := v2IntegerSetting(value); ok {
+		return time.Duration(seconds) * time.Second, true
+	}
+	switch v := value.(type) {
+	case time.Duration:
+		return v, true
+	case string:
+		if v == "" {
+			return 0, false
+		}
+		d, err := time.ParseDuration(v)
+		return d, err == nil
+	case float64:
+		return time.Duration(v * float64(time.Second)), true
+	default:
+		return 0, false
 	}
 }
 

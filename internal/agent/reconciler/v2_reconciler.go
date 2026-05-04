@@ -35,6 +35,8 @@ const (
 	// TuningDriftPolicyRollingRecreate drains the VIP address route, waits for
 	// traffic to drain, then recreates the VIP with the desired tuning.
 	TuningDriftPolicyRollingRecreate = "rolling_recreate"
+
+	defaultDeleteRetryInterval = time.Second
 )
 
 // TuningDriftConfig controls repair of forwarding-compatible retained VIPs
@@ -75,10 +77,12 @@ type Manager struct {
 	safetyInterval time.Duration
 	tuningDrift    TuningDriftConfig
 
-	mu     sync.RWMutex
-	vips   map[string]*vipReconciler // key: namespace/name
-	ctx    context.Context
-	cancel context.CancelFunc
+	mu               sync.RWMutex
+	vips             map[string]*vipReconciler // key: namespace/name
+	deleting         map[string]*vipReconciler // key: namespace/name
+	pendingRecreates map[string]*v1alpha1.VirtualIP
+	ctx              context.Context
+	cancel           context.CancelFunc
 }
 
 // NewManager creates a new reconciler manager.
@@ -94,14 +98,16 @@ func NewManager(
 		safetyInterval = 30 * time.Second
 	}
 	return &Manager{
-		dp:             dp,
-		store:          st,
-		healthTracker:  ht,
-		routes:         newRouteCoordinator(router, logger),
-		logger:         logger,
-		safetyInterval: safetyInterval,
-		tuningDrift:    normalizeTuningDriftConfig(TuningDriftConfig{}),
-		vips:           make(map[string]*vipReconciler),
+		dp:               dp,
+		store:            st,
+		healthTracker:    ht,
+		routes:           newRouteCoordinator(router, logger, safetyInterval),
+		logger:           logger,
+		safetyInterval:   safetyInterval,
+		tuningDrift:      normalizeTuningDriftConfig(TuningDriftConfig{}),
+		vips:             make(map[string]*vipReconciler),
+		deleting:         make(map[string]*vipReconciler),
+		pendingRecreates: make(map[string]*v1alpha1.VirtualIP),
 	}
 }
 
@@ -152,8 +158,10 @@ func normalizeTuningDriftConfig(cfg TuningDriftConfig) TuningDriftConfig {
 }
 
 type routeCoordinator struct {
-	router routing.Router
-	logger *slog.Logger
+	router                    routing.Router
+	logger                    *slog.Logger
+	routeVerificationInterval time.Duration
+	now                       func() time.Time
 
 	mu           sync.Mutex
 	addresses    map[string]*routeAddressState // key: VIP address
@@ -161,22 +169,39 @@ type routeCoordinator struct {
 }
 
 type routeAddressState struct {
-	serving    map[string]bool // key: namespace/name
-	advertised bool
-	reconciled bool
-	drainOwner string
+	serving      map[string]bool // key: namespace/name
+	advertised   bool
+	reconciled   bool
+	drainOwner   string
+	lastVerified time.Time
 }
 
-func newRouteCoordinator(router routing.Router, logger *slog.Logger) *routeCoordinator {
+func newRouteCoordinator(router routing.Router, logger *slog.Logger, routeVerificationInterval time.Duration) *routeCoordinator {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &routeCoordinator{
-		router:       router,
-		logger:       logger.With("component", "route-coordinator"),
-		addresses:    make(map[string]*routeAddressState),
-		vipAddresses: make(map[string]string),
+	if routeVerificationInterval <= 0 {
+		routeVerificationInterval = 30 * time.Second
 	}
+	return &routeCoordinator{
+		router:                    router,
+		logger:                    logger.With("component", "route-coordinator"),
+		routeVerificationInterval: routeVerificationInterval,
+		addresses:                 make(map[string]*routeAddressState),
+		vipAddresses:              make(map[string]string),
+	}
+}
+
+func (c *routeCoordinator) currentTime() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *routeCoordinator) shouldVerifyAdvertisedRoute(state *routeAddressState, now time.Time) bool {
+	return state.lastVerified.IsZero() ||
+		!now.Before(state.lastVerified.Add(c.routeVerificationInterval))
 }
 
 func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address string, serving bool) (bool, error) {
@@ -209,6 +234,17 @@ func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address strin
 // BeginDrain withdraws an address route only when no sibling VIP on that
 // address is serving. While held, later SetServing calls cannot re-announce it.
 func (c *routeCoordinator) BeginDrain(ctx context.Context, vipKey, address string) (bool, error) {
+	return c.beginDrain(ctx, vipKey, address, false)
+}
+
+// BeginAddressDrain withdraws an address route even when sibling VIPs on the
+// same address are serving. It is used for local dataplane changes that can
+// disrupt every listener on the address.
+func (c *routeCoordinator) BeginAddressDrain(ctx context.Context, vipKey, address string) (bool, error) {
+	return c.beginDrain(ctx, vipKey, address, true)
+}
+
+func (c *routeCoordinator) beginDrain(ctx context.Context, vipKey, address string, forceAddress bool) (bool, error) {
 	if c == nil || c.router == nil || address == "" {
 		return true, nil
 	}
@@ -234,9 +270,11 @@ func (c *routeCoordinator) BeginDrain(ctx context.Context, vipKey, address strin
 	if state.drainOwner != "" && state.drainOwner != vipKey {
 		return false, nil
 	}
-	for peerKey, serving := range state.serving {
-		if peerKey != vipKey && serving {
-			return false, nil
+	if !forceAddress {
+		for peerKey, serving := range state.serving {
+			if peerKey != vipKey && serving {
+				return false, nil
+			}
 		}
 	}
 
@@ -345,6 +383,7 @@ func (c *routeCoordinator) removeVIPLocked(ctx context.Context, vipKey, address 
 }
 
 func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, state *routeAddressState) (bool, error) {
+	now := c.currentTime()
 	shouldAdvertise := false
 	if state.drainOwner == "" {
 		for _, serving := range state.serving {
@@ -356,7 +395,7 @@ func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, 
 	}
 
 	if shouldAdvertise {
-		if state.advertised {
+		if state.advertised && !c.shouldVerifyAdvertisedRoute(state, now) {
 			return true, nil
 		}
 		if err := c.router.AnnounceVIP(ctx, address); err != nil {
@@ -364,6 +403,7 @@ func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, 
 		}
 		state.advertised = true
 		state.reconciled = true
+		state.lastVerified = now
 		return true, nil
 	}
 
@@ -373,6 +413,7 @@ func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, 
 		}
 		state.advertised = false
 		state.reconciled = true
+		state.lastVerified = time.Time{}
 	}
 	return false, nil
 }
@@ -390,11 +431,23 @@ func (m *Manager) Stop() {
 		m.cancel()
 	}
 
-	reconcilers := make([]*vipReconciler, 0, len(m.vips))
+	reconcilers := make([]*vipReconciler, 0, len(m.vips)+len(m.deleting))
+	seen := make(map[*vipReconciler]struct{}, len(m.vips)+len(m.deleting))
 	for _, vr := range m.vips {
-		reconcilers = append(reconcilers, vr)
+		if _, ok := seen[vr]; !ok {
+			seen[vr] = struct{}{}
+			reconcilers = append(reconcilers, vr)
+		}
+	}
+	for _, vr := range m.deleting {
+		if _, ok := seen[vr]; !ok {
+			seen[vr] = struct{}{}
+			reconcilers = append(reconcilers, vr)
+		}
 	}
 	m.vips = make(map[string]*vipReconciler)
+	m.deleting = make(map[string]*vipReconciler)
+	m.pendingRecreates = make(map[string]*v1alpha1.VirtualIP)
 	m.mu.Unlock()
 
 	for _, vr := range reconcilers {
@@ -407,8 +460,14 @@ func (m *Manager) Stop() {
 // OnVIPUpdate is called when a VirtualIP is created or updated.
 func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	key := vip.Namespace + "/" + vip.Name
+	desired := vip.DeepCopy()
 
 	m.mu.Lock()
+	if _, deleting := m.deleting[key]; deleting {
+		m.pendingRecreates[key] = desired
+		m.mu.Unlock()
+		return
+	}
 
 	vr, exists := m.vips[key]
 	if !exists {
@@ -418,7 +477,7 @@ func (m *Manager) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 	}
 	m.mu.Unlock()
 
-	vr.update(vip.DeepCopy())
+	vr.update(desired)
 }
 
 // OnVIPDelete is called when a VirtualIP is deleted.
@@ -429,22 +488,35 @@ func (m *Manager) OnVIPDelete(vip *v1alpha1.VirtualIP) {
 	vr, ok := m.vips[key]
 	if ok {
 		delete(m.vips, key)
+		m.deleting[key] = vr
+	} else if pending, pendingOK := m.pendingRecreates[key]; pendingOK && pending.UID == vip.UID {
+		delete(m.pendingRecreates, key)
 	}
 	m.mu.Unlock()
 
 	if ok {
-		// The goroutine will handle cleanup and exit. The manager removes the
-		// entry immediately so a later add for the same namespace/name creates a
-		// fresh reconciler instead of sending updates to the deleting goroutine.
+		// The goroutine will handle cleanup and exit. Recreates for this key are
+		// queued until cleanup succeeds so a stale delete retry cannot remove a
+		// freshly applied VIP with the same namespace/name.
 		vr.markDeleted(vip.DeepCopy())
 	}
 }
 
 func (m *Manager) onVIPReconcilerStopped(key string, stopped *vipReconciler) {
 	var current *vipReconciler
+	var recreated *vipReconciler
+	var pendingVIP *v1alpha1.VirtualIP
 
 	m.mu.Lock()
-	if vr, ok := m.vips[key]; ok {
+	if vr, ok := m.deleting[key]; ok && vr == stopped {
+		delete(m.deleting, key)
+		if pending := m.pendingRecreates[key]; pending != nil {
+			delete(m.pendingRecreates, key)
+			recreated = newVIPReconciler(key, m.dp, m.routes, m.store, m.healthTracker, m.statusUpdater, m.rollouts, m.safetyInterval, m.tuningDrift, m.logger, m.onVIPReconcilerStopped)
+			m.vips[key] = recreated
+			pendingVIP = pending
+		}
+	} else if vr, ok := m.vips[key]; ok {
 		if vr == stopped {
 			delete(m.vips, key)
 		} else {
@@ -453,9 +525,14 @@ func (m *Manager) onVIPReconcilerStopped(key string, stopped *vipReconciler) {
 	}
 	m.mu.Unlock()
 
-	// If a VIP with the same namespace/name was recreated while the old
-	// reconciler was still deleting dataplane state, reconcile the new object
-	// after old cleanup completes.
+	if recreated != nil {
+		go recreated.run(m.ctx)
+		recreated.update(pendingVIP)
+		return
+	}
+
+	// If another reconciler already owns this key, reconcile it after the
+	// stopped goroutine exits.
 	if current != nil {
 		current.triggerReconcile()
 	}
@@ -498,8 +575,11 @@ type vipReconciler struct {
 	stopped     chan struct{}
 	onStopped   func(key string, stopped *vipReconciler)
 
+	deleteRetryInterval time.Duration
+
 	mu      sync.RWMutex
 	current *v1alpha1.VirtualIP
+	applied *v1alpha1.VirtualIP
 }
 
 func newVIPReconciler(
@@ -516,21 +596,22 @@ func newVIPReconciler(
 	onStopped func(key string, stopped *vipReconciler),
 ) *vipReconciler {
 	return &vipReconciler{
-		key:            key,
-		dp:             dp,
-		routes:         routes,
-		store:          st,
-		healthTracker:  ht,
-		statusUpdater:  statusUpdater,
-		rollouts:       rollouts,
-		safetyInterval: safetyInterval,
-		tuningDrift:    normalizeTuningDriftConfig(tuningDrift),
-		logger:         logger.With("vip", key),
-		eventCh:        make(chan vipEvent, 8),
-		reconcileCh:    make(chan struct{}, 1),
-		stopCh:         make(chan struct{}),
-		stopped:        make(chan struct{}),
-		onStopped:      onStopped,
+		key:                 key,
+		dp:                  dp,
+		routes:              routes,
+		store:               st,
+		healthTracker:       ht,
+		statusUpdater:       statusUpdater,
+		rollouts:            rollouts,
+		safetyInterval:      safetyInterval,
+		tuningDrift:         normalizeTuningDriftConfig(tuningDrift),
+		logger:              logger.With("vip", key),
+		eventCh:             make(chan vipEvent, 8),
+		reconcileCh:         make(chan struct{}, 1),
+		stopCh:              make(chan struct{}),
+		stopped:             make(chan struct{}),
+		onStopped:           onStopped,
+		deleteRetryInterval: defaultDeleteRetryInterval,
 	}
 }
 
@@ -582,6 +663,9 @@ func (vr *vipReconciler) run(ctx context.Context) {
 	ticker := time.NewTicker(vr.safetyInterval)
 	defer ticker.Stop()
 
+	var deleteVIP *v1alpha1.VirtualIP
+	var deleteRetry <-chan time.Time
+
 	vr.logger.Info("per-VIP reconciler started")
 
 	for {
@@ -595,15 +679,33 @@ func (vr *vipReconciler) run(ctx context.Context) {
 
 		case ev := <-vr.eventCh:
 			if ev.deleted {
-				vr.handleDelete(ctx, ev.vip)
-				return // exit goroutine after delete
+				deleteVIP = ev.vip
+				if vr.handleDelete(ctx, deleteVIP) {
+					return // exit goroutine after delete
+				}
+				deleteRetry = time.After(vr.deleteRetryInterval)
+				continue
 			}
 
+		case <-deleteRetry:
+			if deleteVIP == nil {
+				deleteRetry = nil
+				continue
+			}
+			if vr.handleDelete(ctx, deleteVIP) {
+				return // exit goroutine after delete
+			}
+			deleteRetry = time.After(vr.deleteRetryInterval)
+
 		case <-vr.reconcileCh:
-			vr.reconcile(ctx)
+			if deleteVIP == nil {
+				vr.reconcile(ctx)
+			}
 
 		case <-ticker.C:
-			vr.reconcile(ctx)
+			if deleteVIP == nil {
+				vr.reconcile(ctx)
+			}
 		}
 	}
 }
@@ -638,26 +740,90 @@ func (vr *vipReconciler) reconcile(ctx context.Context) {
 	}
 	hasHealthy := len(healthyBackends) > 0
 
-	if vr.rollouts != nil {
-		previousAddress, pending := vr.routes.pendingAddressChange(vr.key, vip.Spec.Address)
-		if pending {
-			keys := rolloutKeysForAddresses(previousAddress, vip.Spec.Address)
-			if err := runExclusiveRollouts(ctx, vr.rollouts, keys, func(ctx context.Context) error {
-				if !vr.isCurrent(vip) {
-					vr.logger.Debug("skipping stale VIP address rollout", "generation", vip.Generation)
-					return nil
-				}
-				vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, true)
-				return nil
-			}); err != nil {
-				vr.logger.Error("failed to coordinate VIP address rollout", "error", err, "rollouts", keys)
-				span.RecordError(err)
-			}
-			return
-		}
+	plan, err := vr.planVIPUpdate(ctx, vip)
+	if err != nil {
+		vr.logger.Warn("failed to plan VIP rollout", "error", err, "generation", vip.Generation)
+		span.RecordError(err)
 	}
 
-	vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, false)
+	if vr.rollouts != nil && len(plan.rolloutKeys) > 0 {
+		if err := runExclusiveRollouts(ctx, vr.rollouts, plan.rolloutKeys, func(ctx context.Context) error {
+			if !vr.isCurrent(vip) {
+				vr.logger.Debug("skipping stale VIP rollout", "generation", vip.Generation)
+				return nil
+			}
+			vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, true, plan.drainBeforeApply)
+			return nil
+		}); err != nil {
+			vr.logger.Error("failed to coordinate VIP rollout", "error", err, "rollouts", plan.rolloutKeys)
+			span.RecordError(err)
+		}
+		return
+	}
+
+	vr.reconcileApplied(ctx, span, vip, healthyBackends, hasHealthy, false, plan.drainBeforeApply)
+}
+
+type vipUpdatePlan struct {
+	rolloutKeys      []string
+	drainBeforeApply bool
+}
+
+func (vr *vipReconciler) planVIPUpdate(ctx context.Context, vip *v1alpha1.VirtualIP) (vipUpdatePlan, error) {
+	previousAddress, pendingAddressChange := vr.routes.pendingAddressChange(vr.key, vip.Spec.Address)
+	if pendingAddressChange {
+		return vipUpdatePlan{
+			rolloutKeys: rolloutKeysForAddresses(previousAddress, vip.Spec.Address),
+		}, nil
+	}
+
+	needsDrain, err := vr.needsDrainForVIPUpdate(vip)
+	if err != nil {
+		return vipUpdatePlan{
+			rolloutKeys:      rolloutKeysForAddresses(vip.Spec.Address),
+			drainBeforeApply: true,
+		}, err
+	}
+	if !needsDrain {
+		needsDrain, err = vr.needsDrainForRetainedVIP(ctx, vip)
+		if err != nil {
+			return vipUpdatePlan{
+				rolloutKeys:      rolloutKeysForAddresses(vip.Spec.Address),
+				drainBeforeApply: true,
+			}, err
+		}
+	}
+	if !needsDrain {
+		return vipUpdatePlan{}, nil
+	}
+	return vipUpdatePlan{
+		rolloutKeys:      rolloutKeysForAddresses(vip.Spec.Address),
+		drainBeforeApply: true,
+	}, nil
+}
+
+func (vr *vipReconciler) needsDrainForVIPUpdate(vip *v1alpha1.VirtualIP) (bool, error) {
+	checker, ok := vr.dp.(dataplane.VIPUpdateDrainChecker)
+	if !ok {
+		return false, nil
+	}
+
+	applied, err := vr.lastAppliedVIP(vip)
+	if err != nil || applied == nil {
+		return false, err
+	}
+	if applied.Spec.Address != vip.Spec.Address {
+		return false, nil
+	}
+	return checker.NeedsDrainForVIPUpdate(applied, vip)
+}
+
+func (vr *vipReconciler) needsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error) {
+	checker, ok := vr.dp.(dataplane.RetainedVIPDrainChecker)
+	if !ok {
+		return false, nil
+	}
+	return checker.NeedsDrainForRetainedVIP(ctx, vip)
 }
 
 func runExclusiveRollouts(ctx context.Context, rollouts RolloutCoordinator, keys []string, fn func(context.Context) error) error {
@@ -707,7 +873,23 @@ func (vr *vipReconciler) reconcileApplied(
 	healthyBackends []v1alpha1.BackendSpec,
 	hasHealthy bool,
 	rolloutHeld bool,
+	drainBeforeApply bool,
 ) {
+	if err := vr.persistPendingConfig(vip); err != nil {
+		vr.logger.Error("failed to persist pending config before reconcile", "error", err)
+		span.RecordError(err)
+		if vr.statusUpdater != nil {
+			if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+				lastConfigPersistFailedCondition(err),
+				routeAdvertisedCondition(vip, false, nil),
+			); statusErr != nil {
+				vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+				span.RecordError(statusErr)
+			}
+		}
+		return
+	}
+
 	routeAdvertised, routeErr := vr.routes.prepareAddressChange(ctx, vr.key, vip.Spec.Address)
 	if routeErr != nil {
 		vr.logger.Error("failed to prepare VIP address route change", "error", routeErr)
@@ -724,18 +906,80 @@ func (vr *vipReconciler) reconcileApplied(
 		return
 	}
 
+	drainHeld := false
+	if drainBeforeApply {
+		vr.logger.Info("draining VIP address before disruptive dataplane update", "address", vip.Spec.Address)
+		drained, err := vr.routes.BeginAddressDrain(ctx, vr.key, vip.Spec.Address)
+		if err != nil {
+			vr.logger.Error("failed to drain VIP address route before dataplane update", "error", err)
+			span.RecordError(err)
+			if vr.statusUpdater != nil {
+				if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+					servingCondition(vip, len(healthyBackends)),
+					routeAdvertisedCondition(vip, false, err),
+				); statusErr != nil {
+					vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+					span.RecordError(statusErr)
+				}
+			}
+			return
+		}
+		if !drained {
+			err := fmt.Errorf("VIP address %s is already draining for another VIP", vip.Spec.Address)
+			vr.logger.Warn("skipping disruptive dataplane update until VIP address can drain", "address", vip.Spec.Address)
+			span.RecordError(err)
+			if vr.statusUpdater != nil {
+				if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+					servingCondition(vip, len(healthyBackends)),
+					routeAdvertisedCondition(vip, false, err),
+				); statusErr != nil {
+					vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+					span.RecordError(statusErr)
+				}
+			}
+			return
+		}
+		drainHeld = true
+		routeAdvertised = false
+		if hasHealthy {
+			if err := sleepContext(ctx, normalizeTuningDriftConfig(vr.tuningDrift).DrainDuration); err != nil {
+				span.RecordError(err)
+				routeAdvertised, routeErr = vr.releaseUpdateDrain(ctx, vip, false)
+				if routeErr != nil {
+					span.RecordError(routeErr)
+				}
+				if vr.statusUpdater != nil {
+					if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+						servingDataPlaneApplyFailedCondition(err),
+						dataPlaneApplyFailedCondition(err),
+						routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+					); statusErr != nil {
+						vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+						span.RecordError(statusErr)
+					}
+				}
+				return
+			}
+		}
+	}
+
 	// Apply to data plane
 	if err := vr.dp.ApplyVIP(ctx, vip, healthyBackends); err != nil {
 		vr.logger.Error("failed to apply VIP to data plane", "error", err)
 		span.RecordError(err)
-		routeAdvertised, routeErr = vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, false)
+		if drainHeld {
+			routeAdvertised, routeErr = vr.releaseUpdateDrain(ctx, vip, false)
+		} else {
+			routeAdvertised, routeErr = vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, false)
+		}
 		if routeErr != nil {
 			vr.logger.Error("failed to withdraw VIP address route after data plane apply failure", "error", routeErr)
 			span.RecordError(routeErr)
 		}
 		if vr.statusUpdater != nil {
 			if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
-				dataplaneApplyFailedCondition(err),
+				servingDataPlaneApplyFailedCondition(err),
+				dataPlaneApplyFailedCondition(err),
 				routeAdvertisedCondition(vip, routeAdvertised, routeErr),
 			); statusErr != nil {
 				vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
@@ -745,15 +989,99 @@ func (vr *vipReconciler) reconcileApplied(
 		return
 	}
 
+	if err := vr.commitLastConfig(vip); err != nil {
+		vr.logger.Error("failed to commit last config after dataplane apply", "error", err)
+		span.RecordError(err)
+		if drainHeld {
+			routeAdvertised, routeErr = vr.releaseUpdateDrain(ctx, vip, false)
+			if routeErr != nil {
+				vr.logger.Error("failed to release VIP address drain after last config commit failure", "error", routeErr)
+				span.RecordError(routeErr)
+			}
+		}
+		if vr.statusUpdater != nil {
+			if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+				lastConfigPersistFailedCondition(err),
+				routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+			); statusErr != nil {
+				vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+				span.RecordError(statusErr)
+			}
+		}
+		return
+	}
+	vr.setLastAppliedVIP(vip)
+
 	if drifts := dataplaneTuningDrifts(vr.dp, vr.key); len(drifts) > 0 {
-		if err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, rolloutHeld); err != nil {
+		repairResult, err := vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, rolloutHeld)
+		if repairResult.blocked {
+			vr.logger.Warn("retained VIP tuning drift repair is blocked", "drifts", drifts)
+			if drainHeld && !repairResult.drainReleased {
+				routeAdvertised, routeErr = vr.releaseUpdateDrain(ctx, vip, hasHealthy)
+				if routeErr != nil {
+					vr.logger.Error("failed to release VIP address drain after blocked tuning drift repair", "error", routeErr)
+					span.RecordError(routeErr)
+				}
+			} else {
+				routeAdvertised, routeErr = vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, hasHealthy)
+				if routeErr != nil {
+					vr.logger.Error("failed to reconcile VIP address route after blocked tuning drift repair", "error", routeErr)
+					span.RecordError(routeErr)
+				}
+			}
+			if vr.statusUpdater != nil {
+				if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+					servingCondition(vip, len(healthyBackends)),
+					tuningDriftRepairBlockedCondition(vip, drifts),
+					routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+				); statusErr != nil {
+					vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+					span.RecordError(statusErr)
+				}
+			}
+			return
+		}
+		if err != nil {
 			vr.logger.Error("failed to repair retained VIP tuning drift", "error", err, "drifts", drifts)
 			span.RecordError(err)
+			if repairResult.routeStateKnown {
+				routeAdvertised = repairResult.routeAdvertised
+				routeErr = repairResult.routeErr
+			}
+			if drainHeld && !repairResult.drainReleased {
+				routeAdvertised, routeErr = vr.releaseUpdateDrain(ctx, vip, false)
+				if routeErr != nil {
+					vr.logger.Error("failed to release VIP address drain after tuning drift repair failure", "error", routeErr)
+					span.RecordError(routeErr)
+				}
+			}
+			if routeErr != nil {
+				span.RecordError(routeErr)
+			}
+			if vr.statusUpdater != nil {
+				serving := servingDataPlaneApplyFailedCondition(err)
+				dataPlane := dataPlaneApplyFailedCondition(err)
+				if repairResult.retainedOldVIP {
+					serving = retainedOldVIPServingCondition(err)
+					dataPlane = retainedOldVIPDataPlaneCondition(err)
+				}
+				if statusErr := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
+					serving,
+					dataPlane,
+					routeAdvertisedCondition(vip, routeAdvertised, routeErr),
+				); statusErr != nil {
+					vr.logger.Warn("failed to update VirtualIP status", "error", statusErr)
+					span.RecordError(statusErr)
+				}
+			}
 			return
 		}
 	}
 
 	routeAdvertised, routeErr = vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, hasHealthy)
+	if routeErr == nil && drainHeld {
+		routeAdvertised, routeErr = vr.routes.FinishDrain(ctx, vr.key, vip.Spec.Address)
+	}
 	if routeErr != nil {
 		vr.logger.Error("failed to reconcile VIP address route", "error", routeErr)
 		span.RecordError(routeErr)
@@ -762,20 +1090,11 @@ func (vr *vipReconciler) reconcileApplied(
 	if vr.statusUpdater != nil {
 		if err := vr.statusUpdater.UpdateVIPStatus(ctx, vip, healthyBackends,
 			servingCondition(vip, len(healthyBackends)),
+			dataPlaneAppliedCondition(),
 			routeAdvertisedCondition(vip, routeAdvertised, routeErr),
 		); err != nil {
 			vr.logger.Warn("failed to update VirtualIP status", "error", err)
 			span.RecordError(err)
-		}
-	}
-
-	// Persist last-applied config
-	if vr.store != nil {
-		data, err := json.Marshal(vip.Spec)
-		if err == nil {
-			if err := vr.store.SaveLastConfig(vr.key, data); err != nil {
-				vr.logger.Warn("failed to persist last config", "error", err)
-			}
 		}
 	}
 
@@ -784,6 +1103,85 @@ func (vr *vipReconciler) reconcileApplied(
 		"total", len(vip.Spec.Backends),
 		"serving", hasHealthy,
 		"route_advertised", routeAdvertised)
+}
+
+func (vr *vipReconciler) persistPendingConfig(vip *v1alpha1.VirtualIP) error {
+	if vr.store == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(vip.Spec)
+	if err != nil {
+		return fmt.Errorf("failed to encode pending config: %w", err)
+	}
+	if err := vr.store.SavePendingConfig(vr.key, data); err != nil {
+		return fmt.Errorf("failed to save pending config: %w", err)
+	}
+	return nil
+}
+
+func (vr *vipReconciler) commitLastConfig(vip *v1alpha1.VirtualIP) error {
+	if vr.store == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(vip.Spec)
+	if err != nil {
+		return fmt.Errorf("failed to encode last config: %w", err)
+	}
+	if err := vr.store.CommitLastConfig(vr.key, data); err != nil {
+		return fmt.Errorf("failed to commit last config: %w", err)
+	}
+	return nil
+}
+
+func (vr *vipReconciler) lastAppliedVIP(template *v1alpha1.VirtualIP) (*v1alpha1.VirtualIP, error) {
+	vr.mu.RLock()
+	applied := vr.applied
+	vr.mu.RUnlock()
+	if applied != nil {
+		return applied.DeepCopy(), nil
+	}
+	if vr.store == nil {
+		return nil, nil
+	}
+
+	data, err := vr.store.LoadLastConfig(vr.key)
+	if err != nil || len(data) == 0 {
+		return nil, err
+	}
+	var spec v1alpha1.VirtualIPSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("failed to decode last-applied config for %s: %w", vr.key, err)
+	}
+
+	vip := template.DeepCopy()
+	vip.Spec = spec
+	vr.setLastAppliedVIP(vip)
+	return vip, nil
+}
+
+func (vr *vipReconciler) setLastAppliedVIP(vip *v1alpha1.VirtualIP) {
+	vr.mu.Lock()
+	defer vr.mu.Unlock()
+
+	if vip == nil {
+		vr.applied = nil
+		return
+	}
+	vr.applied = vip.DeepCopy()
+}
+
+func (vr *vipReconciler) releaseUpdateDrain(ctx context.Context, vip *v1alpha1.VirtualIP, serving bool) (bool, error) {
+	advertised, setErr := vr.routes.SetServing(ctx, vr.key, vip.Spec.Address, serving)
+	if setErr != nil {
+		return advertised, setErr
+	}
+	advertised, finishErr := vr.routes.FinishDrain(ctx, vr.key, vip.Spec.Address)
+	if finishErr != nil {
+		return advertised, finishErr
+	}
+	return advertised, nil
 }
 
 func (vr *vipReconciler) isCurrent(vip *v1alpha1.VirtualIP) bool {
@@ -822,7 +1220,7 @@ func servingCondition(vip *v1alpha1.VirtualIP, healthyBackends int) metav1.Condi
 	return condition
 }
 
-func dataplaneApplyFailedCondition(applyErr error) metav1.Condition {
+func servingDataPlaneApplyFailedCondition(applyErr error) metav1.Condition {
 	message := "Failed to apply VIP to data plane"
 	if applyErr != nil {
 		message = applyErr.Error()
@@ -831,6 +1229,80 @@ func dataplaneApplyFailedCondition(applyErr error) metav1.Condition {
 		Type:    agentstatus.ConditionServing,
 		Status:  metav1.ConditionUnknown,
 		Reason:  "DataPlaneApplyFailed",
+		Message: message,
+	}
+}
+
+func dataPlaneAppliedCondition() metav1.Condition {
+	return metav1.Condition{
+		Type:    agentstatus.ConditionDataPlaneReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Applied",
+		Message: "Desired VIP is applied to the data plane",
+	}
+}
+
+func dataPlaneApplyFailedCondition(applyErr error) metav1.Condition {
+	message := "Failed to apply desired VIP to data plane"
+	if applyErr != nil {
+		message = applyErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionDataPlaneReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "DataPlaneApplyFailed",
+		Message: message,
+	}
+}
+
+func retainedOldVIPServingCondition(repairErr error) metav1.Condition {
+	message := "Retained old VIP remains active after failed recreate"
+	if repairErr != nil {
+		message = repairErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionServing,
+		Status:  metav1.ConditionUnknown,
+		Reason:  "RetainedOldVIP",
+		Message: message,
+	}
+}
+
+func retainedOldVIPDataPlaneCondition(repairErr error) metav1.Condition {
+	message := "Old VIP is still active; desired VIP recreate is pending retry"
+	if repairErr != nil {
+		message = repairErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionDataPlaneReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "RetainedOldVIP",
+		Message: message,
+	}
+}
+
+func tuningDriftRepairBlockedCondition(vip *v1alpha1.VirtualIP, drifts []dataplane.VIPTuningDrift) metav1.Condition {
+	message := fmt.Sprintf("Retained VIP tuning drift repair for %s is blocked until the shared address can drain", vip.Spec.Address)
+	if len(drifts) > 0 {
+		message = fmt.Sprintf("%s (%d drift(s) pending)", message, len(drifts))
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionDataPlaneReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "TuningDriftRepairBlocked",
+		Message: message,
+	}
+}
+
+func lastConfigPersistFailedCondition(persistErr error) metav1.Condition {
+	message := "Failed to persist last-applied config"
+	if persistErr != nil {
+		message = persistErr.Error()
+	}
+	return metav1.Condition{
+		Type:    agentstatus.ConditionServing,
+		Status:  metav1.ConditionUnknown,
+		Reason:  "LastConfigPersistFailed",
 		Message: message,
 	}
 }
@@ -866,6 +1338,15 @@ func dataplaneTuningDrifts(dp dataplane.DataPlane, vipKey string) []dataplane.VI
 	return reporter.TuningDrifts(vipKey)
 }
 
+type tuningDriftRepairResult struct {
+	routeAdvertised bool
+	routeErr        error
+	routeStateKnown bool
+	retainedOldVIP  bool
+	drainReleased   bool
+	blocked         bool
+}
+
 func (vr *vipReconciler) repairTuningDrift(
 	ctx context.Context,
 	vip *v1alpha1.VirtualIP,
@@ -873,55 +1354,82 @@ func (vr *vipReconciler) repairTuningDrift(
 	hasHealthy bool,
 	drifts []dataplane.VIPTuningDrift,
 	rolloutHeld bool,
-) error {
+) (tuningDriftRepairResult, error) {
 	cfg := normalizeTuningDriftConfig(vr.tuningDrift)
 	if cfg.Policy == TuningDriftPolicyPreserve {
 		vr.logger.Warn("retained VIP tuning drift preserved", "drifts", drifts)
-		return nil
+		return tuningDriftRepairResult{}, nil
 	}
 
 	if vr.rollouts != nil && !rolloutHeld {
-		return runExclusiveRollouts(ctx, vr.rollouts, rolloutKeysForAddresses(vip.Spec.Address), func(ctx context.Context) error {
+		var result tuningDriftRepairResult
+		err := runExclusiveRollouts(ctx, vr.rollouts, rolloutKeysForAddresses(vip.Spec.Address), func(ctx context.Context) error {
 			if !vr.isCurrent(vip) {
 				vr.logger.Debug("skipping stale retained VIP tuning drift repair", "generation", vip.Generation)
 				return nil
 			}
-			return vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, true)
+			var err error
+			result, err = vr.repairTuningDrift(ctx, vip, healthyBackends, hasHealthy, drifts, true)
+			return err
 		})
+		return result, err
 	}
 
 	recreator, ok := vr.dp.(dataplane.VIPRecreator)
 	if !ok {
-		return fmt.Errorf("dataplane does not support VIP recreation")
+		return tuningDriftRepairResult{}, fmt.Errorf("dataplane does not support VIP recreation")
 	}
 
 	vr.logger.Info("repairing retained VIP tuning drift", "policy", cfg.Policy, "drain", cfg.DrainDuration, "drifts", drifts)
 	drained, err := vr.routes.BeginDrain(ctx, vr.key, vip.Spec.Address)
 	if err != nil {
-		return fmt.Errorf("failed to drain route before VIP recreate: %w", err)
+		return tuningDriftRepairResult{
+			routeErr:        err,
+			routeStateKnown: true,
+		}, fmt.Errorf("failed to drain route before VIP recreate: %w", err)
 	}
 	if !drained {
 		vr.logger.Warn("skipping retained VIP tuning drift repair until VIP address can drain", "address", vip.Spec.Address, "drifts", drifts)
-		return nil
+		return tuningDriftRepairResult{blocked: true}, nil
 	}
-	releaseDrain := func(retErr error) error {
-		if _, releaseErr := vr.routes.FinishDrain(ctx, vr.key, vip.Spec.Address); releaseErr != nil {
-			if retErr != nil {
-				return fmt.Errorf("%w; additionally failed to release route drain: %v", retErr, releaseErr)
-			}
-			return fmt.Errorf("failed to release route drain after VIP recreate: %w", releaseErr)
+	releaseDrain := func(serving bool, retErr error) (tuningDriftRepairResult, error) {
+		advertised, releaseErr := vr.releaseUpdateDrain(ctx, vip, serving)
+		result := tuningDriftRepairResult{
+			routeAdvertised: advertised,
+			routeErr:        releaseErr,
+			routeStateKnown: true,
+			drainReleased:   true,
 		}
-		return retErr
+		if releaseErr != nil {
+			if retErr != nil {
+				return result, fmt.Errorf("%w; additionally failed to release route drain: %v", retErr, releaseErr)
+			}
+			return result, fmt.Errorf("failed to release route drain after VIP recreate: %w", releaseErr)
+		}
+		return result, retErr
 	}
 	if hasHealthy {
 		if err := sleepContext(ctx, cfg.DrainDuration); err != nil {
-			return releaseDrain(err)
+			return releaseDrain(hasHealthy, err)
 		}
 	}
 	if err := recreator.RecreateVIP(ctx, vip, healthyBackends); err != nil {
-		return releaseDrain(fmt.Errorf("failed to recreate VIP: %w", err))
+		restoreRoute := hasHealthy && dataplane.RouteSafeToRestoreAfterVIPRecreate(err)
+		result, retErr := releaseDrain(restoreRoute, fmt.Errorf("failed to recreate VIP: %w", err))
+		result.retainedOldVIP = restoreRoute && result.routeErr == nil && result.routeAdvertised
+		return result, retErr
 	}
-	return releaseDrain(nil)
+	advertised, releaseErr := vr.routes.FinishDrain(ctx, vr.key, vip.Spec.Address)
+	result := tuningDriftRepairResult{
+		routeAdvertised: advertised,
+		routeErr:        releaseErr,
+		routeStateKnown: true,
+		drainReleased:   true,
+	}
+	if releaseErr != nil {
+		return result, fmt.Errorf("failed to release route drain after VIP recreate: %w", releaseErr)
+	}
+	return result, nil
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {
@@ -940,7 +1448,7 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.VirtualIP) {
+func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.VirtualIP) bool {
 	ctx, span := tracer.Start(ctx, "delete",
 		trace.WithAttributes(
 			attribute.String("vip.key", vr.key),
@@ -972,13 +1480,22 @@ func (vr *vipReconciler) handleDelete(ctx context.Context, vip *v1alpha1.Virtual
 			if err := vr.store.DeleteLastConfig(vr.key); err != nil {
 				vr.logger.Warn("failed to delete last config", "error", err)
 			}
+			if err := vr.store.DeletePendingConfig(vr.key); err != nil {
+				vr.logger.Warn("failed to delete pending config", "error", err)
+			}
 			if err := vr.store.DeleteHealthStatesForVIP(vr.key); err != nil {
 				vr.logger.Warn("failed to delete health states", "error", err)
 			}
 		}
 	}
 
+	if cleanupFailed {
+		vr.logger.Warn("VIP deletion cleanup failed, will retry")
+		return false
+	}
+
 	vr.logger.Info("VIP deletion handled")
+	return true
 }
 
 // GetStatus returns the list of VIP keys being managed.

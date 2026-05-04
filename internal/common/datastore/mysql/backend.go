@@ -52,7 +52,7 @@ func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backen
 	}
 
 	// Add backend in transaction
-	err := ds.db.Transaction(func(tx *gorm.DB) error {
+	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Verify VIP exists
 		var count int64
 		if err := tx.Table("vips").Where("id = ?", backend.VIPID).Count(&count).Error; err != nil {
@@ -90,8 +90,10 @@ func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backen
 
 // GetBackend retrieves a backend by ID from MySQL
 func (ds *MySQLDataStore) GetBackend(ctx context.Context, id string) (*models.Backend, error) {
+	db := ds.db.WithContext(ctx)
+
 	var backendRecord BackendRecord
-	if err := ds.db.Where("id = ?", id).First(&backendRecord).Error; err != nil {
+	if err := db.Where("id = ?", id).First(&backendRecord).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, datastore.ErrNotFound
 		}
@@ -110,8 +112,10 @@ func (ds *MySQLDataStore) GetBackend(ctx context.Context, id string) (*models.Ba
 
 // ListBackends retrieves all backends for a VIP from MySQL
 func (ds *MySQLDataStore) ListBackends(ctx context.Context, vipID string) ([]models.Backend, error) {
+	db := ds.db.WithContext(ctx)
+
 	var backendRecords []BackendRecord
-	if err := ds.db.Where("vip_id = ?", vipID).Find(&backendRecords).Error; err != nil {
+	if err := db.Where("vip_id = ?", vipID).Find(&backendRecords).Error; err != nil {
 		return nil, fmt.Errorf("failed to list backends: %w", err)
 	}
 
@@ -161,7 +165,7 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 	}
 
 	// Update backend in transaction
-	err = ds.db.Transaction(func(tx *gorm.DB) error {
+	err = ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Update backend
 		result := tx.Model(&BackendRecord{}).Where("id = ?", backend.ID).Updates(&backendRecord)
 		if result.Error != nil {
@@ -201,7 +205,7 @@ func (ds *MySQLDataStore) DeleteBackend(ctx context.Context, id string) error {
 	}
 
 	// Delete backend in transaction
-	err = ds.db.Transaction(func(tx *gorm.DB) error {
+	err = ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Delete backend
 		result := tx.Where("id = ?", id).Delete(&BackendRecord{})
 		if result.Error != nil {

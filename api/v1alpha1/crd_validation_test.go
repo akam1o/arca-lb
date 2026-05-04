@@ -26,6 +26,14 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	if !containsString(stringSlice(t, http["required"]), "port") {
 		t.Fatalf("healthCheck.http.port is not required in CRD schema")
 	}
+	expectedCodes := nestedMap(t, http, "properties", "expectedCodes")
+	expectedCodeItems := nestedMap(t, expectedCodes, "items")
+	if got := expectedCodeItems["minimum"]; got != 100 {
+		t.Fatalf("expectedCodes item minimum = %v, want 100", got)
+	}
+	if got := expectedCodeItems["maximum"]; got != 599 {
+		t.Fatalf("expectedCodes item maximum = %v, want 599", got)
+	}
 
 	tcp := nestedMap(t, healthCheck, "properties", "tcp")
 	if !containsString(stringSlice(t, tcp["required"]), "port") {
@@ -36,6 +44,15 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	typeEnum := stringSlice(t, typeSchema["enum"])
 	if !containsString(typeEnum, "tls-hello") {
 		t.Fatalf("healthCheck.type enum does not include tls-hello: %#v", typeEnum)
+	}
+}
+
+func TestVirtualIPCRDRequiresSpec(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	schema := virtualIPCRDSchema(t, crd)
+
+	if !containsString(stringSlice(t, schema["required"]), "spec") {
+		t.Fatalf("spec is not required in CRD schema")
 	}
 }
 
@@ -50,6 +67,24 @@ func TestVirtualIPCRDDefinesBackendMonitorAddress(t *testing.T) {
 	if containsString(stringSlice(t, nestedMap(t, backends, "items")["required"]), "monitorAddress") {
 		t.Fatalf("monitorAddress is required in CRD schema")
 	}
+}
+
+func TestVirtualIPCRDRejectsDuplicateBackendAddresses(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	backends := crdSchemaProperty(t, crd, "spec", "backends")
+	validations := nestedSlice(t, backends, "x-kubernetes-validations")
+
+	for _, raw := range validations {
+		validation, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Fatalf("validation item has type %T, want map[string]interface{}", raw)
+		}
+		if validation["message"] == "spec.backends addresses must be unique" &&
+			validation["rule"] == "self.all(b1, self.exists_one(b2, b2.address == b1.address))" {
+			return
+		}
+	}
+	t.Fatalf("missing backend uniqueness validation in %#v", validations)
 }
 
 func loadVirtualIPCRD(t *testing.T) map[string]interface{} {
@@ -70,16 +105,21 @@ func loadVirtualIPCRD(t *testing.T) map[string]interface{} {
 
 func crdSchemaProperty(t *testing.T, crd map[string]interface{}, path ...string) map[string]interface{} {
 	t.Helper()
+	current := virtualIPCRDSchema(t, crd)
+	for _, name := range path {
+		current = nestedMapFromValue(t, current, "properties", name)
+	}
+	return current
+}
+
+func virtualIPCRDSchema(t *testing.T, crd map[string]interface{}) map[string]interface{} {
+	t.Helper()
 
 	versions := nestedSlice(t, crd, "spec", "versions")
 	if len(versions) == 0 {
 		t.Fatalf("CRD has no versions")
 	}
-	current := nestedMapFromValue(t, versions[0], "schema", "openAPIV3Schema")
-	for _, name := range path {
-		current = nestedMapFromValue(t, current, "properties", name)
-	}
-	return current
+	return nestedMapFromValue(t, versions[0], "schema", "openAPIV3Schema")
 }
 
 func validationMessages(t *testing.T, schema map[string]interface{}) []string {

@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS `vips` (
 CREATE TABLE IF NOT EXISTS `health_checks` (
   `id` CHAR(36) NOT NULL,
   `vip_id` CHAR(36) NOT NULL,
-  `type` ENUM('http', 'https', 'tcp', 'ping') NOT NULL,
+  `type` ENUM('http', 'https', 'tcp', 'ping', 'tls-hello') NOT NULL,
   `interval_sec` INT NOT NULL DEFAULT 5,
   `timeout_sec` INT NOT NULL DEFAULT 3,
   `rise_count` INT NOT NULL DEFAULT 3,

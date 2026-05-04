@@ -148,15 +148,23 @@ func (p *HTTPProber) parseConfig(config models.HCConfig) error {
 func (p *HTTPProber) Probe(ctx context.Context, target string) ProbeResult {
 	startTime := time.Now()
 
-	// Build URL
 	scheme := "http"
 	if p.useHTTPS {
 		scheme = "https"
 	}
-	url := fmt.Sprintf("%s://%s:%d%s", scheme, target, p.port, p.path)
+	probeURL, err := buildHTTPProbeURL(scheme, target, p.port, p.path)
+	if err != nil {
+		return ProbeResult{
+			Success:    false,
+			Latency:    time.Since(startTime),
+			StatusCode: 0,
+			Error:      fmt.Errorf("failed to build request URL: %w", err),
+			Timestamp:  startTime,
+		}
+	}
 
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, p.method, url, nil)
+	req, err := http.NewRequestWithContext(ctx, p.method, probeURL, nil)
 	if err != nil {
 		return ProbeResult{
 			Success:    false,

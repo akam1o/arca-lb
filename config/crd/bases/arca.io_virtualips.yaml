@@ -93,6 +93,9 @@ spec:
                   - address
                   type: object
                 type: array
+                x-kubernetes-validations:
+                - message: spec.backends addresses must be unique
+                  rule: self.all(b1, self.exists_one(b2, b2.address == b1.address))
               dscp:
                 description: |-
                   DSCP is an optional DSCP override for DSCP-based L3DSR steering.
@@ -126,6 +129,8 @@ spec:
                         description: ExpectedCodes is the set of HTTP status codes
                           that indicate success.
                         items:
+                          maximum: 599
+                          minimum: 100
                           type: integer
                         type: array
                       headers:
@@ -459,6 +464,8 @@ spec:
             - healthyBackends
             - totalBackends
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

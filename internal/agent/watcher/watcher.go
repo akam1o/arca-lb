@@ -428,6 +428,11 @@ func (h *eventHandler) OnAdd(obj interface{}, _ bool) {
 	if !ok {
 		return
 	}
+	if !vip.DeletionTimestamp.IsZero() {
+		h.logger.Debug("VirtualIP deletion timestamp observed on add", "name", vip.Name, "namespace", vip.Namespace)
+		h.handler.OnVIPDelete(vip)
+		return
+	}
 	h.logger.Debug("VirtualIP added", "name", vip.Name, "namespace", vip.Namespace)
 	h.handler.OnVIPUpdate(vip)
 }
@@ -435,6 +440,11 @@ func (h *eventHandler) OnAdd(obj interface{}, _ bool) {
 func (h *eventHandler) OnUpdate(oldObj, newObj interface{}) {
 	vip, ok := newObj.(*v1alpha1.VirtualIP)
 	if !ok {
+		return
+	}
+	if !vip.DeletionTimestamp.IsZero() {
+		h.logger.Debug("VirtualIP deletion timestamp observed on update", "name", vip.Name, "namespace", vip.Namespace)
+		h.handler.OnVIPDelete(vip)
 		return
 	}
 	if oldVIP, ok := oldObj.(*v1alpha1.VirtualIP); ok && sameObservedSpec(oldVIP, vip) {

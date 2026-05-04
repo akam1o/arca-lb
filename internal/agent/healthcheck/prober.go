@@ -52,6 +52,8 @@ func NewProber(hc *models.HealthCheck, logger *logrus.Logger) (Prober, error) {
 		return NewTCPProber(hc, logger)
 	case models.HCTypePing:
 		return NewPingProber(hc, logger)
+	case models.HCTypeTLSHello:
+		return NewTLSHelloProber(hc, logger)
 	default:
 		return nil, fmt.Errorf("unsupported health check type: %s", hc.Type)
 	}

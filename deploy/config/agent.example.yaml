@@ -27,7 +27,7 @@ dataplane:
     encap_type: L3DSR
     dscp: 10
     service_type: CLUSTERIP
-    new_flows_table_length: 65537
+    new_flows_table_length: 65536
     retained_vip_tuning_drift_policy: rolling_recreate
     retained_vip_tuning_drift_drain: 30s
 
@@ -53,6 +53,8 @@ metrics:
 telemetry:
   # OTLP gRPC endpoint for traces. Empty disables tracing. (ARCA_OTLP_ENDPOINT)
   otlpEndpoint: ""
+  # Disable TLS for plaintext OTLP collectors. Defaults to false. (ARCA_OTLP_INSECURE)
+  otlpInsecure: false
 
 log:
   level: info   # debug, info, warn, error

@@ -277,3 +277,45 @@ func TestHTTPProber_Probe_WithCustomHeaders(t *testing.T) {
 	assert.Equal(t, 200, result.StatusCode)
 	assert.NoError(t, result.Error)
 }
+
+func TestHTTPProber_Probe_WithIPv6Target(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	listener := startBufferedHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/healthz", r.URL.Path)
+		assert.Equal(t, "ready=1", r.URL.RawQuery)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	hc := &models.HealthCheck{
+		Type:        models.HCTypeHTTP,
+		IntervalSec: 10,
+		TimeoutSec:  5,
+		Config: models.HCConfig{
+			"port":           8080,
+			"path":           "/healthz?ready=1",
+			"expected_codes": []interface{}{200},
+		},
+	}
+
+	prober, err := NewHTTPProber(hc, false, logger)
+	require.NoError(t, err)
+
+	prober.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			assert.Equal(t, "tcp", network)
+			assert.Equal(t, "[2001:db8::1]:8080", addr)
+			return listener.DialContext(ctx)
+		},
+	}
+	defer func() { require.NoError(t, prober.Close()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := prober.Probe(ctx, "2001:db8::1")
+	assert.True(t, result.Success, "Expected success with IPv6 target: %v", result.Error)
+	assert.Equal(t, http.StatusOK, result.StatusCode)
+	assert.NoError(t, result.Error)
+}

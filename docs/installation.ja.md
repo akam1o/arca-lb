@@ -56,7 +56,7 @@ kubectl apply -f config/manager/
 Operator が稼働していることを確認：
 
 ```bash
-kubectl get pods -l app.kubernetes.io/name=arca-lb-operator
+kubectl get pods -n arca-lb-system -l app.kubernetes.io/name=arca-lb-operator
 ```
 
 #### 4. Agent のデプロイ (DaemonSet)
@@ -67,10 +67,16 @@ Agent DaemonSet を適用する前に、すべての LB ノードへ FRR をイ�
 kubectl apply -f config/agent/
 ```
 
+同梱の `config/agent/daemonset.yaml` は本番向けマニフェストであり、ノードローカル FRR を必須とします。開発用途や経路広報を意図的に無効化したデータプレーンのみの検証では、代わりに no-FRR マニフェストを使用してください。
+
+```bash
+kubectl apply -f config/agent-no-frr/
+```
+
 各 LB ノードで Agent が稼働していることを確認：
 
 ```bash
-kubectl get pods -l app.kubernetes.io/name=arca-lb-agent
+kubectl get pods -n arca-lb-system -l app.kubernetes.io/name=arca-lb-agent
 ```
 
 #### 5. VirtualIP の作成
@@ -150,20 +156,20 @@ cp deploy/config/agent.example.yaml deploy/config/agent.yaml
 ### Operator の確認
 
 ```bash
-kubectl logs -l app.kubernetes.io/name=arca-lb-operator --tail=20
+kubectl logs -n arca-lb-system -l app.kubernetes.io/name=arca-lb-operator --tail=20
 ```
 
 ### Agent の確認
 
 ```bash
-kubectl logs -l app.kubernetes.io/name=arca-lb-agent --tail=20
+kubectl logs -n arca-lb-system -l app.kubernetes.io/name=arca-lb-agent --tail=20
 ```
 
 メトリクスが有効な場合：
 
 ```bash
 # Agent のメトリクスポートにポートフォワード
-kubectl port-forward ds/arca-lb-agent 9090:9090
+kubectl port-forward -n arca-lb-system ds/arca-lb-agent 9090:9090
 curl http://localhost:9090/metrics
 ```
 

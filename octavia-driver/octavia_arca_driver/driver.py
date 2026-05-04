@@ -988,15 +988,28 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
 
         name = vip["metadata"]["name"]
+        annotations = vip.get("metadata", {}).get("annotations", {}) or {}
+        lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+        listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
 
         def mutate(current_vip, spec, annotations):
+            nonlocal lb_id, listener_id
             spec["healthCheck"] = self._build_health_check(hm, current_vip)
             annotations[constants.ANNOTATION_HM_ID] = hm_id
+            lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+            listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
 
         if not self._update_pool_virtualip_with_retry(
             name, pool_id, "health monitor create", mutate, initial_vip=vip
         ):
             return
+        self._push_resource_active_status(
+            name,
+            lb_id=lb_id,
+            active_listener_ids=[listener_id],
+            active_pool_ids=[pool_id],
+            active_hm_ids=[hm_id],
+        )
         LOG.info("Health monitor %s applied to VirtualIP %s", hm_id, name)
 
     def health_monitor_delete(self, health_monitor):
@@ -1082,17 +1095,29 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
 
         name = vip["metadata"]["name"]
+        annotations = vip.get("metadata", {}).get("annotations", {}) or {}
+        lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+        listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
+        hm_id = hm.get("healthmonitor_id")
 
         def mutate(current_vip, spec, annotations):
+            nonlocal lb_id, listener_id, hm_id
             spec["healthCheck"] = self._build_health_check(hm, current_vip)
-            annotations[constants.ANNOTATION_HM_ID] = hm.get(
-                "healthmonitor_id"
-            )
+            annotations[constants.ANNOTATION_HM_ID] = hm_id
+            lb_id = annotations.get(constants.ANNOTATION_LB_ID)
+            listener_id = annotations.get(constants.ANNOTATION_LISTENER_ID)
 
         if not self._update_pool_virtualip_with_retry(
             name, pool_id, "health monitor update", mutate, initial_vip=vip
         ):
             return
+        self._push_resource_active_status(
+            name,
+            lb_id=lb_id,
+            active_listener_ids=[listener_id],
+            active_pool_ids=[pool_id],
+            active_hm_ids=[hm_id],
+        )
 
     # ------------------------------------------------------------------
     # L7Policy / L7Rule — not supported (L4 only)

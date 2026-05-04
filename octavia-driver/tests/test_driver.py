@@ -3433,7 +3433,11 @@ class TestDriverLifecycle(unittest.TestCase):
             "octavia-bbbbbbbb-aaaaaaaa",
             {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
              "backends": [{"address": "10.0.1.1", "weight": 100}]},
-            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
         )
         self.mock_k8s.find_by_pool.return_value = existing_vip
 
@@ -3455,6 +3459,23 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertIn("healthCheck", spec)
         self.assertEqual(spec["healthCheck"]["type"], "http")
         self.assertEqual(spec["healthCheck"]["http"]["port"], 80)
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "ACTIVE",
+        }])
 
     def test_health_monitor_create_deferred_for_listener_less_pool(self):
         self.mock_k8s.find_by_pool.return_value = None
@@ -3496,7 +3517,11 @@ class TestDriverLifecycle(unittest.TestCase):
             "octavia-bbbbbbbb-aaaaaaaa",
             {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
              "backends": [{"address": "10.0.1.1", "weight": 100}]},
-            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
         )
         self.mock_k8s.find_by_pool.return_value = existing_vip
 
@@ -3519,6 +3544,23 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertIn("healthCheck", spec)
         self.assertEqual(spec["healthCheck"]["type"], "http")
         self.assertEqual(annotations[constants.ANNOTATION_HM_ID], "hm-1111")
+        status = self.mock_driver_lib.update_loadbalancer_status.call_args[0][0]
+        self.assertEqual(status["loadbalancers"], [{
+            "id": "lb-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["listeners"], [{
+            "id": "listener-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["pools"], [{
+            "id": "pool-1111",
+            "provisioning_status": "ACTIVE",
+        }])
+        self.assertEqual(status["healthmonitors"], [{
+            "id": "hm-1111",
+            "provisioning_status": "ACTIVE",
+        }])
 
     def test_health_monitor_update_retries_conflict_with_latest_spec(self):
         stale_vip = _make_vip(

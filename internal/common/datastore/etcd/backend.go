@@ -203,7 +203,8 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	if err != nil {
 		return fmt.Errorf("backend not found: %w", err)
 	}
-	if err := ds.ensureBackendIPIndex(ctx, existing); err != nil {
+	oldIPIndexOwned, err := ds.claimBackendIPIndex(ctx, existing)
+	if err != nil {
 		return fmt.Errorf("failed to ensure backend IP index: %w", err)
 	}
 
@@ -231,8 +232,18 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 		{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
 		{cmp: clientv3.Compare(clientv3.Version(indexKey), ">", 0), err: datastore.ErrNotFound},
 		{cmp: clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID), err: datastore.ErrNotFound},
-		{cmp: clientv3.Compare(clientv3.Version(oldIPIndexKey), ">", 0), err: datastore.ErrNotFound},
-		{cmp: clientv3.Compare(clientv3.Value(oldIPIndexKey), "=", backend.ID), err: datastore.ErrNotFound},
+	}
+	if oldIPIndexOwned {
+		checks = append(checks,
+			etcdTxnCheck{
+				cmp: clientv3.Compare(clientv3.Version(oldIPIndexKey), ">", 0),
+				err: datastore.ErrNotFound,
+			},
+			etcdTxnCheck{
+				cmp: clientv3.Compare(clientv3.Value(oldIPIndexKey), "=", backend.ID),
+				err: datastore.ErrNotFound,
+			},
+		)
 	}
 	ops := []clientv3.Op{
 		clientv3.OpPut(key, string(data)),
@@ -243,7 +254,10 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 			cmp: clientv3.Compare(clientv3.Version(newIPIndexKey), "=", 0),
 			err: datastore.ErrConflict,
 		})
-		ops = append(ops, clientv3.OpDelete(oldIPIndexKey), clientv3.OpPut(newIPIndexKey, backend.ID))
+		if oldIPIndexOwned {
+			ops = append(ops, clientv3.OpDelete(oldIPIndexKey))
+		}
+		ops = append(ops, clientv3.OpPut(newIPIndexKey, backend.ID))
 	} else {
 		ops = append(ops, clientv3.OpPut(newIPIndexKey, backend.ID))
 	}
@@ -266,7 +280,8 @@ func (ds *EtcdDataStore) DeleteBackend(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get backend: %w", err)
 	}
-	if err := ds.ensureBackendIPIndex(ctx, backend); err != nil {
+	ipIndexOwned, err := ds.claimBackendIPIndex(ctx, backend)
+	if err != nil {
 		return fmt.Errorf("failed to ensure backend IP index: %w", err)
 	}
 
@@ -275,18 +290,35 @@ func (ds *EtcdDataStore) DeleteBackend(ctx context.Context, id string) error {
 	indexKey := ds.backendIndexKey(backend.ID)
 	ipIndexKey := ds.backendIPIndexKey(backend.VIPID, backend.IP)
 
-	err = ds.commitWithRevision(
-		ctx,
-		[]etcdTxnCheck{
-			{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
-			{cmp: clientv3.Compare(clientv3.Version(indexKey), ">", 0), err: datastore.ErrNotFound},
-			{cmp: clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID), err: datastore.ErrNotFound},
-			{cmp: clientv3.Compare(clientv3.Version(ipIndexKey), ">", 0), err: datastore.ErrNotFound},
-			{cmp: clientv3.Compare(clientv3.Value(ipIndexKey), "=", backend.ID), err: datastore.ErrNotFound},
-		},
+	checks := []etcdTxnCheck{
+		{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
+		{cmp: clientv3.Compare(clientv3.Version(indexKey), ">", 0), err: datastore.ErrNotFound},
+		{cmp: clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID), err: datastore.ErrNotFound},
+	}
+	if ipIndexOwned {
+		checks = append(checks,
+			etcdTxnCheck{
+				cmp: clientv3.Compare(clientv3.Version(ipIndexKey), ">", 0),
+				err: datastore.ErrNotFound,
+			},
+			etcdTxnCheck{
+				cmp: clientv3.Compare(clientv3.Value(ipIndexKey), "=", backend.ID),
+				err: datastore.ErrNotFound,
+			},
+		)
+	}
+	ops := []clientv3.Op{
 		clientv3.OpDelete(key),
 		clientv3.OpDelete(indexKey),
-		clientv3.OpDelete(ipIndexKey),
+	}
+	if ipIndexOwned {
+		ops = append(ops, clientv3.OpDelete(ipIndexKey))
+	}
+
+	err = ds.commitWithRevision(
+		ctx,
+		checks,
+		ops...,
 	)
 
 	if err != nil {

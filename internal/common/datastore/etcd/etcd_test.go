@@ -4,6 +4,7 @@ package etcd
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
@@ -39,6 +40,55 @@ func TestEtcdDataStore_CommonTests(t *testing.T) {
 	}
 
 	testsuite.RunDataStoreTests(t, factory)
+}
+
+func newEtcdDataStoreForTest(t *testing.T, ctx context.Context, prefix string) *EtcdDataStore {
+	t.Helper()
+
+	cfg := &datastore.Config{
+		Type:          "etcd",
+		EtcdEndpoints: []string{"http://localhost:2379"},
+		EtcdKeyPrefix: prefix,
+	}
+
+	dsIface, err := NewEtcdDataStore(ctx, cfg)
+	require.NoError(t, err)
+	ds := dsIface.(*EtcdDataStore)
+	t.Cleanup(func() {
+		_, _ = ds.client.Delete(context.Background(), ds.keyPrefix, clientv3.WithPrefix())
+		_ = ds.Close()
+	})
+
+	return ds
+}
+
+func putRawVIP(t *testing.T, ctx context.Context, ds *EtcdDataStore, vip *models.VIP) {
+	t.Helper()
+
+	data, err := json.Marshal(vip)
+	require.NoError(t, err)
+	_, err = ds.client.Put(ctx, ds.vipKey(vip.ID), string(data))
+	require.NoError(t, err)
+}
+
+func putRawBackend(t *testing.T, ctx context.Context, ds *EtcdDataStore, backend *models.Backend) {
+	t.Helper()
+
+	data, err := json.Marshal(backend)
+	require.NoError(t, err)
+	_, err = ds.client.Put(ctx, ds.backendKey(backend.VIPID, backend.ID), string(data))
+	require.NoError(t, err)
+	_, err = ds.client.Put(ctx, ds.backendIndexKey(backend.ID), backend.VIPID)
+	require.NoError(t, err)
+}
+
+func requireEtcdValue(t *testing.T, ctx context.Context, ds *EtcdDataStore, key, want string) {
+	t.Helper()
+
+	resp, err := ds.client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+	assert.Equal(t, want, string(resp.Kvs[0].Value))
 }
 
 func TestEtcdDataStore_Concurrency(t *testing.T) {
@@ -189,6 +239,199 @@ func TestEtcdDataStore_DeleteVIPDeletesBackendIndex(t *testing.T) {
 
 	_, err = ds.GetBackend(ctx, backend.ID)
 	assert.ErrorIs(t, err, datastore.ErrNotFound)
+}
+
+func TestEtcdDataStore_UpdateVIPCanResolveLegacyDuplicateTuple(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	ds := newEtcdDataStoreForTest(t, ctx, "/arca-lb-test-update-legacy-duplicate-vip")
+
+	owner := &models.VIP{
+		ID:       "legacy-vip-owner",
+		VIP:      "192.168.1.910",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	duplicate := &models.VIP{
+		ID:       "legacy-vip-duplicate",
+		VIP:      owner.VIP,
+		Port:     owner.Port,
+		Protocol: owner.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	}
+	putRawVIP(t, ctx, ds, owner)
+	putRawVIP(t, ctx, ds, duplicate)
+	_, err := ds.client.Put(ctx, ds.vipTupleIndexKey(owner), owner.ID)
+	require.NoError(t, err)
+
+	duplicate.VIP = "192.168.1.911"
+	err = ds.UpdateVIP(ctx, duplicate)
+	require.NoError(t, err)
+
+	requireEtcdValue(t, ctx, ds, ds.vipTupleIndexKey(owner), owner.ID)
+	requireEtcdValue(t, ctx, ds, ds.vipTupleIndexKey(duplicate), duplicate.ID)
+}
+
+func TestEtcdDataStore_DeleteVIPCanRemoveLegacyDuplicateTuple(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	ds := newEtcdDataStoreForTest(t, ctx, "/arca-lb-test-delete-legacy-duplicate-vip")
+
+	owner := &models.VIP{
+		ID:       "legacy-vip-owner",
+		VIP:      "192.168.1.912",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	duplicate := &models.VIP{
+		ID:       "legacy-vip-duplicate",
+		VIP:      owner.VIP,
+		Port:     owner.Port,
+		Protocol: owner.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	}
+	putRawVIP(t, ctx, ds, owner)
+	putRawVIP(t, ctx, ds, duplicate)
+	_, err := ds.client.Put(ctx, ds.vipTupleIndexKey(owner), owner.ID)
+	require.NoError(t, err)
+
+	err = ds.DeleteVIP(ctx, duplicate.ID)
+	require.NoError(t, err)
+
+	_, err = ds.GetVIP(ctx, duplicate.ID)
+	assert.ErrorIs(t, err, datastore.ErrNotFound)
+	requireEtcdValue(t, ctx, ds, ds.vipTupleIndexKey(owner), owner.ID)
+}
+
+func TestEtcdTransaction_UpdateVIPCanResolveLegacyDuplicateTuple(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	ds := newEtcdDataStoreForTest(t, ctx, "/arca-lb-test-tx-update-legacy-duplicate-vip")
+
+	owner := &models.VIP{
+		ID:       "legacy-vip-owner",
+		VIP:      "192.168.1.913",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	duplicate := &models.VIP{
+		ID:       "legacy-vip-duplicate",
+		VIP:      owner.VIP,
+		Port:     owner.Port,
+		Protocol: owner.Protocol,
+		LBMethod: models.LBMethodMaglev,
+	}
+	putRawVIP(t, ctx, ds, owner)
+	putRawVIP(t, ctx, ds, duplicate)
+	_, err := ds.client.Put(ctx, ds.vipTupleIndexKey(owner), owner.ID)
+	require.NoError(t, err)
+
+	tx, err := ds.BeginTx(ctx)
+	require.NoError(t, err)
+	duplicate.VIP = "192.168.1.914"
+	err = tx.UpdateVIP(ctx, duplicate)
+	require.NoError(t, err)
+	err = tx.Commit()
+	require.NoError(t, err)
+
+	requireEtcdValue(t, ctx, ds, ds.vipTupleIndexKey(owner), owner.ID)
+	requireEtcdValue(t, ctx, ds, ds.vipTupleIndexKey(duplicate), duplicate.ID)
+}
+
+func TestEtcdDataStore_UpdateBackendCanResolveLegacyDuplicateIP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	ds := newEtcdDataStoreForTest(t, ctx, "/arca-lb-test-update-legacy-duplicate-backend")
+
+	vip := &models.VIP{
+		VIP:      "192.168.1.915",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err := ds.CreateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	owner := &models.Backend{
+		ID:     "legacy-backend-owner",
+		VIPID:  vip.ID,
+		IP:     "10.0.0.20",
+		Weight: 10,
+	}
+	duplicate := &models.Backend{
+		ID:     "legacy-backend-duplicate",
+		VIPID:  vip.ID,
+		IP:     owner.IP,
+		Weight: 10,
+	}
+	putRawBackend(t, ctx, ds, owner)
+	putRawBackend(t, ctx, ds, duplicate)
+	_, err = ds.client.Put(ctx, ds.backendIPIndexKey(owner.VIPID, owner.IP), owner.ID)
+	require.NoError(t, err)
+
+	duplicate.IP = "10.0.0.21"
+	err = ds.UpdateBackend(ctx, duplicate)
+	require.NoError(t, err)
+
+	requireEtcdValue(t, ctx, ds, ds.backendIPIndexKey(owner.VIPID, owner.IP), owner.ID)
+	requireEtcdValue(t, ctx, ds, ds.backendIPIndexKey(duplicate.VIPID, duplicate.IP), duplicate.ID)
+}
+
+func TestEtcdDataStore_DeleteBackendCanRemoveLegacyDuplicateIP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	ds := newEtcdDataStoreForTest(t, ctx, "/arca-lb-test-delete-legacy-duplicate-backend")
+
+	vip := &models.VIP{
+		VIP:      "192.168.1.916",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		LBMethod: models.LBMethodMaglev,
+	}
+	err := ds.CreateVIP(ctx, vip)
+	require.NoError(t, err)
+
+	owner := &models.Backend{
+		ID:     "legacy-backend-owner",
+		VIPID:  vip.ID,
+		IP:     "10.0.0.22",
+		Weight: 10,
+	}
+	duplicate := &models.Backend{
+		ID:     "legacy-backend-duplicate",
+		VIPID:  vip.ID,
+		IP:     owner.IP,
+		Weight: 10,
+	}
+	putRawBackend(t, ctx, ds, owner)
+	putRawBackend(t, ctx, ds, duplicate)
+	_, err = ds.client.Put(ctx, ds.backendIPIndexKey(owner.VIPID, owner.IP), owner.ID)
+	require.NoError(t, err)
+
+	err = ds.DeleteBackend(ctx, duplicate.ID)
+	require.NoError(t, err)
+
+	_, err = ds.GetBackend(ctx, duplicate.ID)
+	assert.ErrorIs(t, err, datastore.ErrNotFound)
+	requireEtcdValue(t, ctx, ds, ds.backendIPIndexKey(owner.VIPID, owner.IP), owner.ID)
 }
 
 func TestEtcdDataStore_DeleteVIPMissingCleansStaleBackendIndex(t *testing.T) {

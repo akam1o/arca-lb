@@ -68,19 +68,28 @@ func (ds *EtcdDataStore) checkBackendIPAvailable(ctx context.Context, backend *m
 	return nil
 }
 
-func (ds *EtcdDataStore) ensureVIPTupleIndex(ctx context.Context, vip *models.VIP) error {
+func (ds *EtcdDataStore) getIndexOwner(ctx context.Context, indexKey, description string) (string, bool, error) {
+	resp, err := ds.client.Get(ctx, indexKey)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to get %s from etcd: %w", description, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return "", false, nil
+	}
+
+	return string(resp.Kvs[0].Value), true, nil
+}
+
+func (ds *EtcdDataStore) claimVIPTupleIndex(ctx context.Context, vip *models.VIP) (bool, error) {
 	indexKey := ds.vipTupleIndexKey(vip)
 
 	for {
-		resp, err := ds.client.Get(ctx, indexKey)
+		owner, exists, err := ds.getIndexOwner(ctx, indexKey, "VIP tuple index")
 		if err != nil {
-			return fmt.Errorf("failed to get VIP tuple index from etcd: %w", err)
+			return false, err
 		}
-		if len(resp.Kvs) > 0 {
-			if string(resp.Kvs[0].Value) == vip.ID {
-				return nil
-			}
-			return datastore.ErrConflict
+		if exists {
+			return owner == vip.ID, nil
 		}
 
 		txnResp, err := ds.client.Txn(ctx).If(
@@ -90,35 +99,44 @@ func (ds *EtcdDataStore) ensureVIPTupleIndex(ctx context.Context, vip *models.VI
 			clientv3.OpPut(indexKey, vip.ID),
 		).Commit()
 		if err != nil {
-			return fmt.Errorf("failed to ensure VIP tuple index in etcd: %w", err)
+			return false, fmt.Errorf("failed to ensure VIP tuple index in etcd: %w", err)
 		}
 		if txnResp.Succeeded {
-			return nil
+			return true, nil
 		}
 
 		vipResp, err := ds.client.Get(ctx, ds.vipKey(vip.ID))
 		if err != nil {
-			return fmt.Errorf("failed to verify VIP from etcd: %w", err)
+			return false, fmt.Errorf("failed to verify VIP from etcd: %w", err)
 		}
 		if len(vipResp.Kvs) == 0 {
-			return datastore.ErrNotFound
+			return false, datastore.ErrNotFound
 		}
 	}
 }
 
-func (ds *EtcdDataStore) ensureBackendIPIndex(ctx context.Context, backend *models.Backend) error {
+func (ds *EtcdDataStore) ensureVIPTupleIndex(ctx context.Context, vip *models.VIP) error {
+	owned, err := ds.claimVIPTupleIndex(ctx, vip)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return datastore.ErrConflict
+	}
+
+	return nil
+}
+
+func (ds *EtcdDataStore) claimBackendIPIndex(ctx context.Context, backend *models.Backend) (bool, error) {
 	indexKey := ds.backendIPIndexKey(backend.VIPID, backend.IP)
 
 	for {
-		resp, err := ds.client.Get(ctx, indexKey)
+		owner, exists, err := ds.getIndexOwner(ctx, indexKey, "backend IP index")
 		if err != nil {
-			return fmt.Errorf("failed to get backend IP index from etcd: %w", err)
+			return false, err
 		}
-		if len(resp.Kvs) > 0 {
-			if string(resp.Kvs[0].Value) == backend.ID {
-				return nil
-			}
-			return datastore.ErrConflict
+		if exists {
+			return owner == backend.ID, nil
 		}
 
 		txnResp, err := ds.client.Txn(ctx).If(
@@ -128,18 +146,30 @@ func (ds *EtcdDataStore) ensureBackendIPIndex(ctx context.Context, backend *mode
 			clientv3.OpPut(indexKey, backend.ID),
 		).Commit()
 		if err != nil {
-			return fmt.Errorf("failed to ensure backend IP index in etcd: %w", err)
+			return false, fmt.Errorf("failed to ensure backend IP index in etcd: %w", err)
 		}
 		if txnResp.Succeeded {
-			return nil
+			return true, nil
 		}
 
 		backendResp, err := ds.client.Get(ctx, ds.backendKey(backend.VIPID, backend.ID))
 		if err != nil {
-			return fmt.Errorf("failed to verify backend from etcd: %w", err)
+			return false, fmt.Errorf("failed to verify backend from etcd: %w", err)
 		}
 		if len(backendResp.Kvs) == 0 {
-			return datastore.ErrNotFound
+			return false, datastore.ErrNotFound
 		}
 	}
+}
+
+func (ds *EtcdDataStore) ensureBackendIPIndex(ctx context.Context, backend *models.Backend) error {
+	owned, err := ds.claimBackendIPIndex(ctx, backend)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return datastore.ErrConflict
+	}
+
+	return nil
 }

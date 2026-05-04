@@ -84,7 +84,7 @@ arca-lb/
 │   └── v1alpha1/           # VirtualIP CRD types (kubebuilder)
 ├── cmd/
 │   ├── operator/           # Operator (K8s controller) binary
-│   └── agent/              # Agent binary
+│   └── arcalb-agent/       # Agent binary
 ├── config/                 # K8s manifests (generated + hand-written)
 │   ├── crd/                # CRD YAML (controller-gen output)
 │   ├── rbac/               # RBAC roles

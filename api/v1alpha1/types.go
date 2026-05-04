@@ -183,6 +183,7 @@ type VirtualIPSpec struct {
 
 	// Backends is the list of real servers.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.all(b1, self.exists_one(b2, b2.address == b1.address))",message="spec.backends addresses must be unique"
 	Backends []BackendSpec `json:"backends,omitempty"`
 
 	// HealthCheck configures health checking for the backends.

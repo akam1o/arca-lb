@@ -69,6 +69,24 @@ func TestVirtualIPCRDDefinesBackendMonitorAddress(t *testing.T) {
 	}
 }
 
+func TestVirtualIPCRDRejectsDuplicateBackendAddresses(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	backends := crdSchemaProperty(t, crd, "spec", "backends")
+	validations := nestedSlice(t, backends, "x-kubernetes-validations")
+
+	for _, raw := range validations {
+		validation, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Fatalf("validation item has type %T, want map[string]interface{}", raw)
+		}
+		if validation["message"] == "spec.backends addresses must be unique" &&
+			validation["rule"] == "self.all(b1, self.exists_one(b2, b2.address == b1.address))" {
+			return
+		}
+	}
+	t.Fatalf("missing backend uniqueness validation in %#v", validations)
+}
+
 func loadVirtualIPCRD(t *testing.T) map[string]interface{} {
 	t.Helper()
 

@@ -93,6 +93,9 @@ spec:
                   - address
                   type: object
                 type: array
+                x-kubernetes-validations:
+                - message: spec.backends addresses must be unique
+                  rule: self.all(b1, self.exists_one(b2, b2.address == b1.address))
               dscp:
                 description: |-
                   DSCP is an optional DSCP override for DSCP-based L3DSR steering.

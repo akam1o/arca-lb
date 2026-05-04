@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
-	"gorm.io/driver/mysql"
+	drivermysql "github.com/go-sql-driver/mysql"
+	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -23,16 +24,10 @@ type MySQLDataStore struct {
 // NewMySQLDataStore creates a new MySQL datastore instance
 func NewMySQLDataStore(ctx context.Context, cfg *datastore.Config) (datastore.DataStore, error) {
 	// Build DSN with multiStatements enabled for migration execution
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&multiStatements=true",
-		cfg.MySQLUser,
-		cfg.MySQLPassword,
-		cfg.MySQLHost,
-		cfg.MySQLPort,
-		cfg.MySQLDatabase,
-	)
+	dsn := mysqlDSN(cfg)
 
 	// Open connection
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(gormmysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL: %w", err)
 	}
@@ -68,6 +63,22 @@ func NewMySQLDataStore(ctx context.Context, cfg *datastore.Config) (datastore.Da
 	}
 
 	return ds, nil
+}
+
+func mysqlDSN(cfg *datastore.Config) string {
+	dsn := drivermysql.NewConfig()
+	dsn.User = cfg.MySQLUser
+	dsn.Passwd = cfg.MySQLPassword
+	dsn.Net = "tcp"
+	dsn.Addr = fmt.Sprintf("%s:%d", cfg.MySQLHost, cfg.MySQLPort)
+	dsn.DBName = cfg.MySQLDatabase
+	dsn.Params = map[string]string{
+		"charset":         "utf8mb4",
+		"parseTime":       "True",
+		"loc":             "Local",
+		"multiStatements": "true",
+	}
+	return dsn.FormatDSN()
 }
 
 // Close closes the MySQL connection

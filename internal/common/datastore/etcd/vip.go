@@ -15,6 +15,9 @@ import (
 
 // CreateVIP creates a new VIP in etcd
 func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	// Generate UUID if not set
 	if vip.ID == "" {
 		vip.ID = uuid.New().String()
@@ -87,6 +90,9 @@ func prepareHealthCheckForVIP(vip, existing *models.VIP, now time.Time) {
 
 // GetVIP retrieves a VIP by ID from etcd
 func (ds *EtcdDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	key := ds.vipKey(id)
 	resp, err := ds.client.Get(ctx, key)
 	if err != nil {
@@ -107,6 +113,9 @@ func (ds *EtcdDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, er
 
 // ListVIPs retrieves all VIPs from etcd
 func (ds *EtcdDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	prefix := ds.vipPrefix()
 	resp, err := ds.client.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
@@ -127,6 +136,9 @@ func (ds *EtcdDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
 
 // UpdateVIP updates an existing VIP in etcd
 func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	if vip.ID == "" {
 		return fmt.Errorf("VIP ID is required")
 	}
@@ -202,6 +214,9 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 // DeleteVIP deletes a VIP and its associated backends from etcd
 func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	vip, err := ds.GetVIP(ctx, id)
 	if err != nil {
 		if errors.Is(err, datastore.ErrNotFound) {

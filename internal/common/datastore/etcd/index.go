@@ -69,6 +69,9 @@ func (ds *EtcdDataStore) checkBackendIPAvailable(ctx context.Context, backend *m
 }
 
 func (ds *EtcdDataStore) getIndexOwner(ctx context.Context, indexKey, description string) (string, bool, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	resp, err := ds.client.Get(ctx, indexKey)
 	if err != nil {
 		return "", false, fmt.Errorf("failed to get %s from etcd: %w", description, err)
@@ -81,6 +84,9 @@ func (ds *EtcdDataStore) getIndexOwner(ctx context.Context, indexKey, descriptio
 }
 
 func (ds *EtcdDataStore) claimVIPTupleIndex(ctx context.Context, vip *models.VIP) (bool, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	indexKey := ds.vipTupleIndexKey(vip)
 
 	for {
@@ -116,6 +122,9 @@ func (ds *EtcdDataStore) claimVIPTupleIndex(ctx context.Context, vip *models.VIP
 }
 
 func (ds *EtcdDataStore) claimBackendIPIndex(ctx context.Context, backend *models.Backend) (bool, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	indexKey := ds.backendIPIndexKey(backend.VIPID, backend.IP)
 
 	for {

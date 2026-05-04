@@ -15,6 +15,9 @@ import (
 
 // AddBackend adds a new backend to etcd
 func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	// Generate UUID if not set
 	if backend.ID == "" {
 		backend.ID = uuid.New().String()
@@ -62,6 +65,9 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 }
 
 func (ds *EtcdDataStore) backendIndexKeysForVIP(ctx context.Context, vipID string) ([]string, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	resp, err := ds.client.Get(ctx, ds.backendIndexPrefix(), clientv3.WithPrefix())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list backend indexes from etcd: %w", err)
@@ -78,6 +84,9 @@ func (ds *EtcdDataStore) backendIndexKeysForVIP(ctx context.Context, vipID strin
 }
 
 func (ds *EtcdDataStore) deleteBackendIndexesForVIP(ctx context.Context, vipID string) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	if err := ds.deleteBackendIPIndexesForVIP(ctx, vipID); err != nil {
 		return err
 	}
@@ -112,6 +121,9 @@ func (ds *EtcdDataStore) deleteBackendIndexesForVIP(ctx context.Context, vipID s
 }
 
 func (ds *EtcdDataStore) deleteBackendIPIndexesForVIP(ctx context.Context, vipID string) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	resp, err := ds.client.Get(ctx, ds.backendIPIndexPrefix(vipID), clientv3.WithPrefix())
 	if err != nil {
 		return fmt.Errorf("failed to list backend IP indexes from etcd: %w", err)
@@ -139,6 +151,9 @@ func (ds *EtcdDataStore) deleteBackendIPIndexesForVIP(ctx context.Context, vipID
 
 // GetBackend retrieves a backend by ID from etcd using the index
 func (ds *EtcdDataStore) GetBackend(ctx context.Context, id string) (*models.Backend, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	// Use index to find VIP ID (O(1) lookup)
 	indexKey := ds.backendIndexKey(id)
 	indexResp, err := ds.client.Get(ctx, indexKey)
@@ -174,6 +189,9 @@ func (ds *EtcdDataStore) GetBackend(ctx context.Context, id string) (*models.Bac
 
 // ListBackends retrieves all backends for a VIP from etcd
 func (ds *EtcdDataStore) ListBackends(ctx context.Context, vipID string) ([]models.Backend, error) {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	prefix := ds.backendPrefix(vipID)
 	resp, err := ds.client.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
@@ -194,6 +212,9 @@ func (ds *EtcdDataStore) ListBackends(ctx context.Context, vipID string) ([]mode
 
 // UpdateBackend updates an existing backend in etcd
 func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Backend) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	if backend.ID == "" {
 		return fmt.Errorf("backend ID is required")
 	}
@@ -275,6 +296,9 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 
 // DeleteBackend deletes a backend and its index from etcd
 func (ds *EtcdDataStore) DeleteBackend(ctx context.Context, id string) error {
+	ctx, cancel := ds.contextWithRequestTimeout(ctx)
+	defer cancel()
+
 	// Get backend to find its VIP ID
 	backend, err := ds.GetBackend(ctx, id)
 	if err != nil {

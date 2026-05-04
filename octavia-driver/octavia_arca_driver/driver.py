@@ -2980,14 +2980,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         except Exception:
             LOG.exception("Failed to update Octavia status for VirtualIP %s",
                           vip_name)
-            return
+            raise
 
         if result:
             LOG.warning(
                 "Octavia status update for VirtualIP %s returned: %s",
                 vip_name, result,
             )
-            return
+            raise driver_exc.UpdateStatusError(fault_string=str(result))
 
         LOG.info(
             "Updated Octavia status for VirtualIP %s: %s",

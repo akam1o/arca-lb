@@ -286,6 +286,37 @@ class TestDriverLifecycle(unittest.TestCase):
             "l7rules": [],
         })
 
+    def test_loadbalancer_create_propagates_status_update_failure(self):
+        lb_id = "lb-1111"
+        loadbalancer = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+        })
+        exc = driver_exc.UpdateStatusError(
+            fault_string="status socket unavailable"
+        )
+        self.mock_driver_lib.update_loadbalancer_status.side_effect = exc
+
+        with self.assertRaises(driver_exc.UpdateStatusError) as raised:
+            self.driver.loadbalancer_create(loadbalancer)
+
+        self.assertIs(raised.exception, exc)
+
+    def test_loadbalancer_create_raises_on_status_update_result(self):
+        lb_id = "lb-1111"
+        loadbalancer = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+        })
+        self.mock_driver_lib.update_loadbalancer_status.return_value = {
+            "fault_string": "invalid status"
+        }
+
+        with self.assertRaises(driver_exc.UpdateStatusError) as raised:
+            self.driver.loadbalancer_create(loadbalancer)
+
+        self.assertIn("invalid status", raised.exception.fault_string)
+
     def test_listener_create_creates_virtualip(self):
         listener = FakeObj({
             "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",

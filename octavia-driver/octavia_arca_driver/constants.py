@@ -77,11 +77,14 @@ driver_opts = [
     cfg.StrOpt(
         "default_encap_type",
         default="L3DSR",
+        choices=sorted(VALID_ENCAP_TYPES),
         help="Default encapsulation type when not specified in flavor.",
     ),
     cfg.IntOpt(
         "default_dscp",
         default=10,
+        min=1,
+        max=63,
         help="Default DSCP value for L3DSR mode.",
     ),
     cfg.IntOpt(

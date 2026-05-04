@@ -10,6 +10,7 @@ from unittest import mock
 from kubernetes import client as k8s_client
 from octavia_lib.api.drivers import data_models as octavia_data_models
 from octavia_lib.api.drivers import exceptions as driver_exc
+from oslo_config import cfg
 
 from octavia_arca_driver import constants
 from octavia_arca_driver.driver import ArcaLBDriver
@@ -24,6 +25,35 @@ class FakeObj:
 
     def to_dict(self):
         return self._data
+
+
+class TestDriverOptions(unittest.TestCase):
+    """Test Octavia driver configuration validation."""
+
+    def setUp(self):
+        self.conf = cfg.ConfigOpts()
+        constants.register_opts(self.conf)
+
+    def test_default_listener_options_accept_crd_values(self):
+        self.conf.set_override(
+            "default_encap_type", "NAT4", group="driver_arca"
+        )
+        self.conf.set_override("default_dscp", 63, group="driver_arca")
+
+        self.assertEqual(self.conf.driver_arca.default_encap_type, "NAT4")
+        self.assertEqual(self.conf.driver_arca.default_dscp, 63)
+
+    def test_default_encap_type_rejects_invalid_value(self):
+        with self.assertRaises(ValueError):
+            self.conf.set_override(
+                "default_encap_type", "INVALID", group="driver_arca"
+            )
+
+    def test_default_dscp_rejects_crd_out_of_range_values(self):
+        with self.assertRaises(ValueError):
+            self.conf.set_override("default_dscp", 0, group="driver_arca")
+        with self.assertRaises(ValueError):
+            self.conf.set_override("default_dscp", 64, group="driver_arca")
 
 
 def _make_vip(name, spec, annotations=None, status=None, generation=1,

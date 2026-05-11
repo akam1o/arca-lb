@@ -2,6 +2,25 @@
 
 **arca-lb** is a Kubernetes-native control plane for VPP-based Layer 4 load balancing, designed for environments that demand line-rate performance, operational simplicity, and horizontal scalability.
 
+## Part of the Arca infrastructure stack
+
+arca-lb is one component of Arca, an open-source infrastructure stack for
+self-hosted clouds, Kubernetes/OpenStack environments, edge clusters, labs,
+and small service providers.
+
+Related projects:
+
+- arca-router: VPP/FRR-based software router
+- arca-dns: Anycast DNS infrastructure with DNSSEC support
+- arca-storage: software-defined storage and CSI/Cinder/Manila integration
+
+## Why this project matters
+
+Modern private-cloud and edge operators often need vendor-neutral networking
+components that are reproducible, inspectable, and automatable. arca-lb focuses
+on Kubernetes-native L4 load balancing using VPP while keeping the control plane
+explicit and auditable.
+
 ## Docker Images
 
 - Operator: `ghcr.io/akam1o/arca-lb-operator`

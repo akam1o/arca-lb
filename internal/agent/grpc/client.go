@@ -297,12 +297,8 @@ func (c *Client) register() error {
 	// Process initial configuration if provided
 	if resp.Config != nil {
 		config := c.convertProtoToConfig(resp.Config)
-		c.setCurrentRevision(config.Revision)
-
-		if c.configHandler != nil {
-			if err := c.configHandler(config); err != nil {
-				c.logger.WithError(err).Error("Failed to apply initial configuration")
-			}
+		if err := c.applyConfig(config); err != nil {
+			return fmt.Errorf("failed to apply initial configuration: %w", err)
 		}
 	}
 
@@ -406,14 +402,8 @@ func (c *Client) watch(ctx context.Context) error {
 					"vip_count": len(config.VIPs),
 				}).Info("Received configuration update")
 
-				// Update current revision
-				c.setCurrentRevision(config.Revision)
-
-				// Call config handler
-				if c.configHandler != nil {
-					if err := c.configHandler(config); err != nil {
-						c.logger.WithError(err).Error("Failed to apply configuration")
-					}
+				if err := c.applyConfig(config); err != nil {
+					return fmt.Errorf("failed to apply configuration: %w", err)
 				}
 			}
 
@@ -528,15 +518,22 @@ func (c *Client) fetchConfig() error {
 
 	if resp.Config != nil {
 		config := c.convertProtoToConfig(resp.Config)
-		c.setCurrentRevision(config.Revision)
-
-		if c.configHandler != nil {
-			if err := c.configHandler(config); err != nil {
-				return fmt.Errorf("failed to apply config: %w", err)
-			}
+		if err := c.applyConfig(config); err != nil {
+			return fmt.Errorf("failed to apply config: %w", err)
 		}
 	}
 
+	return nil
+}
+
+func (c *Client) applyConfig(config *models.Config) error {
+	if c.configHandler != nil {
+		if err := c.configHandler(config); err != nil {
+			return err
+		}
+	}
+
+	c.setCurrentRevision(config.Revision)
 	return nil
 }
 

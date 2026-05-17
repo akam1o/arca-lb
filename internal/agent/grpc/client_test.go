@@ -27,8 +27,11 @@ type mockConfigSyncServer struct {
 	registerSuccess  bool
 	registerMessage  string
 	registerErr      error
+	registerConfig   *models.Config
 	watchConfig      *models.Config
 	watchError       error
+	getConfig        *models.Config
+	getConfigErr     error
 	heartbeatSuccess bool
 }
 
@@ -39,6 +42,7 @@ func (m *mockConfigSyncServer) RegisterAgent(ctx context.Context, req *pb.Regist
 	return &pb.RegisterAgentResponse{
 		Success: m.registerSuccess,
 		Message: m.registerMessage,
+		Config:  testConfigSnapshot(m.registerConfig),
 	}, nil
 }
 
@@ -49,14 +53,9 @@ func (m *mockConfigSyncServer) WatchConfig(req *pb.WatchConfigRequest, stream pb
 
 	// Send initial config if available
 	if m.watchConfig != nil {
-		pbConfig := &pb.ConfigSnapshot{
-			Revision: m.watchConfig.Revision,
-			Vips:     make([]*pb.VIPConfig, 0),
-		}
-
 		resp := &pb.WatchConfigResponse{
 			Type:   pb.UpdateType_UPDATE_TYPE_FULL,
-			Config: pbConfig,
+			Config: testConfigSnapshot(m.watchConfig),
 		}
 
 		if err := stream.Send(resp); err != nil {
@@ -76,6 +75,14 @@ func (m *mockConfigSyncServer) Heartbeat(ctx context.Context, req *pb.HeartbeatR
 }
 
 func (m *mockConfigSyncServer) GetConfig(ctx context.Context, req *pb.GetConfigRequest) (*pb.GetConfigResponse, error) {
+	if m.getConfigErr != nil {
+		return nil, m.getConfigErr
+	}
+	if m.getConfig != nil {
+		return &pb.GetConfigResponse{
+			Config: testConfigSnapshot(m.getConfig),
+		}, nil
+	}
 	return &pb.GetConfigResponse{
 		Unchanged: true,
 	}, nil
@@ -155,6 +162,16 @@ func TestNewClient(t *testing.T) {
 
 	if client.config != cfg {
 		t.Error("Client config not set correctly")
+	}
+}
+
+func testConfigSnapshot(config *models.Config) *pb.ConfigSnapshot {
+	if config == nil {
+		return nil
+	}
+	return &pb.ConfigSnapshot{
+		Revision: config.Revision,
+		Vips:     make([]*pb.VIPConfig, 0),
 	}
 }
 
@@ -486,6 +503,56 @@ func TestClientStartFailsWhenRegistrationRPCFails(t *testing.T) {
 	}
 }
 
+func TestClientStartFailsWhenInitialConfigHandlerFails(t *testing.T) {
+	mock := &mockConfigSyncServer{
+		registerSuccess:  true,
+		registerConfig:   &models.Config{Revision: 9},
+		heartbeatSuccess: true,
+	}
+
+	dialer, cleanup := startMockServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 100 * time.Millisecond,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, func(config *models.Config) error {
+		return fmt.Errorf("apply failed")
+	})
+	client.dialContext = dialer
+
+	err := client.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected initial configuration apply failure to fail Start")
+	}
+	if got := err.Error(); !strings.Contains(got, "failed to apply initial configuration") {
+		t.Fatalf("Start error = %q, want failed to apply initial configuration", got)
+	}
+	if got := client.getCurrentRevision(); got != 0 {
+		t.Fatalf("current revision = %d, want 0 after failed apply", got)
+	}
+	if isClientStarted(client) {
+		t.Fatal("client remains started after initial configuration apply failure")
+	}
+	if isClientConnected(client) {
+		t.Fatal("client remains connected after initial configuration apply failure")
+	}
+}
+
 func TestClientCancellation(t *testing.T) {
 	mock := &mockConfigSyncServer{
 		registerSuccess:  true,
@@ -666,6 +733,119 @@ func TestClientWatchError(t *testing.T) {
 
 	// Stop should work even with watch errors
 	client.Stop()
+}
+
+func TestClientWatchDoesNotAdvanceRevisionWhenHandlerFails(t *testing.T) {
+	mock := &mockConfigSyncServer{
+		registerSuccess:  true,
+		heartbeatSuccess: true,
+		watchConfig:      &models.Config{Revision: 12},
+	}
+
+	dialer, cleanup := startMockServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 1 * time.Second,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, func(config *models.Config) error {
+		return fmt.Errorf("apply failed")
+	})
+	client.dialContext = dialer
+
+	client.ctx, client.cancel = context.WithCancel(context.Background())
+	defer client.cancel()
+	if err := client.connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() {
+		if conn := clientConn(client); conn != nil {
+			_ = conn.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := client.watch(ctx)
+	if err == nil {
+		t.Fatal("expected watch to return configuration apply failure")
+	}
+	if got := err.Error(); !strings.Contains(got, "failed to apply configuration") {
+		t.Fatalf("watch error = %q, want failed to apply configuration", got)
+	}
+	if got := client.getCurrentRevision(); got != 0 {
+		t.Fatalf("current revision = %d, want 0 after failed watch apply", got)
+	}
+}
+
+func TestClientFetchConfigDoesNotAdvanceRevisionWhenHandlerFails(t *testing.T) {
+	mock := &mockConfigSyncServer{
+		registerSuccess:  true,
+		heartbeatSuccess: true,
+		getConfig:        &models.Config{Revision: 15},
+	}
+
+	dialer, cleanup := startMockServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 1 * time.Second,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, func(config *models.Config) error {
+		return fmt.Errorf("apply failed")
+	})
+	client.dialContext = dialer
+
+	client.ctx, client.cancel = context.WithCancel(context.Background())
+	defer client.cancel()
+	if err := client.connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() {
+		if conn := clientConn(client); conn != nil {
+			_ = conn.Close()
+		}
+	}()
+
+	err := client.fetchConfig()
+	if err == nil {
+		t.Fatal("expected fetchConfig to return configuration apply failure")
+	}
+	if got := err.Error(); !strings.Contains(got, "failed to apply config") {
+		t.Fatalf("fetchConfig error = %q, want failed to apply config", got)
+	}
+	if got := client.getCurrentRevision(); got != 0 {
+		t.Fatalf("current revision = %d, want 0 after failed fetch apply", got)
+	}
 }
 
 func TestClientConfigHandler(t *testing.T) {

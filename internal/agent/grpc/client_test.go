@@ -1263,6 +1263,38 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 			wantErr: "vip config at index 0 is missing vip",
 		},
 		{
+			name: "invalid health check config json",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{Id: "vip-1"},
+						HealthCheck: &pb.HealthCheck{
+							Id:     "hc-1",
+							VipId:  "vip-1",
+							Config: `{"port":`,
+						},
+					},
+				},
+			},
+			wantErr: "health check config at vip index 0 is invalid",
+		},
+		{
+			name: "null health check config json",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{Id: "vip-1"},
+						HealthCheck: &pb.HealthCheck{
+							Id:     "hc-1",
+							VipId:  "vip-1",
+							Config: `null`,
+						},
+					},
+				},
+			},
+			wantErr: "health check config at vip index 0 must be a JSON object",
+		},
+		{
 			name: "nil backend",
 			input: &pb.ConfigSnapshot{
 				Vips: []*pb.VIPConfig{

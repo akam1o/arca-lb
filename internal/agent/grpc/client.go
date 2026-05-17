@@ -671,12 +671,12 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 			if pbVipConfig.HealthCheck.Config != "" {
 				var hcConfig models.HCConfig
 				if err := json.Unmarshal([]byte(pbVipConfig.HealthCheck.Config), &hcConfig); err != nil {
-					c.logger.WithError(err).
-						WithField("vip_id", pbVipConfig.HealthCheck.VipId).
-						Warn("Failed to parse health check config")
-				} else {
-					vipConfig.HealthCheck.Config = hcConfig
+					return nil, fmt.Errorf("health check config at vip index %d is invalid: %w", i, err)
 				}
+				if hcConfig == nil {
+					return nil, fmt.Errorf("health check config at vip index %d must be a JSON object", i)
+				}
+				vipConfig.HealthCheck.Config = hcConfig
 			}
 		}
 

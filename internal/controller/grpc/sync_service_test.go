@@ -233,6 +233,21 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 	}
 }
 
+func TestConfigSyncService_GetConfigRejectsNilRequest(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	service := NewConfigSyncService(testutil.NewMockDataStore(), logger)
+
+	resp, err := service.GetConfig(context.Background(), nil)
+	require.Error(t, err)
+	assert.Nil(t, resp)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.InvalidArgument, st.Code())
+}
+
 func TestConfigSyncService_WatchConfig(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -32,6 +32,10 @@ func NewConfigSyncService(ds datastore.DataStore, logger *logrus.Logger) *Config
 
 // GetConfig returns the current configuration snapshot
 func (s *ConfigSyncService) GetConfig(ctx context.Context, req *pb.GetConfigRequest) (*pb.GetConfigResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
 	s.logger.WithField("current_revision", req.CurrentRevision).Info("GetConfig called")
 
 	revision, err := s.datastore.GetRevision(ctx)

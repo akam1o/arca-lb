@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
 	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -71,4 +74,49 @@ func apiKeyMatches(got, want string) bool {
 	gotHash := sha256.Sum256([]byte(got))
 	wantHash := sha256.Sum256([]byte(want))
 	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+}
+
+func authorizeAgentIDWithClientCert(ctx context.Context, agentID string) error {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "client certificate is required")
+	}
+
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "client certificate is required")
+	}
+
+	for _, cert := range tlsInfo.State.PeerCertificates {
+		if certificateMatchesAgentID(cert, agentID) {
+			return nil
+		}
+	}
+
+	return status.Error(codes.PermissionDenied, "agent_id does not match client certificate identity")
+}
+
+func certificateMatchesAgentID(cert *x509.Certificate, agentID string) bool {
+	if cert == nil {
+		return false
+	}
+	if cert.Subject.CommonName == agentID {
+		return true
+	}
+	for _, name := range cert.DNSNames {
+		if name == agentID {
+			return true
+		}
+	}
+	for _, ip := range cert.IPAddresses {
+		if ip.String() == agentID {
+			return true
+		}
+	}
+	for _, uri := range cert.URIs {
+		if uri.String() == agentID {
+			return true
+		}
+	}
+	return false
 }

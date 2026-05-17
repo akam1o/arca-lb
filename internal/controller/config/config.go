@@ -66,14 +66,15 @@ type MySQLConfig struct {
 
 // GRPCConfig represents the gRPC server configuration
 type GRPCConfig struct {
-	Host              string `yaml:"host"`
-	Port              int    `yaml:"port"`
-	APIKey            string `yaml:"api_key"`
-	TLS               bool   `yaml:"tls"`
-	CertFile          string `yaml:"cert_file"`
-	KeyFile           string `yaml:"key_file"`
-	ClientCAFile      string `yaml:"client_ca_file"`
-	RequireClientCert bool   `yaml:"require_client_cert"`
+	Host                           string `yaml:"host"`
+	Port                           int    `yaml:"port"`
+	APIKey                         string `yaml:"api_key"`
+	TLS                            bool   `yaml:"tls"`
+	CertFile                       string `yaml:"cert_file"`
+	KeyFile                        string `yaml:"key_file"`
+	ClientCAFile                   string `yaml:"client_ca_file"`
+	RequireClientCert              bool   `yaml:"require_client_cert"`
+	AuthorizeAgentIDWithClientCert bool   `yaml:"authorize_agent_id_with_client_cert"`
 }
 
 // LogConfig represents logging configuration
@@ -188,6 +189,9 @@ func (c *Config) validate() error {
 	}
 	if c.GRPC.RequireClientCert && !c.GRPC.TLS {
 		return fmt.Errorf("grpc.tls must be enabled when grpc.require_client_cert is enabled")
+	}
+	if c.GRPC.AuthorizeAgentIDWithClientCert && !c.GRPC.RequireClientCert {
+		return fmt.Errorf("grpc.require_client_cert must be enabled when grpc.authorize_agent_id_with_client_cert is enabled")
 	}
 	if c.GRPC.TLS {
 		if c.GRPC.CertFile == "" {

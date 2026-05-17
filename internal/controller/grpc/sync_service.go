@@ -18,16 +18,31 @@ import (
 // ConfigSyncService implements the ConfigSync gRPC service
 type ConfigSyncService struct {
 	pb.UnimplementedConfigSyncServer
-	datastore datastore.DataStore
-	logger    *logrus.Logger
+	datastore                      datastore.DataStore
+	logger                         *logrus.Logger
+	authorizeAgentIDWithClientCert bool
+}
+
+// ConfigSyncServiceOption configures ConfigSyncService behavior.
+type ConfigSyncServiceOption func(*ConfigSyncService)
+
+// WithAgentIDClientCertAuthorization requires agent_id to match the client certificate identity.
+func WithAgentIDClientCertAuthorization(enabled bool) ConfigSyncServiceOption {
+	return func(s *ConfigSyncService) {
+		s.authorizeAgentIDWithClientCert = enabled
+	}
 }
 
 // NewConfigSyncService creates a new ConfigSyncService
-func NewConfigSyncService(ds datastore.DataStore, logger *logrus.Logger) *ConfigSyncService {
-	return &ConfigSyncService{
+func NewConfigSyncService(ds datastore.DataStore, logger *logrus.Logger, opts ...ConfigSyncServiceOption) *ConfigSyncService {
+	service := &ConfigSyncService{
 		datastore: ds,
 		logger:    logger,
 	}
+	for _, opt := range opts {
+		opt(service)
+	}
+	return service
 }
 
 // GetConfig returns the current configuration snapshot
@@ -81,6 +96,9 @@ func (s *ConfigSyncService) WatchConfig(req *pb.WatchConfigRequest, stream pb.Co
 		return status.Error(codes.InvalidArgument, "request is required")
 	}
 	if err := validateAgentID(req.AgentId); err != nil {
+		return err
+	}
+	if err := s.authorizeAgentID(stream.Context(), req.AgentId); err != nil {
 		return err
 	}
 
@@ -165,6 +183,9 @@ func (s *ConfigSyncService) RegisterAgent(ctx context.Context, req *pb.RegisterA
 	if err := validateAgentID(req.AgentId); err != nil {
 		return nil, err
 	}
+	if err := s.authorizeAgentID(ctx, req.AgentId); err != nil {
+		return nil, err
+	}
 
 	s.logger.WithFields(logrus.Fields{
 		"agent_id": req.AgentId,
@@ -207,6 +228,9 @@ func (s *ConfigSyncService) Heartbeat(ctx context.Context, req *pb.HeartbeatRequ
 	if err := validateAgentID(req.AgentId); err != nil {
 		return nil, err
 	}
+	if err := s.authorizeAgentID(ctx, req.AgentId); err != nil {
+		return nil, err
+	}
 
 	s.logger.WithFields(logrus.Fields{
 		"agent_id":         req.AgentId,
@@ -235,6 +259,13 @@ func validateAgentID(agentID string) error {
 		return status.Error(codes.InvalidArgument, "agent_id is required")
 	}
 	return nil
+}
+
+func (s *ConfigSyncService) authorizeAgentID(ctx context.Context, agentID string) error {
+	if !s.authorizeAgentIDWithClientCert {
+		return nil
+	}
+	return authorizeAgentIDWithClientCert(ctx, agentID)
 }
 
 // convertConfigToProto converts internal config model to protobuf

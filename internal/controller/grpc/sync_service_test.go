@@ -2,6 +2,9 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"net"
@@ -17,7 +20,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -583,6 +588,54 @@ func TestConfigSyncService_RegisterAgent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigSyncServiceAuthorizesAgentIDWithClientCert(t *testing.T) {
+	mockDS := testutil.NewMockDataStore()
+	mockDS.SetConfig(&models.Config{
+		Revision: 1,
+		VIPs:     []models.VIPConfig{},
+	})
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	service := NewConfigSyncService(mockDS, logger, WithAgentIDClientCertAuthorization(true))
+
+	ctx := contextWithClientCertificateIdentity(context.Background(), "agent-1")
+	resp, err := service.RegisterAgent(ctx, &pb.RegisterAgentRequest{AgentId: "agent-1"})
+	if err != nil {
+		t.Fatalf("RegisterAgent with matching certificate identity: %v", err)
+	}
+	if resp == nil || !resp.Success {
+		t.Fatalf("RegisterAgent response = %#v, want success", resp)
+	}
+
+	_, err = service.Heartbeat(ctx, &pb.HeartbeatRequest{AgentId: "agent-2"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("Heartbeat with mismatched certificate identity error = %v, want permission denied", err)
+	}
+
+	_, err = service.RegisterAgent(context.Background(), &pb.RegisterAgentRequest{AgentId: "agent-1"})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("RegisterAgent without certificate identity error = %v, want unauthenticated", err)
+	}
+}
+
+func contextWithClientCertificateIdentity(ctx context.Context, commonName string) context.Context {
+	return peer.NewContext(ctx, &peer.Peer{
+		AuthInfo: credentials.TLSInfo{
+			State: tls.ConnectionState{
+				PeerCertificates: []*x509.Certificate{
+					{
+						Subject: pkix.Name{
+							CommonName: commonName,
+						},
+						DNSNames: []string{commonName},
+					},
+				},
+			},
+		},
+	})
 }
 
 func TestConfigSyncService_ConvertHCType(t *testing.T) {

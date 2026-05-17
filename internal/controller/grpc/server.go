@@ -69,7 +69,11 @@ func (s *Server) initializeGRPCServer() error {
 
 	s.grpcServer = grpc.NewServer(opts...)
 
-	configSyncService := NewConfigSyncService(s.datastore, s.logger)
+	configSyncService := NewConfigSyncService(
+		s.datastore,
+		s.logger,
+		WithAgentIDClientCertAuthorization(s.config.GRPC.AuthorizeAgentIDWithClientCert),
+	)
 	pb.RegisterConfigSyncServer(s.grpcServer, configSyncService)
 	return nil
 }

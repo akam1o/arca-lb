@@ -78,17 +78,14 @@ func (c *Client) Start(ctx context.Context) error {
 
 	// Connect to controller
 	if err := c.connect(); err != nil {
-		// Close doneCh immediately on failure so Stop() won't block
-		close(c.doneCh)
-		c.mu.Lock()
-		c.started = false
-		c.mu.Unlock()
+		c.cleanupFailedStart()
 		return fmt.Errorf("failed to connect to controller: %w", err)
 	}
 
 	// Register agent
 	if err := c.register(); err != nil {
-		c.logger.WithError(err).Warn("Failed to register agent, will retry")
+		c.cleanupFailedStart()
+		return fmt.Errorf("failed to register agent: %w", err)
 	}
 
 	// Start watch loop in background
@@ -106,6 +103,31 @@ func (c *Client) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+func (c *Client) cleanupFailedStart() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn != nil {
+		if err := c.conn.Close(); err != nil {
+			c.logger.WithError(err).Warn("failed to close gRPC connection after start failure")
+		}
+		c.conn = nil
+		c.client = nil
+	}
+	c.started = false
+	c.connected = false
+
+	select {
+	case <-c.doneCh:
+	default:
+		close(c.doneCh)
+	}
 }
 
 // Stop stops the gRPC client

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,12 +26,16 @@ type mockConfigSyncServer struct {
 	// Control behavior
 	registerSuccess  bool
 	registerMessage  string
+	registerErr      error
 	watchConfig      *models.Config
 	watchError       error
 	heartbeatSuccess bool
 }
 
 func (m *mockConfigSyncServer) RegisterAgent(ctx context.Context, req *pb.RegisterAgentRequest) (*pb.RegisterAgentResponse, error) {
+	if m.registerErr != nil {
+		return nil, m.registerErr
+	}
 	return &pb.RegisterAgentResponse{
 		Success: m.registerSuccess,
 		Message: m.registerMessage,
@@ -107,6 +112,18 @@ func isClientStarted(c *Client) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.started
+}
+
+func isClientConnected(c *Client) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.connected
+}
+
+func clientConn(c *Client) *grpc.ClientConn {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn
 }
 
 func TestNewClient(t *testing.T) {
@@ -374,6 +391,98 @@ func TestClientConnectionFailure(t *testing.T) {
 	// Client should not be marked as started after failure
 	if isClientStarted(client) {
 		t.Error("Client marked as started after connection failure")
+	}
+}
+
+func TestClientStartFailsWhenRegistrationRejected(t *testing.T) {
+	mock := &mockConfigSyncServer{
+		registerSuccess:  false,
+		registerMessage:  "not allowed",
+		heartbeatSuccess: true,
+	}
+
+	dialer, cleanup := startMockServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 100 * time.Millisecond,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, nil)
+	client.dialContext = dialer
+
+	err := client.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected registration rejection to fail Start")
+	}
+	if got := err.Error(); !strings.Contains(got, "registration rejected") {
+		t.Fatalf("Start error = %q, want registration rejected", got)
+	}
+	if isClientStarted(client) {
+		t.Fatal("client remains started after registration rejection")
+	}
+	if isClientConnected(client) {
+		t.Fatal("client remains connected after registration rejection")
+	}
+	if conn := clientConn(client); conn != nil {
+		t.Fatal("client connection was retained after registration rejection")
+	}
+}
+
+func TestClientStartFailsWhenRegistrationRPCFails(t *testing.T) {
+	mock := &mockConfigSyncServer{
+		registerErr:      status.Error(codes.Unavailable, "register unavailable"),
+		heartbeatSuccess: true,
+	}
+
+	dialer, cleanup := startMockServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 100 * time.Millisecond,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, nil)
+	client.dialContext = dialer
+
+	err := client.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected registration RPC failure to fail Start")
+	}
+	if got := err.Error(); !strings.Contains(got, "registration failed") {
+		t.Fatalf("Start error = %q, want registration failed", got)
+	}
+	if isClientStarted(client) {
+		t.Fatal("client remains started after registration RPC failure")
+	}
+	if isClientConnected(client) {
+		t.Fatal("client remains connected after registration RPC failure")
 	}
 }
 

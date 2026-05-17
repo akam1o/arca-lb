@@ -11,6 +11,17 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	// DefaultConnectTimeout bounds the initial MySQL TCP handshake.
+	DefaultConnectTimeout = 5 * time.Second
+
+	// DefaultReadTimeout bounds MySQL socket reads.
+	DefaultReadTimeout = 10 * time.Second
+
+	// DefaultWriteTimeout bounds MySQL socket writes.
+	DefaultWriteTimeout = 10 * time.Second
+)
+
 // Register mysql datastore factory on package init
 func init() {
 	datastore.Register("mysql", NewMySQLDataStore)
@@ -43,7 +54,7 @@ func NewMySQLDataStore(ctx context.Context, cfg *datastore.Config) (datastore.Da
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
 	// Test connection
-	if err := sqlDB.Ping(); err != nil {
+	if err := sqlDB.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping MySQL: %w", err)
 	}
 
@@ -71,6 +82,9 @@ func mysqlDSN(cfg *datastore.Config) string {
 	dsn.Net = "tcp"
 	dsn.Addr = fmt.Sprintf("%s:%d", cfg.MySQLHost, cfg.MySQLPort)
 	dsn.DBName = cfg.MySQLDatabase
+	dsn.Timeout = DefaultConnectTimeout
+	dsn.ReadTimeout = DefaultReadTimeout
+	dsn.WriteTimeout = DefaultWriteTimeout
 	dsn.Params = map[string]string{
 		"charset":   "utf8mb4",
 		"parseTime": "True",

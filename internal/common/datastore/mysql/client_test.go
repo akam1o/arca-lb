@@ -42,4 +42,13 @@ func TestMySQLDSNEscapesConnectionFields(t *testing.T) {
 	if parsed.Loc == nil || parsed.Loc.String() != "Local" {
 		t.Fatalf("loc = %v, want Local", parsed.Loc)
 	}
+	if parsed.Timeout != DefaultConnectTimeout {
+		t.Fatalf("timeout = %s, want %s", parsed.Timeout, DefaultConnectTimeout)
+	}
+	if parsed.ReadTimeout != DefaultReadTimeout {
+		t.Fatalf("readTimeout = %s, want %s", parsed.ReadTimeout, DefaultReadTimeout)
+	}
+	if parsed.WriteTimeout != DefaultWriteTimeout {
+		t.Fatalf("writeTimeout = %s, want %s", parsed.WriteTimeout, DefaultWriteTimeout)
+	}
 }

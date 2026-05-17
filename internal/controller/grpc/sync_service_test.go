@@ -356,6 +356,17 @@ func TestConfigSyncService_WatchConfig(t *testing.T) {
 			},
 			expectedError: codes.Internal,
 		},
+		{
+			name: "missing agent id",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{Revision: 5})
+			},
+			request: &pb.WatchConfigRequest{
+				AgentId:         "  ",
+				CurrentRevision: 1,
+			},
+			expectedError: codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
@@ -436,6 +447,17 @@ func TestConfigSyncService_Heartbeat(t *testing.T) {
 			},
 			expectedError: codes.Internal,
 		},
+		{
+			name: "missing agent id",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetRevision(5)
+			},
+			request: &pb.HeartbeatRequest{
+				AgentId:         " ",
+				CurrentRevision: 5,
+			},
+			expectedError: codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
@@ -467,10 +489,11 @@ func TestConfigSyncService_Heartbeat(t *testing.T) {
 
 func TestConfigSyncService_RegisterAgent(t *testing.T) {
 	tests := []struct {
-		name      string
-		setupMock func(*testutil.MockDataStore)
-		request   *pb.RegisterAgentRequest
-		validate  func(*testing.T, *pb.RegisterAgentResponse)
+		name          string
+		setupMock     func(*testutil.MockDataStore)
+		request       *pb.RegisterAgentRequest
+		expectedError codes.Code
+		validate      func(*testing.T, *pb.RegisterAgentResponse)
 	}{
 		{
 			name: "success",
@@ -508,6 +531,17 @@ func TestConfigSyncService_RegisterAgent(t *testing.T) {
 				assert.Contains(t, resp.Message, "Failed")
 			},
 		},
+		{
+			name: "missing agent id",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{Revision: 1})
+			},
+			request: &pb.RegisterAgentRequest{
+				AgentId: " ",
+				Version: "1.0.0",
+			},
+			expectedError: codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
@@ -521,9 +555,16 @@ func TestConfigSyncService_RegisterAgent(t *testing.T) {
 			defer cancel()
 
 			resp, err := client.RegisterAgent(ctx, tt.request)
-			require.NoError(t, err)
-			if tt.validate != nil {
-				tt.validate(t, resp)
+			if tt.expectedError != codes.OK {
+				require.Error(t, err)
+				st, ok := status.FromError(err)
+				require.True(t, ok)
+				assert.Equal(t, tt.expectedError, st.Code())
+			} else {
+				require.NoError(t, err)
+				if tt.validate != nil {
+					tt.validate(t, resp)
+				}
 			}
 		})
 	}

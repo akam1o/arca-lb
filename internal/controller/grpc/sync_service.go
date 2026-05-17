@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/common/models"
@@ -72,6 +73,13 @@ func (s *ConfigSyncService) GetConfig(ctx context.Context, req *pb.GetConfigRequ
 
 // WatchConfig streams configuration changes to the client
 func (s *ConfigSyncService) WatchConfig(req *pb.WatchConfigRequest, stream pb.ConfigSync_WatchConfigServer) error {
+	if req == nil {
+		return status.Error(codes.InvalidArgument, "request is required")
+	}
+	if err := validateAgentID(req.AgentId); err != nil {
+		return err
+	}
+
 	s.logger.WithFields(logrus.Fields{
 		"agent_id":         req.AgentId,
 		"current_revision": req.CurrentRevision,
@@ -147,6 +155,13 @@ func (s *ConfigSyncService) WatchConfig(req *pb.WatchConfigRequest, stream pb.Co
 
 // RegisterAgent registers an agent with the controller
 func (s *ConfigSyncService) RegisterAgent(ctx context.Context, req *pb.RegisterAgentRequest) (*pb.RegisterAgentResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if err := validateAgentID(req.AgentId); err != nil {
+		return nil, err
+	}
+
 	s.logger.WithFields(logrus.Fields{
 		"agent_id": req.AgentId,
 		"version":  req.Version,
@@ -182,6 +197,13 @@ func (s *ConfigSyncService) RegisterAgent(ctx context.Context, req *pb.RegisterA
 
 // Heartbeat handles agent heartbeat requests
 func (s *ConfigSyncService) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if err := validateAgentID(req.AgentId); err != nil {
+		return nil, err
+	}
+
 	s.logger.WithFields(logrus.Fields{
 		"agent_id":         req.AgentId,
 		"current_revision": req.CurrentRevision,
@@ -202,6 +224,13 @@ func (s *ConfigSyncService) Heartbeat(ctx context.Context, req *pb.HeartbeatRequ
 		NewRevision:    revision,
 		ResyncRequired: resyncRequired,
 	}, nil
+}
+
+func validateAgentID(agentID string) error {
+	if strings.TrimSpace(agentID) == "" {
+		return status.Error(codes.InvalidArgument, "agent_id is required")
+	}
+	return nil
 }
 
 // convertConfigToProto converts internal config model to protobuf

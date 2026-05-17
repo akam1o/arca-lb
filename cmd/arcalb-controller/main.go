@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,14 +26,18 @@ var (
 
 func main() {
 	flag.Parse()
+	os.Exit(runController(*configPath))
+}
 
+func runController(configPath string) int {
 	// Initialize logger
 	logger := logrus.New()
 
 	// Load configuration
-	cfg, err := config.LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		logger.WithError(err).Fatal("Failed to load configuration")
+		logger.WithError(err).Error("Failed to load configuration")
+		return 1
 	}
 
 	// Configure logger based on config
@@ -40,14 +45,15 @@ func main() {
 
 	logger.WithFields(logrus.Fields{
 		"version": version,
-		"config":  *configPath,
+		"config":  configPath,
 	}).Info("Starting arca-lb controller")
 
 	// Initialize datastore
 	ctx := context.Background()
 	ds, err := datastore.NewDataStore(ctx, cfg.ToDataStoreConfig())
 	if err != nil {
-		logger.WithError(err).Fatal("Failed to initialize datastore")
+		logger.WithError(err).Error("Failed to initialize datastore")
+		return 1
 	}
 	defer func() {
 		if err := ds.Close(); err != nil {
@@ -63,26 +69,51 @@ func main() {
 	// Create gRPC server
 	grpcSrv := grpcserver.NewServer(cfg, ds, logger)
 
-	// Start REST API server in a goroutine
-	go func() {
-		if err := apiServer.Start(); err != nil {
-			logger.WithError(err).Fatal("REST API server stopped with error")
-		}
-	}()
-
-	// Start gRPC server in a goroutine
-	go func() {
-		if err := grpcSrv.Start(); err != nil {
-			logger.WithError(err).Fatal("gRPC server stopped with error")
-		}
-	}()
-
-	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
+	defer signal.Stop(sigChan)
 
-	logger.Info("Received shutdown signal")
+	return runControllerServers(apiServer, grpcSrv, sigChan, logger)
+}
+
+type controllerAPIServer interface {
+	Start() error
+	Shutdown(context.Context) error
+}
+
+type controllerGRPCServer interface {
+	Start() error
+	Stop(context.Context) error
+}
+
+func runControllerServers(
+	apiServer controllerAPIServer,
+	grpcSrv controllerGRPCServer,
+	sigChan <-chan os.Signal,
+	logger *logrus.Logger,
+) int {
+	serverErrCh := make(chan error, 2)
+
+	go func() {
+		if err := apiServer.Start(); err != nil {
+			serverErrCh <- fmt.Errorf("REST API server stopped with error: %w", err)
+		}
+	}()
+
+	go func() {
+		if err := grpcSrv.Start(); err != nil {
+			serverErrCh <- fmt.Errorf("gRPC server stopped with error: %w", err)
+		}
+	}()
+
+	exitCode := 0
+	select {
+	case <-sigChan:
+		logger.Info("Received shutdown signal")
+	case err := <-serverErrCh:
+		logger.WithError(err).Error("Controller server stopped with error")
+		exitCode = 1
+	}
 
 	// Graceful shutdown with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -101,6 +132,7 @@ func main() {
 	}
 
 	logger.Info("Controller stopped")
+	return exitCode
 }
 
 // configureLogger configures the logger based on configuration

@@ -58,9 +58,12 @@ func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
 			return fmt.Errorf("failed to read migration file %s: %w", migrationFile, err)
 		}
 
-		// Execute migration
-		if err := db.Exec(string(content)).Error; err != nil {
-			return fmt.Errorf("failed to apply migration %s: %w", version, err)
+		// Execute migration statements individually so the runtime DSN does not
+		// need multiStatements enabled.
+		for _, statement := range migrationStatements(string(content)) {
+			if err := db.Exec(statement).Error; err != nil {
+				return fmt.Errorf("failed to apply migration %s: %w", version, err)
+			}
 		}
 
 		// Record migration
@@ -72,4 +75,45 @@ func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func migrationStatements(sql string) []string {
+	statements := make([]string, 0)
+	start := 0
+	inSingleQuote := false
+	inDoubleQuote := false
+	inBacktick := false
+
+	for i := 0; i < len(sql); i++ {
+		ch := sql[i]
+		switch ch {
+		case '\'':
+			if !inDoubleQuote && !inBacktick {
+				inSingleQuote = !inSingleQuote
+			}
+		case '"':
+			if !inSingleQuote && !inBacktick {
+				inDoubleQuote = !inDoubleQuote
+			}
+		case '`':
+			if !inSingleQuote && !inDoubleQuote {
+				inBacktick = !inBacktick
+			}
+		case ';':
+			if inSingleQuote || inDoubleQuote || inBacktick {
+				continue
+			}
+			statement := strings.TrimSpace(sql[start:i])
+			if statement != "" {
+				statements = append(statements, statement)
+			}
+			start = i + 1
+		}
+	}
+
+	statement := strings.TrimSpace(sql[start:])
+	if statement != "" {
+		statements = append(statements, statement)
+	}
+	return statements
 }

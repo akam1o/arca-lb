@@ -23,7 +23,6 @@ type MySQLDataStore struct {
 
 // NewMySQLDataStore creates a new MySQL datastore instance
 func NewMySQLDataStore(ctx context.Context, cfg *datastore.Config) (datastore.DataStore, error) {
-	// Build DSN with multiStatements enabled for migration execution
 	dsn := mysqlDSN(cfg)
 
 	// Open connection
@@ -73,10 +72,9 @@ func mysqlDSN(cfg *datastore.Config) string {
 	dsn.Addr = fmt.Sprintf("%s:%d", cfg.MySQLHost, cfg.MySQLPort)
 	dsn.DBName = cfg.MySQLDatabase
 	dsn.Params = map[string]string{
-		"charset":         "utf8mb4",
-		"parseTime":       "True",
-		"loc":             "Local",
-		"multiStatements": "true",
+		"charset":   "utf8mb4",
+		"parseTime": "True",
+		"loc":       "Local",
 	}
 	return dsn.FormatDSN()
 }

@@ -33,8 +33,8 @@ func TestMySQLDSNEscapesConnectionFields(t *testing.T) {
 	if parsed.DBName != cfg.MySQLDatabase {
 		t.Fatalf("database = %q, want %q", parsed.DBName, cfg.MySQLDatabase)
 	}
-	if !parsed.MultiStatements {
-		t.Fatal("multiStatements = false, want true")
+	if parsed.MultiStatements {
+		t.Fatal("multiStatements = true, want false")
 	}
 	if !parsed.ParseTime {
 		t.Fatal("parseTime = false, want true")

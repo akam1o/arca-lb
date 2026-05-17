@@ -602,6 +602,14 @@ func TestConfigSyncServiceAuthorizesAgentIDWithClientCert(t *testing.T) {
 	service := NewConfigSyncService(mockDS, logger, WithAgentIDClientCertAuthorization(true))
 
 	ctx := contextWithClientCertificateIdentity(context.Background(), "agent-1")
+	getResp, err := service.GetConfig(ctx, &pb.GetConfigRequest{AgentId: "agent-1"})
+	if err != nil {
+		t.Fatalf("GetConfig with matching certificate identity: %v", err)
+	}
+	if getResp == nil || getResp.Config == nil {
+		t.Fatalf("GetConfig response = %#v, want config", getResp)
+	}
+
 	resp, err := service.RegisterAgent(ctx, &pb.RegisterAgentRequest{AgentId: "agent-1"})
 	if err != nil {
 		t.Fatalf("RegisterAgent with matching certificate identity: %v", err)
@@ -613,6 +621,16 @@ func TestConfigSyncServiceAuthorizesAgentIDWithClientCert(t *testing.T) {
 	_, err = service.Heartbeat(ctx, &pb.HeartbeatRequest{AgentId: "agent-2"})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("Heartbeat with mismatched certificate identity error = %v, want permission denied", err)
+	}
+
+	_, err = service.GetConfig(ctx, &pb.GetConfigRequest{AgentId: "agent-2"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("GetConfig with mismatched certificate identity error = %v, want permission denied", err)
+	}
+
+	_, err = service.GetConfig(ctx, &pb.GetConfigRequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("GetConfig without agent_id error = %v, want invalid argument", err)
 	}
 
 	_, err = service.RegisterAgent(context.Background(), &pb.RegisterAgentRequest{AgentId: "agent-1"})

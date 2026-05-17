@@ -50,8 +50,19 @@ func (s *ConfigSyncService) GetConfig(ctx context.Context, req *pb.GetConfigRequ
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
+	if s.authorizeAgentIDWithClientCert {
+		if err := validateAgentID(req.AgentId); err != nil {
+			return nil, err
+		}
+		if err := s.authorizeAgentID(ctx, req.AgentId); err != nil {
+			return nil, err
+		}
+	}
 
-	s.logger.WithField("current_revision", req.CurrentRevision).Info("GetConfig called")
+	s.logger.WithFields(logrus.Fields{
+		"agent_id":         req.AgentId,
+		"current_revision": req.CurrentRevision,
+	}).Info("GetConfig called")
 
 	revision, err := s.datastore.GetRevision(ctx)
 	if err != nil {

@@ -105,6 +105,7 @@ func (m *mockConfigSyncServer) GetConfig(ctx context.Context, req *pb.GetConfigR
 type fakeConfigSyncClient struct {
 	getConfigResp *pb.GetConfigResponse
 	getConfigErr  error
+	getConfigReq  *pb.GetConfigRequest
 	watchStream   pb.ConfigSync_WatchConfigClient
 	watchErr      error
 	registerResp  *pb.RegisterAgentResponse
@@ -114,6 +115,7 @@ type fakeConfigSyncClient struct {
 }
 
 func (f *fakeConfigSyncClient) GetConfig(ctx context.Context, req *pb.GetConfigRequest, opts ...grpc.CallOption) (*pb.GetConfigResponse, error) {
+	f.getConfigReq = req
 	return f.getConfigResp, f.getConfigErr
 }
 
@@ -1094,6 +1096,24 @@ func TestClientFetchConfigRejectsNilResponse(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "get config returned nil response") {
 		t.Fatalf("fetchConfig error = %q, want nil response error", got)
+	}
+}
+
+func TestClientFetchConfigIncludesAgentID(t *testing.T) {
+	fakeClient := &fakeConfigSyncClient{
+		getConfigResp: &pb.GetConfigResponse{Unchanged: true},
+	}
+	client := newClientWithConfigSyncClient(fakeClient)
+	defer client.cancel()
+
+	if err := client.fetchConfig(); err != nil {
+		t.Fatalf("fetchConfig: %v", err)
+	}
+	if fakeClient.getConfigReq == nil {
+		t.Fatal("GetConfig request was not recorded")
+	}
+	if fakeClient.getConfigReq.AgentId != "test-agent" {
+		t.Fatalf("GetConfig AgentId = %q, want test-agent", fakeClient.getConfigReq.AgentId)
 	}
 }
 

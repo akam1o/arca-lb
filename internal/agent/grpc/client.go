@@ -520,6 +520,7 @@ func (c *Client) fetchConfig() error {
 
 	req := &pb.GetConfigRequest{
 		CurrentRevision: c.getCurrentRevision(),
+		AgentId:         c.config.Agent.ID,
 	}
 
 	// Get client with lock

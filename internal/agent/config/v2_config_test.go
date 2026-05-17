@@ -349,6 +349,16 @@ func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 			wantErr: "dataplane.vpp.new_flows_table_length",
 		},
 		{
+			name:    "invalid connect timeout",
+			vppYAML: "connect_timeout: eventually\n",
+			wantErr: "dataplane.vpp.connect_timeout",
+		},
+		{
+			name:    "zero reconnect interval",
+			vppYAML: "reconnect_interval: 0s\n",
+			wantErr: "dataplane.vpp.reconnect_interval",
+		},
+		{
 			name:    "invalid retained tuning drift policy",
 			vppYAML: "retained_vip_tuning_drift_policy: rolling-recreate\n",
 			wantErr: "dataplane.vpp.retained_vip_tuning_drift_policy",

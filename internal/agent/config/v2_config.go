@@ -314,6 +314,15 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 		}
 	}
 
+	for _, key := range []string{"connect_timeout", "reconnect_interval"} {
+		if value, ok := vpp[key]; ok {
+			timeout, ok := v2DurationSetting(value)
+			if !ok || timeout <= 0 {
+				return fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
+			}
+		}
+	}
+
 	if value, ok := vpp["retained_vip_tuning_drift_policy"]; ok {
 		policy, ok := value.(string)
 		if !ok || (policy != "" && !validV2VPPTuningDriftPolicy(policy)) {

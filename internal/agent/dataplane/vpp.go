@@ -47,17 +47,26 @@ func vppConfigFromMap(m map[string]interface{}) VPPConfig {
 	if v, ok := m["socket_path"].(string); ok {
 		cfg.SocketPath = v
 	}
+	if v, ok := vppDurationSetting(m["connect_timeout"]); ok {
+		cfg.ConnectTimeout = v
+	}
+	if v, ok := vppDurationSetting(m["reconnect_interval"]); ok {
+		cfg.ReconnectInterval = v
+	}
 	if v, ok := m["encap_type"].(string); ok {
 		cfg.EncapType = v
 	}
-	if v, ok := m["dscp"].(int); ok {
+	if v, ok := vppIntegerSetting(m["dscp"]); ok && v >= 0 && v <= 255 {
 		cfg.DSCP = uint8(v)
 	}
 	if v, ok := m["service_type"].(string); ok {
 		cfg.ServiceType = v
 	}
-	if v, ok := m["new_flows_table_length"].(int); ok {
+	if v, ok := vppIntegerSetting(m["new_flows_table_length"]); ok && v >= 0 && v <= int64(^uint32(0)) {
 		cfg.NewFlowsTableLength = uint32(v)
+	}
+	if v, ok := m["fail_on_all_backends_down"].(bool); ok {
+		cfg.FailOnAllBackendsDown = v
 	}
 	if v, ok := vppDurationSetting(m["state_verification_interval"]); ok {
 		cfg.StateVerificationInterval = v
@@ -65,7 +74,43 @@ func vppConfigFromMap(m map[string]interface{}) VPPConfig {
 	return cfg
 }
 
+func vppIntegerSetting(value interface{}) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int8:
+		return int64(v), true
+	case int16:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case int64:
+		return v, true
+	case uint:
+		if uint64(v) > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(v), true
+	case uint8:
+		return int64(v), true
+	case uint16:
+		return int64(v), true
+	case uint32:
+		return int64(v), true
+	case uint64:
+		if v > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(v), true
+	default:
+		return 0, false
+	}
+}
+
 func vppDurationSetting(value interface{}) (time.Duration, bool) {
+	if seconds, ok := vppIntegerSetting(value); ok {
+		return time.Duration(seconds) * time.Second, true
+	}
 	switch v := value.(type) {
 	case nil:
 		return 0, false
@@ -77,10 +122,6 @@ func vppDurationSetting(value interface{}) (time.Duration, bool) {
 		}
 		d, err := time.ParseDuration(v)
 		return d, err == nil
-	case int:
-		return time.Duration(v) * time.Second, true
-	case int64:
-		return time.Duration(v) * time.Second, true
 	case float64:
 		return time.Duration(v * float64(time.Second)), true
 	default:
@@ -129,9 +170,9 @@ type vipAttributes struct {
 func NewVPP(cfg map[string]interface{}) (*VPP, error) {
 	config := vppConfigFromMap(cfg)
 
-	conn, err := govpp.Connect(config.SocketPath)
+	conn, err := connectVPP(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to VPP at %s: %w", config.SocketPath, err)
+		return nil, err
 	}
 
 	return &VPP{
@@ -141,6 +182,41 @@ func NewVPP(cfg map[string]interface{}) (*VPP, error) {
 		vips:         make(map[string]*vipEntry),
 		tuningDrifts: make(map[string][]VIPTuningDrift),
 	}, nil
+}
+
+func connectVPP(config VPPConfig) (*core.Connection, error) {
+	if config.ConnectTimeout <= 0 {
+		conn, err := govpp.Connect(config.SocketPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to VPP at %s: %w", config.SocketPath, err)
+		}
+		return conn, nil
+	}
+
+	deadline := time.Now().Add(config.ConnectTimeout)
+	interval := config.ReconnectInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	var lastErr error
+	for {
+		conn, err := govpp.Connect(config.SocketPath)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("failed to connect to VPP at %s within %s: %w", config.SocketPath, config.ConnectTimeout, lastErr)
+		}
+		sleepFor := interval
+		if sleepFor > remaining {
+			sleepFor = remaining
+		}
+		time.Sleep(sleepFor)
+	}
 }
 
 func (v *VPP) vipKey(vip *v1alpha1.VirtualIP) string {

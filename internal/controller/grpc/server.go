@@ -75,8 +75,17 @@ func (s *Server) initializeGRPCServer() error {
 }
 
 func (s *Server) grpcServerOptions() ([]grpc.ServerOption, error) {
+	opts := make([]grpc.ServerOption, 0, 3)
+
+	if s.config.GRPC.APIKey != "" {
+		opts = append(opts,
+			grpc.UnaryInterceptor(apiKeyUnaryServerInterceptor(s.config.GRPC.APIKey)),
+			grpc.StreamInterceptor(apiKeyStreamServerInterceptor(s.config.GRPC.APIKey)),
+		)
+	}
+
 	if !s.config.GRPC.TLS {
-		return nil, nil
+		return opts, nil
 	}
 
 	tlsConfig, err := s.loadTLSConfig()
@@ -84,9 +93,8 @@ func (s *Server) grpcServerOptions() ([]grpc.ServerOption, error) {
 		return nil, fmt.Errorf("failed to load gRPC TLS config: %w", err)
 	}
 
-	return []grpc.ServerOption{
-		grpc.Creds(credentials.NewTLS(tlsConfig)),
-	}, nil
+	opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+	return opts, nil
 }
 
 func (s *Server) loadTLSConfig() (*tls.Config, error) {

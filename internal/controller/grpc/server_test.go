@@ -25,8 +25,11 @@ import (
 	pb "github.com/akam1o/arca-lb/pkg/grpc"
 	"github.com/sirupsen/logrus"
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func TestServerStartReturnsNilAfterGracefulStop(t *testing.T) {
@@ -153,6 +156,86 @@ func TestServerStopForcesStopWhenWatchConfigStreamIsActive(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for gRPC server to stop after forced stop")
+	}
+}
+
+func TestServerRequiresAPIKeyWhenConfigured(t *testing.T) {
+	const apiKey = "controller-grpc-secret"
+
+	mockDS := testutil.NewMockDataStore()
+	mockDS.SetConfig(&models.Config{
+		Revision: 1,
+		VIPs:     []models.VIPConfig{},
+	})
+
+	port := freeTCPPort(t)
+	server := newTestServerWithDatastore(port, controllerconfig.GRPCConfig{
+		APIKey: apiKey,
+	}, mockDS)
+	errCh := startServer(t, server, port)
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := server.Stop(stopCtx); err != nil {
+			t.Fatalf("Stop returned error after API key test: %v", err)
+		}
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("Start returned error after API key test: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for API key gRPC server to stop")
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := googlegrpc.DialContext(ctx, fmt.Sprintf("127.0.0.1:%d", port), // nolint:staticcheck // DialContext is adequate for this server auth test.
+		googlegrpc.WithBlock(), // nolint:staticcheck // WithBlock keeps this grpc 1.x DialContext test bounded by ctx.
+		googlegrpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Fatalf("close API key test connection: %v", err)
+		}
+	}()
+
+	client := pb.NewConfigSyncClient(conn)
+	registerReq := &pb.RegisterAgentRequest{AgentId: "agent-1"}
+	if _, err := client.RegisterAgent(ctx, registerReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("RegisterAgent without API key error = %v, want unauthenticated", err)
+	}
+
+	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+apiKey)
+	resp, err := client.RegisterAgent(authCtx, registerReq)
+	if err != nil {
+		t.Fatalf("RegisterAgent with API key: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("RegisterAgent success = false, message = %q", resp.Message)
+	}
+
+	streamCtx, streamCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer streamCancel()
+	stream, err := client.WatchConfig(streamCtx, &pb.WatchConfigRequest{AgentId: "agent-1"})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("WatchConfig without API key error = %v, want unauthenticated", err)
+	}
+
+	authStreamCtx := metadata.AppendToOutgoingContext(streamCtx, "authorization", "Bearer "+apiKey)
+	authStream, err := client.WatchConfig(authStreamCtx, &pb.WatchConfigRequest{AgentId: "agent-1"})
+	if err != nil {
+		t.Fatalf("WatchConfig with API key: %v", err)
+	}
+	if _, err := authStream.Recv(); err != nil {
+		t.Fatalf("receive authenticated initial config: %v", err)
 	}
 }
 

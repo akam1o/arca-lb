@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -20,6 +21,7 @@ agent:
 
 controller:
   address: "localhost:50051"
+  api_key: "agent-controller-secret"
   timeout: 5s
 
 vpp:
@@ -51,6 +53,9 @@ log:
 
 	if cfg.Controller.Address != "localhost:50051" {
 		t.Errorf("Expected controller address 'localhost:50051', got '%s'", cfg.Controller.Address)
+	}
+	if cfg.Controller.APIKey != "agent-controller-secret" {
+		t.Errorf("Expected controller API key from config, got '%s'", cfg.Controller.APIKey)
 	}
 
 	if cfg.VPP.SocketPath != "/tmp/vpp.sock" {
@@ -109,6 +114,7 @@ func TestEnvOverrides(t *testing.T) {
 	// Set environment variables
 	t.Setenv("ARCA_AGENT_ID", "env-agent")
 	t.Setenv("ARCA_CONTROLLER_ADDRESS", "env-controller:9999")
+	t.Setenv("ARCA_CONTROLLER_API_KEY", "env-controller-secret")
 	t.Setenv("ARCA_VPP_SOCKET", "/env/vpp.sock")
 	t.Setenv("ARCA_LOG_LEVEL", "error")
 	t.Setenv("ARCA_LOG_FORMAT", "text")
@@ -119,6 +125,7 @@ func TestEnvOverrides(t *testing.T) {
 		},
 		Controller: ControllerConfig{
 			Address: "original:50051",
+			APIKey:  "original-controller-secret",
 		},
 		VPP: VPPConfig{
 			SocketPath: "/original/vpp.sock",
@@ -138,6 +145,9 @@ func TestEnvOverrides(t *testing.T) {
 	if cfg.Controller.Address != "env-controller:9999" {
 		t.Errorf("Expected env override controller address, got '%s'", cfg.Controller.Address)
 	}
+	if cfg.Controller.APIKey != "env-controller-secret" {
+		t.Errorf("Expected env override controller API key, got '%s'", cfg.Controller.APIKey)
+	}
 	if cfg.VPP.SocketPath != "/env/vpp.sock" {
 		t.Errorf("Expected env override VPP socket, got '%s'", cfg.VPP.SocketPath)
 	}
@@ -146,6 +156,54 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Log.Format != "text" {
 		t.Errorf("Expected env override log format, got '%s'", cfg.Log.Format)
+	}
+}
+
+func TestLoadConfigRejectsInvalidControllerAPIKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiKey  string
+		wantErr string
+	}{
+		{
+			name:    "short",
+			apiKey:  "short",
+			wantErr: "controller.api_key",
+		},
+		{
+			name:    "whitespace",
+			apiKey:  "agent controller secret",
+			wantErr: "controller.api_key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "agent.yaml")
+			configContent := `
+agent:
+  id: "test-agent"
+
+controller:
+  address: "localhost:50051"
+  api_key: "` + tt.apiKey + `"
+
+vpp:
+  socket_path: "/tmp/vpp.sock"
+
+log:
+  level: "info"
+  format: "json"
+`
+			if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			_, err := LoadConfig(configPath)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
+			}
+		})
 	}
 }
 

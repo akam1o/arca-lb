@@ -197,6 +197,12 @@ func (c *Client) connect() error {
 	if c.dialContext != nil {
 		opts = append(opts, grpc.WithContextDialer(c.dialContext))
 	}
+	if c.config.Controller.APIKey != "" {
+		opts = append(opts,
+			grpc.WithUnaryInterceptor(apiKeyUnaryClientInterceptor(c.config.Controller.APIKey)),
+			grpc.WithStreamInterceptor(apiKeyStreamClientInterceptor(c.config.Controller.APIKey)),
+		)
+	}
 
 	c.logger.WithField("address", c.config.Controller.Address).Info("Connecting to controller")
 

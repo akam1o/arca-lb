@@ -48,6 +48,32 @@ grpc:
 	}
 }
 
+func TestLoadConfigRejectsInvalidGRPCAPIKey(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "short",
+			yaml: "grpc:\n  api_key: short\n",
+		},
+		{
+			name: "whitespace",
+			yaml: "grpc:\n  api_key: controller grpc secret\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, minimalEtcdConfig()+tt.yaml)
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), "grpc.api_key") {
+				t.Fatalf("LoadConfig error = %v, want grpc.api_key validation error", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigAcceptsGRPCTLSFiles(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:

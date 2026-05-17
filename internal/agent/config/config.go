@@ -43,6 +43,9 @@ type ControllerConfig struct {
 	// Address is the controller gRPC endpoint
 	Address string `yaml:"address"`
 
+	// APIKey is an optional bearer token for controller gRPC authentication
+	APIKey string `yaml:"api_key"`
+
 	// TLS settings
 	TLS TLSConfig `yaml:"tls"`
 
@@ -215,6 +218,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("ARCA_CONTROLLER_ADDRESS"); v != "" {
 		cfg.Controller.Address = v
 	}
+	if v := os.Getenv("ARCA_CONTROLLER_API_KEY"); v != "" {
+		cfg.Controller.APIKey = v
+	}
 
 	// VPP socket path
 	if v := os.Getenv("ARCA_VPP_SOCKET"); v != "" {
@@ -356,6 +362,9 @@ func validate(cfg *Config) error {
 	if cfg.Controller.Address == "" {
 		return fmt.Errorf("controller.address is required")
 	}
+	if err := validateAPIKey("controller.api_key", cfg.Controller.APIKey); err != nil {
+		return err
+	}
 
 	// Validate VPP socket path
 	if cfg.VPP.SocketPath == "" {
@@ -465,5 +474,18 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("health_check.max_concurrent_checks must be positive")
 	}
 
+	return nil
+}
+
+func validateAPIKey(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.ContainsAny(value, " \t\r\n") {
+		return fmt.Errorf("%s must not contain whitespace", field)
+	}
+	if len(value) < 16 {
+		return fmt.Errorf("%s must be at least 16 characters when set", field)
+	}
 	return nil
 }

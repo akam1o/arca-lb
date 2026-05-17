@@ -68,6 +68,7 @@ type MySQLConfig struct {
 type GRPCConfig struct {
 	Host              string `yaml:"host"`
 	Port              int    `yaml:"port"`
+	APIKey            string `yaml:"api_key"`
 	TLS               bool   `yaml:"tls"`
 	CertFile          string `yaml:"cert_file"`
 	KeyFile           string `yaml:"key_file"`
@@ -152,13 +153,8 @@ func (c *Config) validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be between 1 and 65535")
 	}
-	if c.Server.APIKey != "" {
-		if strings.ContainsAny(c.Server.APIKey, " \t\r\n") {
-			return fmt.Errorf("server.api_key must not contain whitespace")
-		}
-		if len(c.Server.APIKey) < 16 {
-			return fmt.Errorf("server.api_key must be at least 16 characters when set")
-		}
+	if err := validateAPIKey("server.api_key", c.Server.APIKey); err != nil {
+		return err
 	}
 	if c.Server.ReadTimeout <= 0 {
 		return fmt.Errorf("server.read_timeout must be positive")
@@ -184,6 +180,9 @@ func (c *Config) validate() error {
 	if c.GRPC.Port < 1 || c.GRPC.Port > 65535 {
 		return fmt.Errorf("grpc.port must be between 1 and 65535")
 	}
+	if err := validateAPIKey("grpc.api_key", c.GRPC.APIKey); err != nil {
+		return err
+	}
 	if c.GRPC.RequireClientCert && !c.GRPC.TLS {
 		return fmt.Errorf("grpc.tls must be enabled when grpc.require_client_cert is enabled")
 	}
@@ -197,6 +196,19 @@ func (c *Config) validate() error {
 	}
 	if c.GRPC.RequireClientCert && c.GRPC.ClientCAFile == "" {
 		return fmt.Errorf("grpc.client_ca_file is required when grpc.require_client_cert is enabled")
+	}
+	return nil
+}
+
+func validateAPIKey(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.ContainsAny(value, " \t\r\n") {
+		return fmt.Errorf("%s must not contain whitespace", field)
+	}
+	if len(value) < 16 {
+		return fmt.Errorf("%s must be at least 16 characters when set", field)
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -33,9 +34,13 @@ type mockConfigSyncServer struct {
 	getConfig        *models.Config
 	getConfigErr     error
 	heartbeatSuccess bool
+	requiredAPIKey   string
 }
 
 func (m *mockConfigSyncServer) RegisterAgent(ctx context.Context, req *pb.RegisterAgentRequest) (*pb.RegisterAgentResponse, error) {
+	if err := m.requireAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	if m.registerErr != nil {
 		return nil, m.registerErr
 	}
@@ -47,6 +52,9 @@ func (m *mockConfigSyncServer) RegisterAgent(ctx context.Context, req *pb.Regist
 }
 
 func (m *mockConfigSyncServer) WatchConfig(req *pb.WatchConfigRequest, stream pb.ConfigSync_WatchConfigServer) error {
+	if err := m.requireAPIKey(stream.Context()); err != nil {
+		return err
+	}
 	if m.watchError != nil {
 		return m.watchError
 	}
@@ -69,12 +77,18 @@ func (m *mockConfigSyncServer) WatchConfig(req *pb.WatchConfigRequest, stream pb
 }
 
 func (m *mockConfigSyncServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	if err := m.requireAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	return &pb.HeartbeatResponse{
 		Success: m.heartbeatSuccess,
 	}, nil
 }
 
 func (m *mockConfigSyncServer) GetConfig(ctx context.Context, req *pb.GetConfigRequest) (*pb.GetConfigResponse, error) {
+	if err := m.requireAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	if m.getConfigErr != nil {
 		return nil, m.getConfigErr
 	}
@@ -86,6 +100,28 @@ func (m *mockConfigSyncServer) GetConfig(ctx context.Context, req *pb.GetConfigR
 	return &pb.GetConfigResponse{
 		Unchanged: true,
 	}, nil
+}
+
+func (m *mockConfigSyncServer) requireAPIKey(ctx context.Context) error {
+	if m.requiredAPIKey == "" {
+		return nil
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "unauthenticated")
+	}
+	for _, value := range md.Get("authorization") {
+		fields := strings.Fields(value)
+		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") && fields[1] == m.requiredAPIKey {
+			return nil
+		}
+	}
+	for _, value := range md.Get("x-api-key") {
+		if strings.TrimSpace(value) == m.requiredAPIKey {
+			return nil
+		}
+	}
+	return status.Error(codes.Unauthenticated, "unauthenticated")
 }
 
 // Start a mock gRPC server for testing
@@ -550,6 +586,90 @@ func TestClientStartFailsWhenInitialConfigHandlerFails(t *testing.T) {
 	}
 	if isClientConnected(client) {
 		t.Fatal("client remains connected after initial configuration apply failure")
+	}
+}
+
+func TestClientStartSendsAPIKeyMetadata(t *testing.T) {
+	const apiKey = "agent-controller-secret"
+
+	mock := &mockConfigSyncServer{
+		registerSuccess:  true,
+		heartbeatSuccess: true,
+		requiredAPIKey:   apiKey,
+	}
+
+	dialer, cleanup := startMockServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 100 * time.Millisecond,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			APIKey:          apiKey,
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, nil)
+	client.dialContext = dialer
+
+	if err := client.Start(context.Background()); err != nil {
+		t.Fatalf("Start with API key: %v", err)
+	}
+	client.Stop()
+}
+
+func TestClientStartFailsWhenAPIKeyIsMissing(t *testing.T) {
+	mock := &mockConfigSyncServer{
+		registerSuccess:  true,
+		heartbeatSuccess: true,
+		requiredAPIKey:   "agent-controller-secret",
+	}
+
+	dialer, cleanup := startMockServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 100 * time.Millisecond,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, nil)
+	client.dialContext = dialer
+
+	err := client.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected missing API key to fail Start")
+	}
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("Start error code = %v, want unauthenticated (err = %v)", status.Code(err), err)
+	}
+	if isClientStarted(client) {
+		t.Fatal("client remains started after missing API key failure")
+	}
+	if isClientConnected(client) {
+		t.Fatal("client remains connected after missing API key failure")
 	}
 }
 

@@ -348,16 +348,17 @@ func (c *Client) watchLoop(ctx context.Context) {
 				c.logger.Info("Attempting to reconnect...")
 				if err := c.reconnect(); err != nil {
 					c.logger.WithError(err).Error("Reconnection failed, will retry")
+				}
 
-					// Sleep with cancellation support
-					select {
-					case <-c.stopCh:
-						return
-					case <-ctx.Done():
-						return
-					case <-time.After(c.config.Controller.RetryBackoff):
-						// Continue to retry
-					}
+				// Avoid tight retry loops when the server repeatedly closes
+				// the watch stream without a transport-level connection error.
+				select {
+				case <-c.stopCh:
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(c.config.Controller.RetryBackoff):
+					// Continue to retry
 				}
 			}
 		}
@@ -404,7 +405,7 @@ func (c *Client) watch(ctx context.Context) error {
 			resp, err := stream.Recv()
 			if err == io.EOF {
 				c.logger.Info("Watch stream closed by server")
-				return nil
+				return fmt.Errorf("watch stream closed by server: %w", io.EOF)
 			}
 			if err != nil {
 				return fmt.Errorf("watch stream error: %w", err)

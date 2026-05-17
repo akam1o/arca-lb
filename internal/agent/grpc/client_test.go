@@ -2,7 +2,9 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -951,6 +953,24 @@ func TestClientWatchError(t *testing.T) {
 
 	// Stop should work even with watch errors
 	client.Stop()
+}
+
+func TestClientWatchReturnsErrorOnServerEOF(t *testing.T) {
+	client := newClientWithConfigSyncClient(&fakeConfigSyncClient{
+		watchStream: &fakeWatchConfigClient{err: io.EOF},
+	})
+	defer client.cancel()
+
+	err := client.watch(context.Background())
+	if err == nil {
+		t.Fatal("expected server EOF to fail watch")
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("watch error = %v, want io.EOF", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "watch stream closed by server") {
+		t.Fatalf("watch error = %q, want server closed message", got)
+	}
 }
 
 func TestClientWatchDoesNotAdvanceRevisionWhenHandlerFails(t *testing.T) {

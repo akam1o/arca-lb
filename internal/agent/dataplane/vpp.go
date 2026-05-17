@@ -237,6 +237,13 @@ func (v *VPP) stateVerificationInterval() time.Duration {
 	return 30 * time.Second
 }
 
+func (v *VPP) failOnAllBackendsDown(vip *v1alpha1.VirtualIP, healthyBackends []v1alpha1.BackendSpec) error {
+	if !v.config.FailOnAllBackendsDown || vip == nil || len(vip.Spec.Backends) == 0 || len(healthyBackends) > 0 {
+		return nil
+	}
+	return fmt.Errorf("all configured backends are down for VIP %s", v.vipKey(vip))
+}
+
 func (v *VPP) shouldVerifyCachedVIP(entry *vipEntry, now time.Time) bool {
 	if entry == nil {
 		return false
@@ -256,6 +263,9 @@ func (v *VPP) ApplyVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyBack
 	desiredAttrs, err := v.effectiveVIPAttributes(vip)
 	if err != nil {
 		return fmt.Errorf("invalid desired VIP attributes for %s: %w", key, err)
+	}
+	if err := v.failOnAllBackendsDown(vip, healthyBackends); err != nil {
+		return err
 	}
 
 	existing, exists := v.vips[key]
@@ -515,6 +525,10 @@ func (v *VPP) RecreateVIP(ctx context.Context, vip *v1alpha1.VirtualIP, healthyB
 	defer v.mu.Unlock()
 
 	key := v.vipKey(vip)
+	if err := v.failOnAllBackendsDown(vip, healthyBackends); err != nil {
+		return err
+	}
+
 	deleteTarget := vip
 	if entry, ok := v.vips[key]; ok {
 		deleteTarget = entry.vip
@@ -564,6 +578,9 @@ func (v *VPP) SetBackends(ctx context.Context, vip *v1alpha1.VirtualIP, backends
 	entry, ok := v.vips[key]
 	if !ok {
 		return fmt.Errorf("VIP %s not found in data plane", key)
+	}
+	if err := v.failOnAllBackendsDown(vip, backends); err != nil {
+		return err
 	}
 
 	return v.reconcileBackendsLocked(ctx, key, entry, vip, backends)

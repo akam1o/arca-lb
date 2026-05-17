@@ -574,6 +574,140 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 	}
 }
 
+func TestVPPApplyVIPAllowsEmptyHealthyBackendsWhenFailClosedDisabled(t *testing.T) {
+	addVIPCalls := 0
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			addVIPCalls++
+			return nil
+		},
+		lookupVIPFn: func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+			return nil, false, nil
+		},
+		addBackendFn: func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error {
+			t.Fatal("addBackend should not be called with no healthy backends")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+
+	if err := vpp.ApplyVIP(context.Background(), vip, nil); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if addVIPCalls != 1 {
+		t.Fatalf("add VIP calls = %d, want 1", addVIPCalls)
+	}
+	entry, ok := vpp.vips[key]
+	if !ok {
+		t.Fatal("VIP entry was not tracked")
+	}
+	if len(entry.backends) != 0 {
+		t.Fatalf("tracked backends = %d, want 0", len(entry.backends))
+	}
+}
+
+func TestVPPApplyVIPRejectsAllBackendsDownWhenFailClosedEnabled(t *testing.T) {
+	cfg := testVPPConfig()
+	cfg.FailOnAllBackendsDown = true
+	vpp := &VPP{
+		config: cfg,
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			t.Fatal("addVIP should not be called when all backends are down")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+
+	err := vpp.ApplyVIP(context.Background(), vip, nil)
+	if err == nil {
+		t.Fatal("expected all-backends-down failure")
+	}
+	if !strings.Contains(err.Error(), "all configured backends are down") {
+		t.Fatalf("ApplyVIP error = %q, want all backends down", err)
+	}
+	if _, ok := vpp.vips[key]; ok {
+		t.Fatal("VIP entry was tracked after rejected apply")
+	}
+}
+
+func TestVPPSetBackendsRejectsAllBackendsDownBeforeRemovingExisting(t *testing.T) {
+	cfg := testVPPConfig()
+	cfg.FailOnAllBackendsDown = true
+	vpp := &VPP{
+		config: cfg,
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		removeBackendFn: func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error {
+			t.Fatal("removeBackend should not be called when all backends are down")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+			"10.0.1.2": vip.Spec.Backends[1],
+		},
+	}
+
+	err := vpp.SetBackends(context.Background(), vip, nil)
+	if err == nil {
+		t.Fatal("expected all-backends-down failure")
+	}
+	if !strings.Contains(err.Error(), "all configured backends are down") {
+		t.Fatalf("SetBackends error = %q, want all backends down", err)
+	}
+	if got := len(vpp.vips[key].backends); got != 2 {
+		t.Fatalf("tracked backends = %d, want existing set preserved", got)
+	}
+}
+
+func TestVPPRecreateVIPRejectsAllBackendsDownBeforeDeletingExisting(t *testing.T) {
+	cfg := testVPPConfig()
+	cfg.FailOnAllBackendsDown = true
+	vpp := &VPP{
+		config: cfg,
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		deleteVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			t.Fatal("deleteVIP should not be called when all backends are down")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+		},
+	}
+
+	err := vpp.RecreateVIP(context.Background(), vip, nil)
+	if err == nil {
+		t.Fatal("expected all-backends-down failure")
+	}
+	if !strings.Contains(err.Error(), "all configured backends are down") {
+		t.Fatalf("RecreateVIP error = %q, want all backends down", err)
+	}
+	if got := len(vpp.vips[key].backends); got != 1 {
+		t.Fatalf("tracked backends = %d, want existing set preserved", got)
+	}
+}
+
 func TestVPPApplyVIPSkipsStateVerificationBeforeInterval(t *testing.T) {
 	now := time.Unix(100, 0)
 	vpp := &VPP{

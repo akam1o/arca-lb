@@ -217,6 +217,9 @@ func validateV2(cfg *V2Config) error {
 		}
 		cfg.Agent.ID = hostname
 	}
+	if strings.TrimSpace(cfg.Agent.ID) == "" {
+		return fmt.Errorf("agent.id is required")
+	}
 	if cfg.Agent.ReconcileInterval <= 0 {
 		return fmt.Errorf("agent.reconcileInterval must be positive")
 	}

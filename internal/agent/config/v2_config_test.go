@@ -162,6 +162,29 @@ dataplane:
 	}
 }
 
+func TestLoadV2Config_BlankAgentID(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: "  "
+dataplane:
+  type: noop
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadV2Config(cfgPath)
+	if err == nil {
+		t.Fatal("expected validation error for blank agent id")
+	}
+	if !strings.Contains(err.Error(), "agent.id") {
+		t.Fatalf("LoadV2Config error = %q, want it to contain agent.id", err)
+	}
+}
+
 func TestLoadV2Config_InvalidHealthCheckSettings(t *testing.T) {
 	tests := []struct {
 		name       string

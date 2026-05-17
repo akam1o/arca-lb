@@ -211,6 +211,30 @@ func TestValidation(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "blank agent ID",
+			cfg: &Config{
+				Agent: AgentConfig{
+					ID:                "  ",
+					ReconcileInterval: 30 * time.Second,
+					HeartbeatInterval: 10 * time.Second,
+				},
+				Controller: ControllerConfig{
+					Address: "localhost:50051",
+				},
+				VPP: VPPConfig{
+					SocketPath: "/run/vpp/api.sock",
+				},
+				HealthCheck: HealthCheckConfig{
+					WorkerCount: 4,
+				},
+				Log: LogConfig{
+					Level:  "info",
+					Format: "json",
+				},
+			},
+			wantErr: true,
+		},
+		{
 			name: "invalid log level",
 			cfg: &Config{
 				Agent: AgentConfig{

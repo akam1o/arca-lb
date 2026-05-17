@@ -1295,6 +1295,40 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 			wantErr: "health check config at vip index 0 must be a JSON object",
 		},
 		{
+			name: "health check config missing required port",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{Id: "vip-1"},
+						HealthCheck: &pb.HealthCheck{
+							Id:     "hc-1",
+							VipId:  "vip-1",
+							Type:   pb.HCType_HC_TYPE_HTTP,
+							Config: `{"path":"/health"}`,
+						},
+					},
+				},
+			},
+			wantErr: "health check config at vip index 0 is invalid: port is required",
+		},
+		{
+			name: "health check config rejects fractional expected code",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{Id: "vip-1"},
+						HealthCheck: &pb.HealthCheck{
+							Id:     "hc-1",
+							VipId:  "vip-1",
+							Type:   pb.HCType_HC_TYPE_HTTP,
+							Config: `{"port":8080,"expected_codes":[200.5]}`,
+						},
+					},
+				},
+			},
+			wantErr: "health check config at vip index 0 is invalid: expected_codes must be integers between 100 and 599",
+		},
+		{
 			name: "nil backend",
 			input: &pb.ConfigSnapshot{
 				Vips: []*pb.VIPConfig{
@@ -1333,9 +1367,10 @@ func TestConvertProtoToConfigAllowsMissingTimestamps(t *testing.T) {
 					Port: 80,
 				},
 				HealthCheck: &pb.HealthCheck{
-					Id:    "hc-1",
-					VipId: "vip-1",
-					Type:  pb.HCType_HC_TYPE_TCP,
+					Id:     "hc-1",
+					VipId:  "vip-1",
+					Type:   pb.HCType_HC_TYPE_TCP,
+					Config: `{"port":8080}`,
 				},
 				Backends: []*pb.Backend{
 					{

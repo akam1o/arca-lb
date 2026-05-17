@@ -678,6 +678,9 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 				}
 				vipConfig.HealthCheck.Config = hcConfig
 			}
+			if err := models.ValidateHealthCheckConfig(vipConfig.HealthCheck.Type, vipConfig.HealthCheck.Config); err != nil {
+				return nil, fmt.Errorf("health check config at vip index %d is invalid: %w", i, err)
+			}
 		}
 
 		// Convert backends

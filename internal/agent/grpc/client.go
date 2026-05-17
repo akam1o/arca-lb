@@ -297,6 +297,9 @@ func (c *Client) register() error {
 	if err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
+	if resp == nil {
+		return fmt.Errorf("registration returned nil response")
+	}
 
 	if !resp.Success {
 		return fmt.Errorf("registration rejected: %s", resp.Message)
@@ -406,6 +409,9 @@ func (c *Client) watch(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("watch stream error: %w", err)
 			}
+			if resp == nil {
+				return fmt.Errorf("watch stream returned nil response")
+			}
 
 			if resp.Config != nil {
 				config, err := c.convertProtoToConfig(resp.Config)
@@ -478,6 +484,9 @@ func (c *Client) sendHeartbeat() error {
 	if err != nil {
 		return fmt.Errorf("heartbeat failed: %w", err)
 	}
+	if resp == nil {
+		return fmt.Errorf("heartbeat returned nil response")
+	}
 
 	if !resp.Success {
 		return fmt.Errorf("heartbeat rejected")
@@ -525,6 +534,9 @@ func (c *Client) fetchConfig() error {
 	resp, err := client.GetConfig(ctx, req)
 	if err != nil {
 		return fmt.Errorf("failed to get config: %w", err)
+	}
+	if resp == nil {
+		return fmt.Errorf("get config returned nil response")
 	}
 
 	if resp.Unchanged {

@@ -102,6 +102,48 @@ func (m *mockConfigSyncServer) GetConfig(ctx context.Context, req *pb.GetConfigR
 	}, nil
 }
 
+type fakeConfigSyncClient struct {
+	getConfigResp *pb.GetConfigResponse
+	getConfigErr  error
+	watchStream   pb.ConfigSync_WatchConfigClient
+	watchErr      error
+	registerResp  *pb.RegisterAgentResponse
+	registerErr   error
+	heartbeatResp *pb.HeartbeatResponse
+	heartbeatErr  error
+}
+
+func (f *fakeConfigSyncClient) GetConfig(ctx context.Context, req *pb.GetConfigRequest, opts ...grpc.CallOption) (*pb.GetConfigResponse, error) {
+	return f.getConfigResp, f.getConfigErr
+}
+
+func (f *fakeConfigSyncClient) WatchConfig(ctx context.Context, req *pb.WatchConfigRequest, opts ...grpc.CallOption) (pb.ConfigSync_WatchConfigClient, error) {
+	return f.watchStream, f.watchErr
+}
+
+func (f *fakeConfigSyncClient) RegisterAgent(ctx context.Context, req *pb.RegisterAgentRequest, opts ...grpc.CallOption) (*pb.RegisterAgentResponse, error) {
+	return f.registerResp, f.registerErr
+}
+
+func (f *fakeConfigSyncClient) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest, opts ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
+	return f.heartbeatResp, f.heartbeatErr
+}
+
+type fakeWatchConfigClient struct {
+	grpc.ClientStream
+	responses []*pb.WatchConfigResponse
+	err       error
+}
+
+func (f *fakeWatchConfigClient) Recv() (*pb.WatchConfigResponse, error) {
+	if len(f.responses) == 0 {
+		return nil, f.err
+	}
+	resp := f.responses[0]
+	f.responses = f.responses[1:]
+	return resp, nil
+}
+
 func (m *mockConfigSyncServer) requireAPIKey(ctx context.Context) error {
 	if m.requiredAPIKey == "" {
 		return nil
@@ -167,6 +209,33 @@ func clientConn(c *Client) *grpc.ClientConn {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.conn
+}
+
+func newClientWithConfigSyncClient(client pb.ConfigSyncClient) *Client {
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 100 * time.Millisecond,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	c := NewClient(cfg, logger, nil)
+	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.mu.Lock()
+	c.client = client
+	c.connected = true
+	c.mu.Unlock()
+	return c
 }
 
 func TestNewClient(t *testing.T) {
@@ -536,6 +605,19 @@ func TestClientStartFailsWhenRegistrationRPCFails(t *testing.T) {
 	}
 	if isClientConnected(client) {
 		t.Fatal("client remains connected after registration RPC failure")
+	}
+}
+
+func TestClientRegisterRejectsNilResponse(t *testing.T) {
+	client := newClientWithConfigSyncClient(&fakeConfigSyncClient{})
+	defer client.cancel()
+
+	err := client.register()
+	if err == nil {
+		t.Fatal("expected nil registration response to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "registration returned nil response") {
+		t.Fatalf("register error = %q, want nil response error", got)
 	}
 }
 
@@ -927,6 +1009,26 @@ func TestClientWatchDoesNotAdvanceRevisionWhenHandlerFails(t *testing.T) {
 	}
 }
 
+func TestClientWatchRejectsNilResponse(t *testing.T) {
+	client := newClientWithConfigSyncClient(&fakeConfigSyncClient{
+		watchStream: &fakeWatchConfigClient{
+			responses: []*pb.WatchConfigResponse{nil},
+		},
+	})
+	defer client.cancel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := client.watch(ctx)
+	if err == nil {
+		t.Fatal("expected nil watch response to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "watch stream returned nil response") {
+		t.Fatalf("watch error = %q, want nil response error", got)
+	}
+}
+
 func TestClientFetchConfigDoesNotAdvanceRevisionWhenHandlerFails(t *testing.T) {
 	mock := &mockConfigSyncServer{
 		registerSuccess:  true,
@@ -979,6 +1081,32 @@ func TestClientFetchConfigDoesNotAdvanceRevisionWhenHandlerFails(t *testing.T) {
 	}
 	if got := client.getCurrentRevision(); got != 0 {
 		t.Fatalf("current revision = %d, want 0 after failed fetch apply", got)
+	}
+}
+
+func TestClientFetchConfigRejectsNilResponse(t *testing.T) {
+	client := newClientWithConfigSyncClient(&fakeConfigSyncClient{})
+	defer client.cancel()
+
+	err := client.fetchConfig()
+	if err == nil {
+		t.Fatal("expected nil get config response to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "get config returned nil response") {
+		t.Fatalf("fetchConfig error = %q, want nil response error", got)
+	}
+}
+
+func TestClientHeartbeatRejectsNilResponse(t *testing.T) {
+	client := newClientWithConfigSyncClient(&fakeConfigSyncClient{})
+	defer client.cancel()
+
+	err := client.sendHeartbeat()
+	if err == nil {
+		t.Fatal("expected nil heartbeat response to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "heartbeat returned nil response") {
+		t.Fatalf("sendHeartbeat error = %q, want nil response error", got)
 	}
 }
 

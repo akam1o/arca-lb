@@ -8,7 +8,7 @@ import (
 )
 
 func TestLoadConfigRequiresGRPCTLSFiles(t *testing.T) {
-	path := writeConfigFile(t, `
+	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:
   tls: true
 `)
@@ -20,7 +20,7 @@ grpc:
 }
 
 func TestLoadConfigRequiresGRPCClientCAWhenClientCertRequired(t *testing.T) {
-	path := writeConfigFile(t, `
+	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:
   tls: true
   cert_file: /tmp/server.crt
@@ -35,7 +35,7 @@ grpc:
 }
 
 func TestLoadConfigRejectsGRPCClientCertWithoutTLS(t *testing.T) {
-	path := writeConfigFile(t, `
+	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:
   tls: false
   require_client_cert: true
@@ -49,7 +49,7 @@ grpc:
 }
 
 func TestLoadConfigAcceptsGRPCTLSFiles(t *testing.T) {
-	path := writeConfigFile(t, `
+	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:
   tls: true
   cert_file: /tmp/server.crt
@@ -72,7 +72,7 @@ grpc:
 }
 
 func TestLoadConfigDefaultsMaxBodyBytes(t *testing.T) {
-	path := writeConfigFile(t, `{}`)
+	path := writeConfigFile(t, minimalEtcdConfig())
 
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -80,6 +80,104 @@ func TestLoadConfigDefaultsMaxBodyBytes(t *testing.T) {
 	}
 	if cfg.Server.MaxBodyBytes != 1<<20 {
 		t.Fatalf("Server.MaxBodyBytes = %d, want 1MiB", cfg.Server.MaxBodyBytes)
+	}
+}
+
+func TestLoadConfigRejectsMissingDataStoreType(t *testing.T) {
+	path := writeConfigFile(t, `{}`)
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "datastore.type") {
+		t.Fatalf("LoadConfig error = %v, want datastore.type validation error", err)
+	}
+}
+
+func TestLoadConfigRejectsInvalidDataStoreSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name:    "unsupported type",
+			yaml:    "datastore:\n  type: sqlite\n",
+			wantErr: "unsupported datastore.type",
+		},
+		{
+			name:    "etcd missing endpoints",
+			yaml:    "datastore:\n  type: etcd\n",
+			wantErr: "datastore.etcd.endpoints",
+		},
+		{
+			name: "etcd empty endpoint",
+			yaml: `datastore:
+  type: etcd
+  etcd:
+    endpoints: [""]
+`,
+			wantErr: "datastore.etcd.endpoints",
+		},
+		{
+			name: "etcd tls missing cert",
+			yaml: `datastore:
+  type: etcd
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+    tls: true
+`,
+			wantErr: "datastore.etcd.cert_file",
+		},
+		{
+			name: "etcd negative timeout",
+			yaml: `datastore:
+  type: etcd
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+    dial_timeout: -1s
+`,
+			wantErr: "datastore.etcd.dial_timeout",
+		},
+		{
+			name: "mysql missing host",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    port: 3306
+    database: arcalb
+`,
+			wantErr: "datastore.mysql.host",
+		},
+		{
+			name: "mysql invalid port",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 70000
+    database: arcalb
+`,
+			wantErr: "datastore.mysql.port",
+		},
+		{
+			name: "mysql missing database",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+`,
+			wantErr: "datastore.mysql.database",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, tt.yaml)
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -115,6 +213,15 @@ func TestLoadConfigRejectsInvalidServerLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func minimalEtcdConfig() string {
+	return `
+datastore:
+  type: etcd
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+`
 }
 
 func writeConfigFile(t *testing.T, contents string) string {

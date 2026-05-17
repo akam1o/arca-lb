@@ -168,6 +168,9 @@ func (c *Config) validate() error {
 	if c.Server.MaxBodyBytes <= 0 {
 		return fmt.Errorf("server.max_body_bytes must be positive")
 	}
+	if err := c.validateDataStore(); err != nil {
+		return err
+	}
 	if c.GRPC.Port < 1 || c.GRPC.Port > 65535 {
 		return fmt.Errorf("grpc.port must be between 1 and 65535")
 	}
@@ -184,6 +187,61 @@ func (c *Config) validate() error {
 	}
 	if c.GRPC.RequireClientCert && c.GRPC.ClientCAFile == "" {
 		return fmt.Errorf("grpc.client_ca_file is required when grpc.require_client_cert is enabled")
+	}
+	return nil
+}
+
+func (c *Config) validateDataStore() error {
+	switch c.DataStore.Type {
+	case "":
+		return fmt.Errorf("datastore.type is required")
+	case "etcd":
+		return validateEtcdConfig(c.DataStore.Etcd)
+	case "mysql":
+		return validateMySQLConfig(c.DataStore.MySQL)
+	default:
+		return fmt.Errorf("unsupported datastore.type: %s", c.DataStore.Type)
+	}
+}
+
+func validateEtcdConfig(cfg EtcdConfig) error {
+	if len(cfg.Endpoints) == 0 {
+		return fmt.Errorf("datastore.etcd.endpoints is required")
+	}
+	for _, endpoint := range cfg.Endpoints {
+		if endpoint == "" {
+			return fmt.Errorf("datastore.etcd.endpoints must not contain empty values")
+		}
+	}
+	if cfg.DialTimeout < 0 {
+		return fmt.Errorf("datastore.etcd.dial_timeout must be non-negative")
+	}
+	if cfg.RequestTimeout < 0 {
+		return fmt.Errorf("datastore.etcd.request_timeout must be non-negative")
+	}
+	if cfg.TLS {
+		if cfg.CertFile == "" {
+			return fmt.Errorf("datastore.etcd.cert_file is required when datastore.etcd.tls is enabled")
+		}
+		if cfg.KeyFile == "" {
+			return fmt.Errorf("datastore.etcd.key_file is required when datastore.etcd.tls is enabled")
+		}
+		if cfg.CAFile == "" {
+			return fmt.Errorf("datastore.etcd.ca_file is required when datastore.etcd.tls is enabled")
+		}
+	}
+	return nil
+}
+
+func validateMySQLConfig(cfg MySQLConfig) error {
+	if cfg.Host == "" {
+		return fmt.Errorf("datastore.mysql.host is required")
+	}
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return fmt.Errorf("datastore.mysql.port must be between 1 and 65535")
+	}
+	if cfg.Database == "" {
+		return fmt.Errorf("datastore.mysql.database is required")
 	}
 	return nil
 }

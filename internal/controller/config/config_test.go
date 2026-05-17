@@ -74,6 +74,18 @@ func TestLoadConfigRejectsInvalidGRPCAPIKey(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsGRPCAPIKeyWithoutTLS(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+grpc:
+  api_key: controller-grpc-secret
+`)
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "grpc.tls must be enabled when grpc.api_key is set") {
+		t.Fatalf("LoadConfig error = %v, want grpc.api_key TLS validation error", err)
+	}
+}
+
 func TestLoadConfigAcceptsGRPCTLSFiles(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:

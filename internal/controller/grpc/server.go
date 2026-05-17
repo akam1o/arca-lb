@@ -78,6 +78,9 @@ func (s *Server) grpcServerOptions() ([]grpc.ServerOption, error) {
 	opts := make([]grpc.ServerOption, 0, 3)
 
 	if s.config.GRPC.APIKey != "" {
+		if !s.config.GRPC.TLS {
+			return nil, fmt.Errorf("grpc.tls must be enabled when grpc.api_key is set")
+		}
 		opts = append(opts,
 			grpc.UnaryInterceptor(apiKeyUnaryServerInterceptor(s.config.GRPC.APIKey)),
 			grpc.StreamInterceptor(apiKeyStreamServerInterceptor(s.config.GRPC.APIKey)),

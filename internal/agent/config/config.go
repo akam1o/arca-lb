@@ -365,6 +365,9 @@ func validate(cfg *Config) error {
 	if err := validateAPIKey("controller.api_key", cfg.Controller.APIKey); err != nil {
 		return err
 	}
+	if cfg.Controller.APIKey != "" && !cfg.Controller.TLS.Enabled {
+		return fmt.Errorf("controller.tls.enabled must be enabled when controller.api_key is set")
+	}
 
 	// Validate VPP socket path
 	if cfg.VPP.SocketPath == "" {

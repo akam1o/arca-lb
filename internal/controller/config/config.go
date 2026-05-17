@@ -183,6 +183,9 @@ func (c *Config) validate() error {
 	if err := validateAPIKey("grpc.api_key", c.GRPC.APIKey); err != nil {
 		return err
 	}
+	if c.GRPC.APIKey != "" && !c.GRPC.TLS {
+		return fmt.Errorf("grpc.tls must be enabled when grpc.api_key is set")
+	}
 	if c.GRPC.RequireClientCert && !c.GRPC.TLS {
 		return fmt.Errorf("grpc.tls must be enabled when grpc.require_client_cert is enabled")
 	}

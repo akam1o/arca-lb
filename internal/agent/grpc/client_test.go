@@ -589,17 +589,23 @@ func TestClientStartFailsWhenInitialConfigHandlerFails(t *testing.T) {
 	}
 }
 
-func TestClientStartSendsAPIKeyMetadata(t *testing.T) {
+func TestOutgoingAPIKeyContextAddsBearerMetadata(t *testing.T) {
 	const apiKey = "agent-controller-secret"
 
-	mock := &mockConfigSyncServer{
-		registerSuccess:  true,
-		heartbeatSuccess: true,
-		requiredAPIKey:   apiKey,
-	}
+	ctx := outgoingAPIKeyContext(context.Background(), apiKey)
 
-	dialer, cleanup := startMockServer(t, mock)
-	defer cleanup()
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if !ok {
+		t.Fatal("outgoing metadata was not set")
+	}
+	values := md.Get("authorization")
+	if len(values) != 1 || values[0] != "Bearer "+apiKey {
+		t.Fatalf("authorization metadata = %#v, want bearer API key", values)
+	}
+}
+
+func TestClientStartRejectsAPIKeyWithoutTLS(t *testing.T) {
+	const apiKey = "agent-controller-secret"
 
 	cfg := &config.Config{
 		Agent: config.AgentConfig{
@@ -620,12 +626,20 @@ func TestClientStartSendsAPIKeyMetadata(t *testing.T) {
 	logger.SetLevel(logrus.FatalLevel)
 
 	client := NewClient(cfg, logger, nil)
-	client.dialContext = dialer
 
-	if err := client.Start(context.Background()); err != nil {
-		t.Fatalf("Start with API key: %v", err)
+	err := client.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected API key without TLS to fail Start")
 	}
-	client.Stop()
+	if got := err.Error(); !strings.Contains(got, "controller.tls.enabled must be enabled when controller.api_key is set") {
+		t.Fatalf("Start error = %q, want controller API key TLS validation error", got)
+	}
+	if isClientStarted(client) {
+		t.Fatal("client remains started after API key without TLS failure")
+	}
+	if isClientConnected(client) {
+		t.Fatal("client remains connected after API key without TLS failure")
+	}
 }
 
 func TestClientStartFailsWhenAPIKeyIsMissing(t *testing.T) {

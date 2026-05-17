@@ -21,7 +21,6 @@ agent:
 
 controller:
   address: "localhost:50051"
-  api_key: "agent-controller-secret"
   timeout: 5s
 
 vpp:
@@ -54,10 +53,6 @@ log:
 	if cfg.Controller.Address != "localhost:50051" {
 		t.Errorf("Expected controller address 'localhost:50051', got '%s'", cfg.Controller.Address)
 	}
-	if cfg.Controller.APIKey != "agent-controller-secret" {
-		t.Errorf("Expected controller API key from config, got '%s'", cfg.Controller.APIKey)
-	}
-
 	if cfg.VPP.SocketPath != "/tmp/vpp.sock" {
 		t.Errorf("Expected VPP socket '/tmp/vpp.sock', got '%s'", cfg.VPP.SocketPath)
 	}
@@ -204,6 +199,71 @@ log:
 				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadConfigRejectsControllerAPIKeyWithoutTLS(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	configContent := `
+agent:
+  id: "test-agent"
+
+controller:
+  address: "localhost:50051"
+  api_key: "agent-controller-secret"
+
+vpp:
+  socket_path: "/tmp/vpp.sock"
+
+log:
+  level: "info"
+  format: "json"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "controller.tls.enabled must be enabled when controller.api_key is set") {
+		t.Fatalf("LoadConfig error = %v, want controller.api_key TLS validation error", err)
+	}
+}
+
+func TestLoadConfigAcceptsControllerAPIKeyWithTLS(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	configContent := `
+agent:
+  id: "test-agent"
+
+controller:
+  address: "localhost:50051"
+  api_key: "agent-controller-secret"
+  tls:
+    enabled: true
+    cert_file: /tmp/client.crt
+    key_file: /tmp/client.key
+    ca_file: /tmp/ca.crt
+
+vpp:
+  socket_path: "/tmp/vpp.sock"
+
+log:
+  level: "info"
+  format: "json"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Controller.APIKey != "agent-controller-secret" {
+		t.Fatalf("Controller.APIKey = %q", cfg.Controller.APIKey)
+	}
+	if !cfg.Controller.TLS.Enabled {
+		t.Fatal("Controller.TLS.Enabled = false, want true")
 	}
 }
 

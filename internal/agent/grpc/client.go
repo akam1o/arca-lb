@@ -181,6 +181,10 @@ func (c *Client) Stop() {
 func (c *Client) connect() error {
 	var opts []grpc.DialOption
 
+	if c.config.Controller.APIKey != "" && !c.config.Controller.TLS.Enabled {
+		return fmt.Errorf("controller.tls.enabled must be enabled when controller.api_key is set")
+	}
+
 	// Configure TLS if enabled
 	if c.config.Controller.TLS.Enabled {
 		tlsConfig, err := c.loadTLSConfig()

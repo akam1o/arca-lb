@@ -55,6 +55,82 @@ func TestRequestBodyLimitRejectsOversizedCreateVIP(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "request body too large")
 }
 
+func TestAPIKeyAuthMiddleware(t *testing.T) {
+	tests := []struct {
+		name           string
+		setHeader      func(*http.Request)
+		expectedStatus int
+	}{
+		{
+			name:           "missing key",
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "wrong bearer key",
+			setHeader: func(req *http.Request) {
+				req.Header.Set("Authorization", "Bearer wrong-controller-key")
+			},
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "bearer key",
+			setHeader: func(req *http.Request) {
+				req.Header.Set("Authorization", "Bearer controller-secret")
+			},
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name: "case-insensitive bearer scheme",
+			setHeader: func(req *http.Request) {
+				req.Header.Set("Authorization", "bearer   controller-secret")
+			},
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name: "x api key",
+			setHeader: func(req *http.Request) {
+				req.Header.Set("X-API-Key", "controller-secret")
+			},
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, mockDS := setupTestServer()
+			server.config.Server.APIKey = "controller-secret"
+			require.NoError(t, mockDS.CreateVIP(context.Background(), &models.VIP{
+				ID:       "vip-auth",
+				VIP:      "192.168.1.110",
+				Port:     80,
+				Protocol: models.ProtocolTCP,
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/vips/vip-auth", nil)
+			if tt.setHeader != nil {
+				tt.setHeader(req)
+			}
+			w := httptest.NewRecorder()
+
+			server.router.ServeHTTP(w, req)
+
+			assert.Equal(t, tt.expectedStatus, w.Code)
+		})
+	}
+}
+
+func TestAPIKeyAuthDoesNotProtectHealthEndpoints(t *testing.T) {
+	server, _ := setupTestServer()
+	server.config.Server.APIKey = "controller-secret"
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestCreateVIP(t *testing.T) {
 	server, mockDS := setupTestServer()
 

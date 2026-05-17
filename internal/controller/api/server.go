@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
@@ -156,7 +159,7 @@ func (s *Server) corsMiddleware() gin.HandlerFunc {
 		if allowed {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key, accept, origin, Cache-Control, X-Requested-With")
 			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 		}
 
@@ -193,6 +196,7 @@ func (s *Server) setupRoutes() {
 
 	// API v1 routes
 	v1 := s.router.Group("/api/v1")
+	v1.Use(s.authMiddleware())
 	{
 		// VIP endpoints (to be implemented in Phase 3.2)
 		vips := v1.Group("/vips")
@@ -217,6 +221,45 @@ func (s *Server) setupRoutes() {
 		// Revision endpoint (to be implemented in Phase 3.4)
 		v1.GET("/revision", s.getRevision)
 	}
+}
+
+func (s *Server) authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		expectedKey := s.config.Server.APIKey
+		if expectedKey == "" {
+			c.Next()
+			return
+		}
+
+		if !apiKeyMatches(extractAPIKey(c.Request), expectedKey) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func extractAPIKey(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if value := req.Header.Get("Authorization"); value != "" {
+		fields := strings.Fields(value)
+		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+			return fields[1]
+		}
+	}
+	return strings.TrimSpace(req.Header.Get("X-API-Key"))
+}
+
+func apiKeyMatches(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
 }
 
 // healthCheck handles health check requests

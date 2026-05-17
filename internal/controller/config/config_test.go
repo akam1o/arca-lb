@@ -193,6 +193,16 @@ func TestLoadConfigRejectsInvalidServerLimits(t *testing.T) {
 			wantErr: "server.port",
 		},
 		{
+			name:    "short api key",
+			yaml:    "server:\n  api_key: short\n",
+			wantErr: "server.api_key",
+		},
+		{
+			name:    "api key with whitespace",
+			yaml:    "server:\n  api_key: controller secret value\n",
+			wantErr: "server.api_key",
+		},
+		{
 			name:    "negative body limit",
 			yaml:    "server:\n  max_body_bytes: -1\n",
 			wantErr: "server.max_body_bytes",

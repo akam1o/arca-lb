@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
@@ -21,6 +22,7 @@ type Config struct {
 type ServerConfig struct {
 	Host              string        `yaml:"host"`
 	Port              int           `yaml:"port"`
+	APIKey            string        `yaml:"api_key"`
 	ReadTimeout       time.Duration `yaml:"read_timeout"`
 	WriteTimeout      time.Duration `yaml:"write_timeout"`
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
@@ -149,6 +151,14 @@ func (c *Config) setDefaults() {
 func (c *Config) validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be between 1 and 65535")
+	}
+	if c.Server.APIKey != "" {
+		if strings.ContainsAny(c.Server.APIKey, " \t\r\n") {
+			return fmt.Errorf("server.api_key must not contain whitespace")
+		}
+		if len(c.Server.APIKey) < 16 {
+			return fmt.Errorf("server.api_key must be at least 16 characters when set")
+		}
 	}
 	if c.Server.ReadTimeout <= 0 {
 		return fmt.Errorf("server.read_timeout must be positive")

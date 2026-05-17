@@ -306,7 +306,10 @@ func (c *Client) register() error {
 
 	// Process initial configuration if provided
 	if resp.Config != nil {
-		config := c.convertProtoToConfig(resp.Config)
+		config, err := c.convertProtoToConfig(resp.Config)
+		if err != nil {
+			return fmt.Errorf("failed to convert initial configuration: %w", err)
+		}
 		if err := c.applyConfig(config); err != nil {
 			return fmt.Errorf("failed to apply initial configuration: %w", err)
 		}
@@ -405,7 +408,10 @@ func (c *Client) watch(ctx context.Context) error {
 			}
 
 			if resp.Config != nil {
-				config := c.convertProtoToConfig(resp.Config)
+				config, err := c.convertProtoToConfig(resp.Config)
+				if err != nil {
+					return fmt.Errorf("failed to convert configuration: %w", err)
+				}
 
 				c.logger.WithFields(logrus.Fields{
 					"revision":  config.Revision,
@@ -527,7 +533,10 @@ func (c *Client) fetchConfig() error {
 	}
 
 	if resp.Config != nil {
-		config := c.convertProtoToConfig(resp.Config)
+		config, err := c.convertProtoToConfig(resp.Config)
+		if err != nil {
+			return fmt.Errorf("failed to convert config: %w", err)
+		}
 		if err := c.applyConfig(config); err != nil {
 			return fmt.Errorf("failed to apply config: %w", err)
 		}
@@ -537,6 +546,9 @@ func (c *Client) fetchConfig() error {
 }
 
 func (c *Client) applyConfig(config *models.Config) error {
+	if config == nil {
+		return fmt.Errorf("config is required")
+	}
 	if c.configHandler != nil {
 		if err := c.configHandler(config); err != nil {
 			return err
@@ -572,19 +584,38 @@ func (c *Client) loadTLSConfig() (*tls.Config, error) {
 }
 
 // convertProtoToConfig converts protobuf config to internal model
-func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Config {
+func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Config, error) {
+	if pbConfig == nil {
+		return nil, fmt.Errorf("config snapshot is required")
+	}
+
 	config := &models.Config{
 		Revision: pbConfig.Revision,
 		VIPs:     make([]models.VIPConfig, 0, len(pbConfig.Vips)),
 	}
 
-	for _, pbVipConfig := range pbConfig.Vips {
+	for i, pbVipConfig := range pbConfig.Vips {
+		if pbVipConfig == nil {
+			return nil, fmt.Errorf("vip config at index %d is required", i)
+		}
+		if pbVipConfig.Vip == nil {
+			return nil, fmt.Errorf("vip config at index %d is missing vip", i)
+		}
+
 		var dscp *uint8
 		if pbVipConfig.Vip.Dscp != nil {
 			if pbVipConfig.Vip.Dscp.Value <= 63 {
 				v := uint8(pbVipConfig.Vip.Dscp.Value)
 				dscp = &v
 			}
+		}
+		vipCreatedAt := time.Time{}
+		if pbVipConfig.Vip.CreatedAt != nil {
+			vipCreatedAt = pbVipConfig.Vip.CreatedAt.AsTime()
+		}
+		vipUpdatedAt := time.Time{}
+		if pbVipConfig.Vip.UpdatedAt != nil {
+			vipUpdatedAt = pbVipConfig.Vip.UpdatedAt.AsTime()
 		}
 
 		vipConfig := models.VIPConfig{
@@ -596,14 +627,22 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 				LBMethod:  c.convertProtoLBMethod(pbVipConfig.Vip.LbMethod),
 				EncapType: c.convertProtoEncapType(pbVipConfig.Vip.EncapType),
 				DSCP:      dscp,
-				CreatedAt: pbVipConfig.Vip.CreatedAt.AsTime(),
-				UpdatedAt: pbVipConfig.Vip.UpdatedAt.AsTime(),
+				CreatedAt: vipCreatedAt,
+				UpdatedAt: vipUpdatedAt,
 			},
 			Backends: make([]models.Backend, 0, len(pbVipConfig.Backends)),
 		}
 
 		// Convert health check
 		if pbVipConfig.HealthCheck != nil {
+			healthCheckCreatedAt := time.Time{}
+			if pbVipConfig.HealthCheck.CreatedAt != nil {
+				healthCheckCreatedAt = pbVipConfig.HealthCheck.CreatedAt.AsTime()
+			}
+			healthCheckUpdatedAt := time.Time{}
+			if pbVipConfig.HealthCheck.UpdatedAt != nil {
+				healthCheckUpdatedAt = pbVipConfig.HealthCheck.UpdatedAt.AsTime()
+			}
 			vipConfig.HealthCheck = &models.HealthCheck{
 				ID:          pbVipConfig.HealthCheck.Id,
 				VIPID:       pbVipConfig.HealthCheck.VipId,
@@ -612,8 +651,8 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 				TimeoutSec:  int(pbVipConfig.HealthCheck.TimeoutSec),
 				RiseCount:   int(pbVipConfig.HealthCheck.RiseCount),
 				FallCount:   int(pbVipConfig.HealthCheck.FallCount),
-				CreatedAt:   pbVipConfig.HealthCheck.CreatedAt.AsTime(),
-				UpdatedAt:   pbVipConfig.HealthCheck.UpdatedAt.AsTime(),
+				CreatedAt:   healthCheckCreatedAt,
+				UpdatedAt:   healthCheckUpdatedAt,
 			}
 
 			// Parse Config JSON if present
@@ -630,14 +669,25 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 		}
 
 		// Convert backends
-		for _, pbBackend := range pbVipConfig.Backends {
+		for j, pbBackend := range pbVipConfig.Backends {
+			if pbBackend == nil {
+				return nil, fmt.Errorf("backend at vip index %d backend index %d is required", i, j)
+			}
+			backendCreatedAt := time.Time{}
+			if pbBackend.CreatedAt != nil {
+				backendCreatedAt = pbBackend.CreatedAt.AsTime()
+			}
+			backendUpdatedAt := time.Time{}
+			if pbBackend.UpdatedAt != nil {
+				backendUpdatedAt = pbBackend.UpdatedAt.AsTime()
+			}
 			backend := models.Backend{
 				ID:        pbBackend.Id,
 				VIPID:     pbBackend.VipId,
 				IP:        pbBackend.Ip,
 				Weight:    int(pbBackend.Weight),
-				CreatedAt: pbBackend.CreatedAt.AsTime(),
-				UpdatedAt: pbBackend.UpdatedAt.AsTime(),
+				CreatedAt: backendCreatedAt,
+				UpdatedAt: backendUpdatedAt,
 			}
 			vipConfig.Backends = append(vipConfig.Backends, backend)
 		}
@@ -645,7 +695,7 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 		config.VIPs = append(config.VIPs, vipConfig)
 	}
 
-	return config
+	return config, nil
 }
 
 // convertProtoProtocol converts protobuf protocol to internal model

@@ -1048,7 +1048,7 @@ func TestConvertProtoToConfigParsesHealthCheckConfig(t *testing.T) {
 	client := NewClient(&config.Config{}, logger, nil)
 	now := timestamppb.Now()
 
-	got := client.convertProtoToConfig(&pb.ConfigSnapshot{
+	got, err := client.convertProtoToConfig(&pb.ConfigSnapshot{
 		Revision: 7,
 		Vips: []*pb.VIPConfig{
 			{
@@ -1076,6 +1076,9 @@ func TestConvertProtoToConfigParsesHealthCheckConfig(t *testing.T) {
 			},
 		},
 	})
+	if err != nil {
+		t.Fatalf("convertProtoToConfig: %v", err)
+	}
 
 	if got.Revision != 7 {
 		t.Fatalf("Revision = %d, want 7", got.Revision)
@@ -1099,6 +1102,109 @@ func TestConvertProtoToConfigParsesHealthCheckConfig(t *testing.T) {
 	second, secondOK := codes[1].(float64)
 	if !firstOK || !secondOK || first != 200 || second != 204 {
 		t.Fatalf("expected_codes = %#v, want [200 204]", hcConfig["expected_codes"])
+	}
+}
+
+func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	client := NewClient(&config.Config{}, logger, nil)
+
+	tests := []struct {
+		name    string
+		input   *pb.ConfigSnapshot
+		wantErr string
+	}{
+		{
+			name:    "nil snapshot",
+			input:   nil,
+			wantErr: "config snapshot is required",
+		},
+		{
+			name: "nil vip config",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{nil},
+			},
+			wantErr: "vip config at index 0 is required",
+		},
+		{
+			name: "missing vip",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{{}},
+			},
+			wantErr: "vip config at index 0 is missing vip",
+		},
+		{
+			name: "nil backend",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip:      &pb.VIP{Id: "vip-1"},
+						Backends: []*pb.Backend{nil},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := client.convertProtoToConfig(tt.input)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("convertProtoToConfig error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestConvertProtoToConfigAllowsMissingTimestamps(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	client := NewClient(&config.Config{}, logger, nil)
+
+	got, err := client.convertProtoToConfig(&pb.ConfigSnapshot{
+		Revision: 3,
+		Vips: []*pb.VIPConfig{
+			{
+				Vip: &pb.VIP{
+					Id:   "vip-1",
+					Vip:  "192.168.1.100",
+					Port: 80,
+				},
+				HealthCheck: &pb.HealthCheck{
+					Id:    "hc-1",
+					VipId: "vip-1",
+					Type:  pb.HCType_HC_TYPE_TCP,
+				},
+				Backends: []*pb.Backend{
+					{
+						Id:     "backend-1",
+						VipId:  "vip-1",
+						Ip:     "10.0.0.1",
+						Weight: 1,
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("convertProtoToConfig: %v", err)
+	}
+	if got.Revision != 3 {
+		t.Fatalf("Revision = %d, want 3", got.Revision)
+	}
+	if len(got.VIPs) != 1 {
+		t.Fatalf("VIPs length = %d, want 1", len(got.VIPs))
+	}
+	if !got.VIPs[0].VIP.CreatedAt.IsZero() || !got.VIPs[0].VIP.UpdatedAt.IsZero() {
+		t.Fatalf("VIP timestamps = %v/%v, want zero values", got.VIPs[0].VIP.CreatedAt, got.VIPs[0].VIP.UpdatedAt)
+	}
+	if got.VIPs[0].HealthCheck == nil || !got.VIPs[0].HealthCheck.CreatedAt.IsZero() || !got.VIPs[0].HealthCheck.UpdatedAt.IsZero() {
+		t.Fatalf("health check timestamps = %#v, want zero values", got.VIPs[0].HealthCheck)
+	}
+	if len(got.VIPs[0].Backends) != 1 || !got.VIPs[0].Backends[0].CreatedAt.IsZero() || !got.VIPs[0].Backends[0].UpdatedAt.IsZero() {
+		t.Fatalf("backends = %#v, want one backend with zero timestamps", got.VIPs[0].Backends)
 	}
 }
 

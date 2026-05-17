@@ -291,6 +291,42 @@ func TestCreateVIP(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
+			name: "health check method must be string",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"port":   8080,
+						"method": 123,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check tcp send must be string",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "tcp",
+					"interval": "10s",
+					"timeout":  "5s",
+					"config": map[string]interface{}{
+						"port": 8080,
+						"send": []string{"ping"},
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "sub-second health check interval",
 			requestBody: map[string]interface{}{
 				"vip":      "192.168.1.101",

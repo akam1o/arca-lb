@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -49,20 +48,6 @@ type UpdateVIPRequest struct {
 	DSCP      *uint8           `json:"dscp" binding:"omitempty,min=0,max=63"`
 }
 
-func parseOptionalInt(v any) (int, bool) {
-	switch typed := v.(type) {
-	case int:
-		return typed, true
-	case float64:
-		if math.IsNaN(typed) || math.IsInf(typed, 0) || typed != math.Trunc(typed) {
-			return 0, false
-		}
-		return int(typed), true
-	default:
-		return 0, false
-	}
-}
-
 func validateHealthCheckRequest(req *HealthCheckRequest) error {
 	if req == nil {
 		return nil
@@ -75,63 +60,22 @@ func validateHealthCheckRequest(req *HealthCheckRequest) error {
 		return badRequestError("invalid health check type")
 	}
 
-	switch hcType {
-	case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP, models.HCTypeTLSHello:
-		if req.Config == nil {
-			return badRequestError("health_check.config is required for this type")
-		}
-		portRaw, ok := req.Config["port"]
-		if !ok {
-			return badRequestError("health_check.config.port is required")
-		}
-		port, ok := parseOptionalInt(portRaw)
-		if !ok || port < 1 || port > 65535 {
-			return badRequestError("health_check.config.port must be an integer between 1 and 65535")
-		}
-
-		if hcType == models.HCTypeHTTP || hcType == models.HCTypeHTTPS {
-			if path, ok := req.Config["path"]; ok && path != nil {
-				if _, ok := path.(string); !ok {
-					return badRequestError("health_check.config.path must be a string")
-				}
-			}
-			if expectedCodes, ok := req.Config["expected_codes"]; ok && expectedCodes != nil {
-				arr, ok := expectedCodes.([]interface{})
-				if !ok {
-					return badRequestError("health_check.config.expected_codes must be an array of integers")
-				}
-				for _, code := range arr {
-					parsedCode, ok := parseOptionalInt(code)
-					if !ok || parsedCode < 100 || parsedCode > 599 {
-						return badRequestError("health_check.config.expected_codes must be integers between 100 and 599")
-					}
-				}
-			}
-			if headers, ok := req.Config["headers"]; ok && headers != nil {
-				hm, ok := headers.(map[string]interface{})
-				if !ok {
-					return badRequestError("health_check.config.headers must be an object")
-				}
-				for _, v := range hm {
-					if v == nil {
-						continue
-					}
-					if _, ok := v.(string); !ok {
-						return badRequestError("health_check.config.headers values must be strings")
-					}
-				}
-			}
-			if tlsSkipVerify, ok := req.Config["tls_skip_verify"]; ok && tlsSkipVerify != nil {
-				if _, ok := tlsSkipVerify.(bool); !ok {
-					return badRequestError("health_check.config.tls_skip_verify must be a boolean")
-				}
-			}
-		}
-	case models.HCTypePing:
-		// No config required.
+	if err := models.ValidateHealthCheckConfig(hcType, req.Config); err != nil {
+		return healthCheckConfigBadRequest(err)
 	}
 
 	return nil
+}
+
+func healthCheckConfigBadRequest(err error) error {
+	msg := err.Error()
+	if strings.HasPrefix(msg, "config is required") {
+		return badRequestError("health_check.config is required for this type")
+	}
+	if strings.HasPrefix(msg, "unsupported health check type") {
+		return badRequestError("invalid health check type")
+	}
+	return badRequestError("health_check.config." + msg)
 }
 
 func parseHealthCheckDuration(value, field string) (time.Duration, error) {

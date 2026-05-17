@@ -9,7 +9,7 @@ on:
     types: [ published ]
 
 env:
-  GO_VERSION: '1.25.x'
+  GO_VERSION: '1.26.3'
   PYTHON_VERSION: '3.12'
   DOCKER_BUILDKIT: 1
 
@@ -60,6 +60,25 @@ jobs:
           file: ./coverage.out
           flags: unittests
           name: codecov-umbrella
+
+  vulncheck:
+    name: Go Vulnerability Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: make deps
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
 
   octavia-driver-test:
     name: Octavia Driver Test
@@ -113,7 +132,7 @@ jobs:
     name: Build Docker Images
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [lint, test, octavia-driver-test, build, proto]
+    needs: [lint, test, vulncheck, octavia-driver-test, build, proto]
     permissions:
       contents: write
       packages: write
@@ -282,7 +301,7 @@ jobs:
     name: Attach Binaries to Release
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [lint, test, octavia-driver-test, build, proto]
+    needs: [lint, test, vulncheck, octavia-driver-test, build, proto]
     permissions:
       contents: write
     steps:

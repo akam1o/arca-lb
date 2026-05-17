@@ -10,6 +10,7 @@ GOCACHE_DIR := $(CURDIR)/.gocache
 GOMODCACHE_DIR := $(CURDIR)/.gomodcache
 GOTMP_DIR := $(CURDIR)/.gotmp
 GO_ENV := GOCACHE=$(GOCACHE_DIR) GOMODCACHE=$(GOMODCACHE_DIR) GOTMPDIR=$(GOTMP_DIR)
+GOLANGCI_LINT_VERSION ?= v2.6.0
 
 PROTO_SRC := api/proto
 PROTO_OUT := pkg/grpc
@@ -47,8 +48,7 @@ test: goenv ## Run unit tests with race detector and coverage
 
 .PHONY: lint
 lint: goenv ## Run golangci-lint
-	$(call ensure_tool,golangci-lint)
-	$(GO_ENV) golangci-lint run --timeout=5m
+	$(GO_ENV) go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=10m
 
 .PHONY: proto
 proto: ## Generate gRPC code from protobuf

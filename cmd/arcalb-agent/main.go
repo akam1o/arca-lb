@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -235,12 +236,7 @@ func run() int {
 	// Start HTTP server for the container healthcheck and optional metrics before
 	// initial sync so liveness does not depend on stale dataplane cleanup time.
 	metricsServer := newAgentHTTPServer(cfg.Metrics, logger)
-	go func() {
-		logger.Info("agent HTTP server starting", "address", cfg.Metrics.Address, "metrics_enabled", cfg.Metrics.Enabled)
-		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("agent HTTP server error", "error", err)
-		}
-	}()
+	metricsErrCh := startAgentHTTPServer(metricsServer, cfg.Metrics, logger)
 
 	watcherErrCh := make(chan error, 1)
 	watcherSyncedCh := make(chan struct{})
@@ -261,6 +257,10 @@ func run() int {
 		}
 		shutdownAgent(metricsServer)
 		return 1
+	case err := <-metricsErrCh:
+		logger.Error("agent HTTP server exited before initial sync", "error", err)
+		shutdownAgent(metricsServer)
+		return 1
 	case <-watcherSyncedCh:
 	}
 
@@ -277,10 +277,25 @@ func run() int {
 			logger.Error("watcher exited with error", "error", err)
 			exitCode = 1
 		}
+	case err := <-metricsErrCh:
+		logger.Error("agent HTTP server exited with error", "error", err)
+		exitCode = 1
 	}
 
 	shutdownAgent(metricsServer)
 	return exitCode
+}
+
+func startAgentHTTPServer(server *http.Server, cfg agentconfig.MetricsSettings, logger *slog.Logger) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("agent HTTP server starting", "address", cfg.Address, "metrics_enabled", cfg.Enabled)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("agent HTTP server error", "error", err)
+			errCh <- err
+		}
+	}()
+	return errCh
 }
 
 func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {

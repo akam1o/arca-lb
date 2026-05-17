@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -63,6 +64,32 @@ func TestAgentHTTPMuxServesMetricsWhenEnabled(t *testing.T) {
 
 	if resp.Code != http.StatusOK {
 		t.Fatalf("/metrics status = %d, want %d", resp.Code, http.StatusOK)
+	}
+}
+
+func TestStartAgentHTTPServerReportsListenError(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	cfg := agentconfig.MetricsSettings{
+		Enabled: false,
+		Address: ln.Addr().String(),
+		Path:    "/metrics",
+	}
+	server := newAgentHTTPServer(cfg, logger)
+	errCh := startAgentHTTPServer(server, cfg, logger)
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("server error = nil, want listen error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for listen error")
 	}
 }
 

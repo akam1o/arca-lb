@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -51,11 +52,39 @@ func (s *Server) setupMiddleware() {
 	// Recovery middleware
 	s.router.Use(gin.Recovery())
 
+	// Request body size limit
+	s.router.Use(s.bodyLimitMiddleware())
+
 	// Logging middleware
 	s.router.Use(s.loggingMiddleware())
 
 	// CORS middleware
 	s.router.Use(s.corsMiddleware())
+}
+
+func (s *Server) bodyLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limit := s.config.Server.MaxBodyBytes
+		if limit <= 0 || c.Request.Body == nil {
+			c.Next()
+			return
+		}
+		if c.Request.ContentLength > limit {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		c.Next()
+	}
+}
+
+func handleBindError(c *gin.Context, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+		return
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 }
 
 // loggingMiddleware returns a Gin middleware for request logging

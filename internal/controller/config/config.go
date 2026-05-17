@@ -26,6 +26,7 @@ type ServerConfig struct {
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`
 	MaxHeaderBytes    int           `yaml:"max_header_bytes"`
+	MaxBodyBytes      int64         `yaml:"max_body_bytes"`
 	AllowedOrigins    []string      `yaml:"allowed_origins"` // CORS allowed origins
 }
 
@@ -123,6 +124,9 @@ func (c *Config) setDefaults() {
 	if c.Server.MaxHeaderBytes == 0 {
 		c.Server.MaxHeaderBytes = 1 << 20 // 1 MB
 	}
+	if c.Server.MaxBodyBytes == 0 {
+		c.Server.MaxBodyBytes = 1 << 20 // 1 MB
+	}
 	if len(c.Server.AllowedOrigins) == 0 {
 		c.Server.AllowedOrigins = []string{"http://localhost:3000"} // Default for development
 	}
@@ -143,6 +147,33 @@ func (c *Config) setDefaults() {
 }
 
 func (c *Config) validate() error {
+	if c.Server.Port < 1 || c.Server.Port > 65535 {
+		return fmt.Errorf("server.port must be between 1 and 65535")
+	}
+	if c.Server.ReadTimeout <= 0 {
+		return fmt.Errorf("server.read_timeout must be positive")
+	}
+	if c.Server.WriteTimeout <= 0 {
+		return fmt.Errorf("server.write_timeout must be positive")
+	}
+	if c.Server.ReadHeaderTimeout <= 0 {
+		return fmt.Errorf("server.read_header_timeout must be positive")
+	}
+	if c.Server.IdleTimeout <= 0 {
+		return fmt.Errorf("server.idle_timeout must be positive")
+	}
+	if c.Server.MaxHeaderBytes <= 0 {
+		return fmt.Errorf("server.max_header_bytes must be positive")
+	}
+	if c.Server.MaxBodyBytes <= 0 {
+		return fmt.Errorf("server.max_body_bytes must be positive")
+	}
+	if c.GRPC.Port < 1 || c.GRPC.Port > 65535 {
+		return fmt.Errorf("grpc.port must be between 1 and 65535")
+	}
+	if c.GRPC.RequireClientCert && !c.GRPC.TLS {
+		return fmt.Errorf("grpc.tls must be enabled when grpc.require_client_cert is enabled")
+	}
 	if c.GRPC.TLS {
 		if c.GRPC.CertFile == "" {
 			return fmt.Errorf("grpc.cert_file is required when grpc.tls is enabled")

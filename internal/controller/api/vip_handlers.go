@@ -163,7 +163,7 @@ func validateDSCPForEncap(encapType models.EncapType, dscp *uint8) error {
 func (s *Server) createVIP(c *gin.Context) {
 	var req CreateVIPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		handleBindError(c, err)
 		return
 	}
 	if err := validateHealthCheckRequest(req.HealthCheck); err != nil {
@@ -290,13 +290,13 @@ func (s *Server) updateVIP(c *gin.Context) {
 
 	var requestFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		handleBindError(c, err)
 		return
 	}
 
 	var req UpdateVIPRequest
 	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		handleBindError(c, err)
 		return
 	}
 

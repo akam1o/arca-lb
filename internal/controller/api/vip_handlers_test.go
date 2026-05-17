@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
@@ -37,6 +38,21 @@ func setupTestServer() (*Server, *testutil.MockDataStore) {
 	server := NewServer(cfg, mockDS, logger)
 
 	return server, mockDS
+}
+
+func TestRequestBodyLimitRejectsOversizedCreateVIP(t *testing.T) {
+	server, _ := setupTestServer()
+	server.config.Server.MaxBodyBytes = 32
+
+	body := `{"vip":"192.168.1.100","port":80,"protocol":"TCP"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/vips", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	assert.Contains(t, w.Body.String(), "request body too large")
 }
 
 func TestCreateVIP(t *testing.T) {

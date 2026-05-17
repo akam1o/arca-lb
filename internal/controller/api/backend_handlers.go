@@ -26,7 +26,7 @@ type UpdateBackendRequest struct {
 func (s *Server) createBackend(c *gin.Context) {
 	var req CreateBackendRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		handleBindError(c, err)
 		return
 	}
 
@@ -111,7 +111,7 @@ func (s *Server) updateBackend(c *gin.Context) {
 
 	var req UpdateBackendRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		handleBindError(c, err)
 		return
 	}
 

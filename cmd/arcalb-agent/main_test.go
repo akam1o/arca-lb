@@ -93,6 +93,27 @@ func TestStartAgentHTTPServerReportsListenError(t *testing.T) {
 	}
 }
 
+func TestNewAgentHTTPServerSetsDefensiveTimeouts(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := newAgentHTTPServer(agentconfig.MetricsSettings{
+		Address: "127.0.0.1:0",
+		Path:    "/metrics",
+	}, logger)
+
+	if server.ReadTimeout != agentHTTPReadTimeout {
+		t.Fatalf("ReadTimeout = %s, want %s", server.ReadTimeout, agentHTTPReadTimeout)
+	}
+	if server.ReadHeaderTimeout != agentHTTPReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %s, want %s", server.ReadHeaderTimeout, agentHTTPReadHeaderTimeout)
+	}
+	if server.WriteTimeout != agentHTTPWriteTimeout {
+		t.Fatalf("WriteTimeout = %s, want %s", server.WriteTimeout, agentHTTPWriteTimeout)
+	}
+	if server.IdleTimeout != agentHTTPIdleTimeout {
+		t.Fatalf("IdleTimeout = %s, want %s", server.IdleTimeout, agentHTTPIdleTimeout)
+	}
+}
+
 func TestVIPEventHandlerWithdrawsRouteWhenHealthCheckUpdateFails(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx, cancel := context.WithCancel(context.Background())

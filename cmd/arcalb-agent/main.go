@@ -35,6 +35,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	agentHTTPReadTimeout       = 5 * time.Second
+	agentHTTPReadHeaderTimeout = 5 * time.Second
+	agentHTTPWriteTimeout      = 10 * time.Second
+	agentHTTPIdleTimeout       = 60 * time.Second
+)
+
 func main() {
 	os.Exit(run())
 }
@@ -300,10 +307,12 @@ func startAgentHTTPServer(server *http.Server, cfg agentconfig.MetricsSettings, 
 
 func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {
 	return &http.Server{
-		Addr:         cfg.Address,
-		Handler:      newAgentHTTPMux(cfg, logger),
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Addr:              cfg.Address,
+		Handler:           newAgentHTTPMux(cfg, logger),
+		ReadTimeout:       agentHTTPReadTimeout,
+		ReadHeaderTimeout: agentHTTPReadHeaderTimeout,
+		WriteTimeout:      agentHTTPWriteTimeout,
+		IdleTimeout:       agentHTTPIdleTimeout,
 	}
 }
 

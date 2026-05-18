@@ -161,6 +161,14 @@ func (s *ConfigSyncService) WatchConfig(req *pb.WatchConfigRequest, stream pb.Co
 			}
 
 			s.logger.WithField("event_type", event.Type).Debug("Received watch event")
+			if event.Type == datastore.EventTypeError {
+				if event.Error == nil {
+					s.logger.Error("Datastore watch failed")
+					return status.Error(codes.Internal, "datastore watch error")
+				}
+				s.logger.WithError(event.Error).Error("Datastore watch failed")
+				return status.Errorf(codes.Internal, "datastore watch error: %v", event.Error)
+			}
 
 			// Get updated config
 			config, err := s.datastore.GetConfig(stream.Context())

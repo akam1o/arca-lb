@@ -377,6 +377,29 @@ func TestConfigSyncService_WatchConfig(t *testing.T) {
 			expectedError: codes.Internal,
 		},
 		{
+			name: "datastore watch error closes stream",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{
+					Revision: 5,
+					VIPs:     []models.VIPConfig{},
+				})
+				watchCh := make(chan datastore.WatchEvent, 1)
+				mock.SetWatchChannel(watchCh)
+				go func() {
+					time.Sleep(50 * time.Millisecond)
+					watchCh <- datastore.WatchEvent{
+						Type:  datastore.EventTypeError,
+						Error: errors.New("watch backend unavailable"),
+					}
+				}()
+			},
+			request: &pb.WatchConfigRequest{
+				AgentId:         "agent-1",
+				CurrentRevision: 5,
+			},
+			expectedError: codes.Internal,
+		},
+		{
 			name: "missing agent id",
 			setupMock: func(mock *testutil.MockDataStore) {
 				mock.SetConfig(&models.Config{Revision: 5})

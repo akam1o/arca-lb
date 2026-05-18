@@ -126,6 +126,16 @@ func validateEncapAddressFamily(vip string, encapType models.EncapType) error {
 	return nil
 }
 
+func validateExistingBackendAddressFamilies(backends []models.Backend, vip *models.VIP) error {
+	for _, backend := range backends {
+		if err := validateBackendAddressFamily(vip, backend.IP); err != nil {
+			return badRequestError("existing backend " + backend.ID + ": " + err.Error())
+		}
+	}
+
+	return nil
+}
+
 // createVIP handles POST /api/v1/vips
 func (s *Server) createVIP(c *gin.Context) {
 	var req CreateVIPRequest
@@ -313,6 +323,17 @@ func (s *Server) updateVIP(c *gin.Context) {
 	}
 
 	if err := validateDSCPForEncap(vip.EncapType, vip.DSCP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	backends, err := s.datastore.ListBackends(ctx, id)
+	if err != nil {
+		s.logger.WithError(err).WithField("vip_id", id).Error("Failed to list backends for VIP update validation")
+		handleDataStoreError(c, err, "Backend")
+		return
+	}
+	if err := validateExistingBackendAddressFamilies(backends, vip); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

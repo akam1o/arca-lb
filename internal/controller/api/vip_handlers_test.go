@@ -829,6 +829,44 @@ func TestUpdateVIPClearsDSCP(t *testing.T) {
 	require.Nil(t, storedVIP.DSCP)
 }
 
+func TestUpdateVIPRejectsExistingBackendAddressFamilyMismatch(t *testing.T) {
+	server, mockDS := setupTestServer()
+	ctx := context.TODO()
+
+	vip := &models.VIP{
+		ID:        "vip-1",
+		VIP:       "192.168.1.100",
+		Port:      80,
+		Protocol:  models.ProtocolTCP,
+		EncapType: models.EncapTypeGRE4,
+	}
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
+	require.NoError(t, mockDS.AddBackend(ctx, &models.Backend{
+		ID:     "backend-1",
+		VIPID:  "vip-1",
+		IP:     "10.0.0.1",
+		Weight: 1,
+	}))
+
+	body, err := json.Marshal(map[string]interface{}{
+		"encap_type": "GRE6",
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/vips/vip-1", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "existing backend backend-1")
+	assert.Contains(t, w.Body.String(), "backend ip must be IPv6 when encap_type is GRE6")
+
+	storedVIP, err := mockDS.GetVIP(ctx, "vip-1")
+	require.NoError(t, err)
+	assert.Equal(t, models.EncapTypeGRE4, storedVIP.EncapType)
+}
+
 func TestDeleteVIP(t *testing.T) {
 	server, mockDS := setupTestServer()
 	ctx := context.TODO()

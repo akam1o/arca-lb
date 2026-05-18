@@ -93,8 +93,12 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Set deadline for the entire operation
-	if err := conn.SetDeadline(startTime.Add(p.timeout)); err != nil {
+	// Set deadline for the entire operation.
+	deadline := startTime.Add(p.timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
 		return ProbeResult{
 			Success:   false,
 			Latency:   time.Since(startTime),
@@ -102,6 +106,8 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 			Timestamp: startTime,
 		}
 	}
+	stopCancelWatcher := bindTCPConnCancelToContext(ctx, conn)
+	defer stopCancelWatcher()
 
 	// If no send/expect, just successful connection is enough
 	if p.send == "" && p.expect == "" {
@@ -117,6 +123,9 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	if p.send != "" {
 		_, err := conn.Write([]byte(p.send))
 		if err != nil {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
 			return ProbeResult{
 				Success:   false,
 				Latency:   time.Since(startTime),
@@ -132,6 +141,9 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 		buffer := make([]byte, 4096)
 		n, err := conn.Read(buffer)
 		if err != nil {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
 			return ProbeResult{
 				Success:   false,
 				Latency:   time.Since(startTime),
@@ -165,4 +177,17 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 func (p *TCPProber) Close() error {
 	// No persistent resources to clean up
 	return nil
+}
+
+func bindTCPConnCancelToContext(ctx context.Context, conn net.Conn) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-done:
+		}
+	}()
+
+	return func() { close(done) }
 }

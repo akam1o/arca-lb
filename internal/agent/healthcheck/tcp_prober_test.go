@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"testing"
@@ -69,4 +70,55 @@ func TestTCPProberProbeWithIPv6Target(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("TCP server did not accept the probe connection")
 	}
+}
+
+func TestTCPProberProbeReadHonorsContextDeadline(t *testing.T) {
+	target, port := startSilentTCPServer(t)
+	prober, err := NewTCPProber(&models.HealthCheck{
+		Type:       models.HCTypeTCP,
+		TimeoutSec: 5,
+		Config: models.HCConfig{
+			"port":   port,
+			"expect": "OK",
+		},
+	}, logrus.New())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	result := prober.Probe(ctx, target)
+	elapsed := time.Since(start)
+
+	require.False(t, result.Success)
+	require.Error(t, result.Error)
+	require.True(t, errors.Is(result.Error, context.DeadlineExceeded), "error = %v", result.Error)
+	require.Less(t, elapsed, time.Second)
+}
+
+func TestTCPProberProbeReadHonorsContextCancel(t *testing.T) {
+	target, port := startSilentTCPServer(t)
+	prober, err := NewTCPProber(&models.HealthCheck{
+		Type:       models.HCTypeTCP,
+		TimeoutSec: 5,
+		Config: models.HCConfig{
+			"port":   port,
+			"expect": "OK",
+		},
+	}, logrus.New())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(50*time.Millisecond, cancel)
+	defer timer.Stop()
+
+	start := time.Now()
+	result := prober.Probe(ctx, target)
+	elapsed := time.Since(start)
+
+	require.False(t, result.Success)
+	require.Error(t, result.Error)
+	require.True(t, errors.Is(result.Error, context.Canceled), "error = %v", result.Error)
+	require.Less(t, elapsed, time.Second)
 }

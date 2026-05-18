@@ -3,6 +3,9 @@ package models
 import (
 	"fmt"
 	"math"
+	"net/http"
+	"net/url"
+	"strings"
 )
 
 // ValidateHealthCheckConfig validates the runtime health check config map.
@@ -37,7 +40,13 @@ func validateHTTPHealthCheckConfig(config HCConfig) error {
 	if err := optionalStringHealthCheckConfig(config, "path"); err != nil {
 		return err
 	}
+	if err := validateHTTPPathConfig(config["path"]); err != nil {
+		return err
+	}
 	if err := optionalStringHealthCheckConfig(config, "method"); err != nil {
+		return err
+	}
+	if err := validateHTTPMethodConfig(config["method"]); err != nil {
 		return err
 	}
 	if err := optionalStringHealthCheckConfig(config, "host_header"); err != nil {
@@ -52,6 +61,40 @@ func validateHTTPHealthCheckConfig(config HCConfig) error {
 		return err
 	}
 	return validateHeaders(config["headers"])
+}
+
+func validateHTTPPathConfig(raw any) error {
+	if raw == nil {
+		return nil
+	}
+	path, ok := raw.(string)
+	if !ok || path == "" {
+		return nil
+	}
+	parsedPath, err := url.Parse(path)
+	if err != nil {
+		return fmt.Errorf("path must be a valid relative HTTP path: %w", err)
+	}
+	if parsedPath.IsAbs() || parsedPath.Host != "" {
+		return fmt.Errorf("path must be a relative HTTP path")
+	}
+	return nil
+}
+
+func validateHTTPMethodConfig(raw any) error {
+	if raw == nil {
+		return nil
+	}
+	method, ok := raw.(string)
+	if !ok || method == "" {
+		return nil
+	}
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead, http.MethodPost:
+		return nil
+	default:
+		return fmt.Errorf("method must be one of GET, HEAD, POST")
+	}
 }
 
 func validateTCPHealthCheckConfig(config HCConfig) error {

@@ -5,6 +5,8 @@ package validation
 import (
 	"fmt"
 	"net"
+	"net/http"
+	"net/url"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 )
@@ -136,6 +138,20 @@ func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
 		}
 		if hc.HTTP.Port < 1 || hc.HTTP.Port > 65535 {
 			return fmt.Errorf("spec.healthCheck.http.port must be 1-65535")
+		}
+		switch hc.HTTP.Method {
+		case "", http.MethodGet, http.MethodHead, http.MethodPost:
+		default:
+			return fmt.Errorf("spec.healthCheck.http.method must be one of GET, HEAD, POST, got %q", hc.HTTP.Method)
+		}
+		if hc.HTTP.Path != "" {
+			parsedPath, err := url.Parse(hc.HTTP.Path)
+			if err != nil {
+				return fmt.Errorf("spec.healthCheck.http.path %q is not valid: %w", hc.HTTP.Path, err)
+			}
+			if parsedPath.IsAbs() || parsedPath.Host != "" {
+				return fmt.Errorf("spec.healthCheck.http.path must be relative, got %q", hc.HTTP.Path)
+			}
 		}
 		for i, code := range hc.HTTP.ExpectedCodes {
 			if code < 100 || code > 599 {

@@ -61,6 +61,33 @@ func TestValidateHealthCheckConfig(t *testing.T) {
 			wantErr: "headers values must be strings",
 		},
 		{
+			name:   "http rejects unsupported method",
+			hcType: HCTypeHTTP,
+			config: HCConfig{
+				"port":   8080,
+				"method": "TRACE",
+			},
+			wantErr: "method must be one of GET, HEAD, POST",
+		},
+		{
+			name:   "http rejects absolute URL path",
+			hcType: HCTypeHTTP,
+			config: HCConfig{
+				"port": 8080,
+				"path": "http://169.254.169.254/latest/meta-data",
+			},
+			wantErr: "path must be a relative HTTP path",
+		},
+		{
+			name:   "http rejects protocol-relative path",
+			hcType: HCTypeHTTP,
+			config: HCConfig{
+				"port": 8080,
+				"path": "//169.254.169.254/latest/meta-data",
+			},
+			wantErr: "path must be a relative HTTP path",
+		},
+		{
 			name:   "tcp accepts valid config",
 			hcType: HCTypeTCP,
 			config: HCConfig{

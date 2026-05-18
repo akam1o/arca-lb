@@ -53,9 +53,11 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 					Order("id ASC").
 					Limit(100).
 					Find(&changes).Error; err != nil {
-					eventChan <- datastore.WatchEvent{
+					if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 						Type:  datastore.EventTypeError,
 						Error: fmt.Errorf("failed to poll changes: %w", err),
+					}) {
+						return
 					}
 					continue
 				}
@@ -64,16 +66,20 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 				for _, change := range changes {
 					event, err := ds.buildWatchEvent(ctx, change)
 					if err != nil {
-						eventChan <- datastore.WatchEvent{
+						lastID = change.ID
+						if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 							Type:  datastore.EventTypeError,
 							Error: fmt.Errorf("failed to build watch event: %w", err),
+						}) {
+							return
 						}
-						lastID = change.ID
 						continue
 					}
 
 					if event != nil {
-						eventChan <- *event
+						if !datastore.SendWatchEvent(ctx, eventChan, *event) {
+							return
+						}
 					}
 
 					lastID = change.ID

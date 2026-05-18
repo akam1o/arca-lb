@@ -185,6 +185,9 @@ func (c *Client) connect() error {
 	if c.config.Controller.APIKey != "" && !c.config.Controller.TLS.Enabled {
 		return fmt.Errorf("controller.tls.enabled must be enabled when controller.api_key is set")
 	}
+	if c.config.Controller.APIKey != "" && c.config.Controller.TLS.InsecureSkipVerify {
+		return fmt.Errorf("controller.tls.insecure_skip_verify must be false when controller.api_key is set")
+	}
 
 	// Configure TLS if enabled
 	if c.config.Controller.TLS.Enabled {

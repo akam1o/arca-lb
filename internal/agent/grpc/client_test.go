@@ -738,6 +738,48 @@ func TestClientStartRejectsAPIKeyWithoutTLS(t *testing.T) {
 	}
 }
 
+func TestClientStartRejectsAPIKeyWithInsecureSkipVerify(t *testing.T) {
+	const apiKey = "agent-controller-secret"
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			ID:                "test-agent",
+			HeartbeatInterval: 100 * time.Millisecond,
+		},
+		Controller: config.ControllerConfig{
+			Address:         "bufnet",
+			APIKey:          apiKey,
+			Timeout:         2 * time.Second,
+			MaxRetries:      3,
+			RetryBackoff:    100 * time.Millisecond,
+			MaxRetryBackoff: 1 * time.Second,
+			TLS: config.TLSConfig{
+				Enabled:            true,
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	client := NewClient(cfg, logger, nil)
+
+	err := client.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected API key with insecure TLS verification to fail Start")
+	}
+	if got := err.Error(); !strings.Contains(got, "controller.tls.insecure_skip_verify must be false when controller.api_key is set") {
+		t.Fatalf("Start error = %q, want controller API key insecure TLS validation error", got)
+	}
+	if isClientStarted(client) {
+		t.Fatal("client remains started after API key insecure TLS failure")
+	}
+	if isClientConnected(client) {
+		t.Fatal("client remains connected after API key insecure TLS failure")
+	}
+}
+
 func TestClientLoadTLSConfigAllowsServerTLSWithoutClientCertificate(t *testing.T) {
 	caFile := writeSelfSignedCACert(t)
 	client := NewClient(&config.Config{

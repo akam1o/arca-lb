@@ -229,6 +229,37 @@ log:
 	}
 }
 
+func TestLoadConfigRejectsControllerAPIKeyWithInsecureSkipVerify(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	configContent := `
+agent:
+  id: "test-agent"
+
+controller:
+  address: "localhost:50051"
+  api_key: "agent-controller-secret"
+  tls:
+    enabled: true
+    ca_file: /tmp/ca.crt
+    insecure_skip_verify: true
+
+vpp:
+  socket_path: "/tmp/vpp.sock"
+
+log:
+  level: "info"
+  format: "json"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := LoadConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "controller.tls.insecure_skip_verify must be false when controller.api_key is set") {
+		t.Fatalf("LoadConfig error = %v, want controller.api_key insecure TLS validation error", err)
+	}
+}
+
 func TestLoadConfigAcceptsControllerAPIKeyWithTLS(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "agent.yaml")
 	configContent := `

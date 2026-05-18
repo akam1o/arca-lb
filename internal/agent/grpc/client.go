@@ -233,13 +233,11 @@ func (c *Client) connect() error {
 
 		if attempt < c.config.Controller.MaxRetries {
 			// Sleep with cancellation support
-			select {
-			case <-c.stopCh:
-				return fmt.Errorf("connection cancelled during retry")
-			case <-c.ctx.Done():
+			if !sleepWithStop(c.ctx, c.stopCh, backoff) {
+				if c.ctx.Err() == nil {
+					return fmt.Errorf("connection cancelled during retry")
+				}
 				return fmt.Errorf("connection cancelled: %w", c.ctx.Err())
-			case <-time.After(backoff):
-				// Continue to next attempt
 			}
 
 			backoff *= 2
@@ -353,13 +351,8 @@ func (c *Client) watchLoop(ctx context.Context) {
 
 				// Avoid tight retry loops when the server repeatedly closes
 				// the watch stream without a transport-level connection error.
-				select {
-				case <-c.stopCh:
+				if !sleepWithStop(ctx, c.stopCh, c.config.Controller.RetryBackoff) {
 					return
-				case <-ctx.Done():
-					return
-				case <-time.After(c.config.Controller.RetryBackoff):
-					// Continue to retry
 				}
 			}
 		}
@@ -435,6 +428,31 @@ func (c *Client) watch(ctx context.Context) error {
 				c.logger.WithField("error", resp.Error).Warn("Received error from controller")
 			}
 		}
+	}
+}
+
+func sleepWithStop(ctx context.Context, stopCh <-chan struct{}, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(d)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+
+	select {
+	case <-stopCh:
+		return false
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

@@ -996,6 +996,38 @@ func TestClientStopDoesNotHoldLockWhileWaitingForWorkers(t *testing.T) {
 	}
 }
 
+func TestSleepWithStopReturnsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	if sleepWithStop(ctx, make(chan struct{}), time.Hour) {
+		t.Fatal("sleepWithStop returned true after context cancellation")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("sleepWithStop took %s after context cancellation", elapsed)
+	}
+}
+
+func TestSleepWithStopReturnsOnStopSignal(t *testing.T) {
+	stopCh := make(chan struct{})
+	close(stopCh)
+
+	start := time.Now()
+	if sleepWithStop(context.Background(), stopCh, time.Hour) {
+		t.Fatal("sleepWithStop returned true after stop signal")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("sleepWithStop took %s after stop signal", elapsed)
+	}
+}
+
+func TestSleepWithStopReturnsTrueAfterDuration(t *testing.T) {
+	if !sleepWithStop(context.Background(), make(chan struct{}), time.Millisecond) {
+		t.Fatal("sleepWithStop returned false after timer elapsed")
+	}
+}
+
 func TestClientWatchError(t *testing.T) {
 	mock := &mockConfigSyncServer{
 		registerSuccess:  true,

@@ -240,8 +240,6 @@ controller:
   api_key: "agent-controller-secret"
   tls:
     enabled: true
-    cert_file: /tmp/client.crt
-    key_file: /tmp/client.key
     ca_file: /tmp/ca.crt
 
 vpp:
@@ -264,6 +262,9 @@ log:
 	}
 	if !cfg.Controller.TLS.Enabled {
 		t.Fatal("Controller.TLS.Enabled = false, want true")
+	}
+	if cfg.Controller.TLS.CertFile != "" || cfg.Controller.TLS.KeyFile != "" {
+		t.Fatalf("client certificate files = %q/%q, want optional client cert unset", cfg.Controller.TLS.CertFile, cfg.Controller.TLS.KeyFile)
 	}
 }
 
@@ -377,7 +378,7 @@ func TestValidation(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "TLS enabled without cert",
+			name: "TLS enabled without CA",
 			cfg: &Config{
 				Agent: AgentConfig{
 					ID:                "test-agent",
@@ -410,6 +411,79 @@ func TestValidation(t *testing.T) {
 				},
 			},
 			wantErr: true,
+		},
+		{
+			name: "TLS enabled with partial client certificate",
+			cfg: &Config{
+				Agent: AgentConfig{
+					ID:                "test-agent",
+					ReconcileInterval: 30 * time.Second,
+					HeartbeatInterval: 10 * time.Second,
+				},
+				Controller: ControllerConfig{
+					Address:         "localhost:50051",
+					Timeout:         10 * time.Second,
+					MaxRetries:      5,
+					RetryBackoff:    1 * time.Second,
+					MaxRetryBackoff: 30 * time.Second,
+					TLS: TLSConfig{
+						Enabled:  true,
+						CertFile: "/tmp/client.crt",
+						CAFile:   "/tmp/ca.crt",
+					},
+				},
+				VPP: VPPConfig{
+					SocketPath:        "/run/vpp/api.sock",
+					ConnectTimeout:    5 * time.Second,
+					ReconnectInterval: 5 * time.Second,
+				},
+				HealthCheck: HealthCheckConfig{
+					WorkerCount:         4,
+					DefaultTimeout:      3 * time.Second,
+					MaxConcurrentChecks: 100,
+				},
+				Log: LogConfig{
+					Level:  "info",
+					Format: "json",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "TLS enabled without client certificate",
+			cfg: &Config{
+				Agent: AgentConfig{
+					ID:                "test-agent",
+					ReconcileInterval: 30 * time.Second,
+					HeartbeatInterval: 10 * time.Second,
+				},
+				Controller: ControllerConfig{
+					Address:         "localhost:50051",
+					Timeout:         10 * time.Second,
+					MaxRetries:      5,
+					RetryBackoff:    1 * time.Second,
+					MaxRetryBackoff: 30 * time.Second,
+					TLS: TLSConfig{
+						Enabled: true,
+						CAFile:  "/tmp/ca.crt",
+					},
+				},
+				VPP: VPPConfig{
+					SocketPath:        "/run/vpp/api.sock",
+					ConnectTimeout:    5 * time.Second,
+					ReconnectInterval: 5 * time.Second,
+				},
+				HealthCheck: HealthCheckConfig{
+					WorkerCount:         4,
+					DefaultTimeout:      3 * time.Second,
+					MaxConcurrentChecks: 100,
+				},
+				Log: LogConfig{
+					Level:  "info",
+					Format: "json",
+				},
+			},
+			wantErr: false,
 		},
 		{
 			name: "invalid VPP flow table length",

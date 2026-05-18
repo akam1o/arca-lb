@@ -392,14 +392,11 @@ func validate(cfg *Config) error {
 
 	// Validate TLS settings
 	if cfg.Controller.TLS.Enabled {
-		if cfg.Controller.TLS.CertFile == "" {
-			return fmt.Errorf("tls.cert_file is required when TLS is enabled")
-		}
-		if cfg.Controller.TLS.KeyFile == "" {
-			return fmt.Errorf("tls.key_file is required when TLS is enabled")
-		}
 		if cfg.Controller.TLS.CAFile == "" {
 			return fmt.Errorf("tls.ca_file is required when TLS is enabled")
+		}
+		if (cfg.Controller.TLS.CertFile == "") != (cfg.Controller.TLS.KeyFile == "") {
+			return fmt.Errorf("tls.cert_file and tls.key_file must both be set when client certificate is configured")
 		}
 	}
 

@@ -575,11 +575,6 @@ func (c *Client) applyConfig(config *models.Config) error {
 
 // loadTLSConfig loads TLS configuration
 func (c *Client) loadTLSConfig() (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(c.config.Controller.TLS.CertFile, c.config.Controller.TLS.KeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load client cert: %w", err)
-	}
-
 	caData, err := os.ReadFile(c.config.Controller.TLS.CAFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CA cert: %w", err)
@@ -590,11 +585,23 @@ func (c *Client) loadTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to parse CA cert")
 	}
 
-	return &tls.Config{
-		Certificates:       []tls.Certificate{cert},
+	tlsConfig := &tls.Config{
 		RootCAs:            caPool,
 		InsecureSkipVerify: c.config.Controller.TLS.InsecureSkipVerify,
-	}, nil
+	}
+
+	if c.config.Controller.TLS.CertFile != "" || c.config.Controller.TLS.KeyFile != "" {
+		if c.config.Controller.TLS.CertFile == "" || c.config.Controller.TLS.KeyFile == "" {
+			return nil, fmt.Errorf("tls.cert_file and tls.key_file must both be set when client certificate is configured")
+		}
+		cert, err := tls.LoadX509KeyPair(c.config.Controller.TLS.CertFile, c.config.Controller.TLS.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client cert: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsConfig, nil
 }
 
 // convertProtoToConfig converts protobuf config to internal model

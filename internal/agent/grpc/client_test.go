@@ -2,10 +2,18 @@ package grpc
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -728,6 +736,50 @@ func TestClientStartRejectsAPIKeyWithoutTLS(t *testing.T) {
 	}
 }
 
+func TestClientLoadTLSConfigAllowsServerTLSWithoutClientCertificate(t *testing.T) {
+	caFile := writeSelfSignedCACert(t)
+	client := NewClient(&config.Config{
+		Controller: config.ControllerConfig{
+			TLS: config.TLSConfig{
+				Enabled: true,
+				CAFile:  caFile,
+			},
+		},
+	}, logrus.New(), nil)
+
+	tlsConfig, err := client.loadTLSConfig()
+	if err != nil {
+		t.Fatalf("loadTLSConfig: %v", err)
+	}
+	if tlsConfig.RootCAs == nil {
+		t.Fatal("RootCAs is nil")
+	}
+	if got := len(tlsConfig.Certificates); got != 0 {
+		t.Fatalf("client certificate count = %d, want 0", got)
+	}
+}
+
+func TestClientLoadTLSConfigRejectsPartialClientCertificate(t *testing.T) {
+	caFile := writeSelfSignedCACert(t)
+	client := NewClient(&config.Config{
+		Controller: config.ControllerConfig{
+			TLS: config.TLSConfig{
+				Enabled:  true,
+				CAFile:   caFile,
+				CertFile: "/tmp/client.crt",
+			},
+		},
+	}, logrus.New(), nil)
+
+	_, err := client.loadTLSConfig()
+	if err == nil {
+		t.Fatal("expected partial client certificate config to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "tls.cert_file and tls.key_file must both be set") {
+		t.Fatalf("loadTLSConfig error = %q, want partial client certificate error", got)
+	}
+}
+
 func TestClientStartFailsWhenAPIKeyIsMissing(t *testing.T) {
 	mock := &mockConfigSyncServer{
 		registerSuccess:  true,
@@ -771,6 +823,39 @@ func TestClientStartFailsWhenAPIKeyIsMissing(t *testing.T) {
 	if isClientConnected(client) {
 		t.Fatal("client remains connected after missing API key failure")
 	}
+}
+
+func writeSelfSignedCACert(t *testing.T) string {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "test-ca",
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	path := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(path, certPEM, 0600); err != nil {
+		t.Fatalf("write CA certificate: %v", err)
+	}
+	return path
 }
 
 func TestClientCancellation(t *testing.T) {

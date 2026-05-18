@@ -88,6 +88,41 @@ func TestV2ManagerQueuesRecreateUntilDeleteCleanupSucceeds(t *testing.T) {
 	}, "queued recreated VIP apply after delete cleanup retry")
 }
 
+func TestV2ManagerStopDoesNotWaitForPendingDeleteRetry(t *testing.T) {
+	dp := newRecordingDataPlane()
+	dp.setRemoveErr(errors.New("vpp remove failed"))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(dp, routing.NewNoop(), nil, nil, time.Hour, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+
+	vip := newV2TestVIP("default", "web", "uid-1")
+	vipKey := "default/web"
+	mgr.OnVIPUpdate(vip)
+	waitFor(t, func() bool { return dp.applyCount() == 1 }, "initial VIP apply")
+
+	mgr.mu.Lock()
+	mgr.vips[vipKey].deleteRetryInterval = time.Hour
+	mgr.mu.Unlock()
+
+	mgr.OnVIPDelete(vip)
+	waitFor(t, func() bool { return dp.removeCount() >= 1 }, "failed delete cleanup")
+
+	stopped := make(chan struct{})
+	go func() {
+		mgr.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("manager stop waited for pending delete retry timer")
+	}
+}
+
 func TestV2ReconcilerReportsStatusAndWithdrawsRouteWhenDataPlaneFails(t *testing.T) {
 	dp := newRecordingDataPlane()
 	dp.applyErr = errors.New("apply failed")

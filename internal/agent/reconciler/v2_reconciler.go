@@ -664,7 +664,27 @@ func (vr *vipReconciler) run(ctx context.Context) {
 	defer ticker.Stop()
 
 	var deleteVIP *v1alpha1.VirtualIP
-	var deleteRetry <-chan time.Time
+	var deleteRetry *time.Timer
+	var deleteRetryC <-chan time.Time
+	stopDeleteRetry := func() {
+		if deleteRetry == nil {
+			return
+		}
+		if !deleteRetry.Stop() {
+			select {
+			case <-deleteRetry.C:
+			default:
+			}
+		}
+		deleteRetry = nil
+		deleteRetryC = nil
+	}
+	defer stopDeleteRetry()
+	scheduleDeleteRetry := func() {
+		stopDeleteRetry()
+		deleteRetry = time.NewTimer(vr.deleteRetryInterval)
+		deleteRetryC = deleteRetry.C
+	}
 
 	vr.logger.Info("per-VIP reconciler started")
 
@@ -683,19 +703,20 @@ func (vr *vipReconciler) run(ctx context.Context) {
 				if vr.handleDelete(ctx, deleteVIP) {
 					return // exit goroutine after delete
 				}
-				deleteRetry = time.After(vr.deleteRetryInterval)
+				scheduleDeleteRetry()
 				continue
 			}
 
-		case <-deleteRetry:
+		case <-deleteRetryC:
+			deleteRetry = nil
+			deleteRetryC = nil
 			if deleteVIP == nil {
-				deleteRetry = nil
 				continue
 			}
 			if vr.handleDelete(ctx, deleteVIP) {
 				return // exit goroutine after delete
 			}
-			deleteRetry = time.After(vr.deleteRetryInterval)
+			scheduleDeleteRetry()
 
 		case <-vr.reconcileCh:
 			if deleteVIP == nil {

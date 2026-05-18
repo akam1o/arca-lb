@@ -91,11 +91,6 @@ func NewEtcdDataStore(ctx context.Context, cfg *datastore.Config) (datastore.Dat
 
 // loadTLSConfig loads TLS configuration from files
 func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load key pair: %w", err)
-	}
-
 	caCert, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CA file: %w", err)
@@ -106,10 +101,23 @@ func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to append CA cert")
 	}
 
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caCertPool,
-	}, nil
+	tlsConfig := &tls.Config{
+		RootCAs:    caCertPool,
+		MinVersion: tls.VersionTLS12,
+	}
+
+	if certFile != "" || keyFile != "" {
+		if certFile == "" || keyFile == "" {
+			return nil, fmt.Errorf("datastore.etcd.cert_file and datastore.etcd.key_file must both be set when client certificate is configured")
+		}
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load key pair: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsConfig, nil
 }
 
 // Close closes the etcd client connection

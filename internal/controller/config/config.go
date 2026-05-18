@@ -249,14 +249,11 @@ func validateEtcdConfig(cfg EtcdConfig) error {
 		return fmt.Errorf("datastore.etcd.request_timeout must be non-negative")
 	}
 	if cfg.TLS {
-		if cfg.CertFile == "" {
-			return fmt.Errorf("datastore.etcd.cert_file is required when datastore.etcd.tls is enabled")
-		}
-		if cfg.KeyFile == "" {
-			return fmt.Errorf("datastore.etcd.key_file is required when datastore.etcd.tls is enabled")
-		}
 		if cfg.CAFile == "" {
 			return fmt.Errorf("datastore.etcd.ca_file is required when datastore.etcd.tls is enabled")
+		}
+		if (cfg.CertFile == "") != (cfg.KeyFile == "") {
+			return fmt.Errorf("datastore.etcd.cert_file and datastore.etcd.key_file must both be set when client certificate is configured")
 		}
 	}
 	return nil

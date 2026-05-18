@@ -191,14 +191,26 @@ func TestLoadConfigRejectsInvalidDataStoreSettings(t *testing.T) {
 			wantErr: "datastore.etcd.endpoints",
 		},
 		{
-			name: "etcd tls missing cert",
+			name: "etcd tls missing ca",
 			yaml: `datastore:
   type: etcd
   etcd:
     endpoints: ["127.0.0.1:2379"]
     tls: true
 `,
-			wantErr: "datastore.etcd.cert_file",
+			wantErr: "datastore.etcd.ca_file",
+		},
+		{
+			name: "etcd tls partial client certificate",
+			yaml: `datastore:
+  type: etcd
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+    tls: true
+    cert_file: /tmp/client.crt
+    ca_file: /tmp/ca.crt
+`,
+			wantErr: "datastore.etcd.cert_file and datastore.etcd.key_file",
 		},
 		{
 			name: "etcd negative timeout",
@@ -251,6 +263,31 @@ func TestLoadConfigRejectsInvalidDataStoreSettings(t *testing.T) {
 				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadConfigAcceptsEtcdTLSWithoutClientCertificate(t *testing.T) {
+	path := writeConfigFile(t, `
+datastore:
+  type: etcd
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+    tls: true
+    ca_file: /tmp/ca.crt
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.DataStore.Etcd.TLS {
+		t.Fatal("DataStore.Etcd.TLS = false, want true")
+	}
+	if cfg.DataStore.Etcd.CertFile != "" || cfg.DataStore.Etcd.KeyFile != "" {
+		t.Fatalf("etcd client certificate files = %q/%q, want optional client cert unset", cfg.DataStore.Etcd.CertFile, cfg.DataStore.Etcd.KeyFile)
+	}
+	if cfg.DataStore.Etcd.CAFile != "/tmp/ca.crt" {
+		t.Fatalf("DataStore.Etcd.CAFile = %q, want /tmp/ca.crt", cfg.DataStore.Etcd.CAFile)
 	}
 }
 

@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -123,9 +124,7 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	if p.send != "" {
 		_, err := conn.Write([]byte(p.send))
 		if err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			}
+			err = tcpProbeContextError(ctx, err)
 			return ProbeResult{
 				Success:   false,
 				Latency:   time.Since(startTime),
@@ -141,9 +140,7 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 		buffer := make([]byte, 4096)
 		n, err := conn.Read(buffer)
 		if err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			}
+			err = tcpProbeContextError(ctx, err)
 			return ProbeResult{
 				Success:   false,
 				Latency:   time.Since(startTime),
@@ -177,6 +174,20 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 func (p *TCPProber) Close() error {
 	// No persistent resources to clean up
 	return nil
+}
+
+func tcpProbeContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return context.DeadlineExceeded
+		}
+	}
+	return err
 }
 
 func bindTCPConnCancelToContext(ctx context.Context, conn net.Conn) func() {

@@ -221,9 +221,7 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 
 	if p.send != "" {
 		if _, err := conn.Write([]byte(p.send)); err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			}
+			err = tcpProbeContextError(ctx, err)
 			return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 		}
 	}
@@ -232,9 +230,7 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 		buf := make([]byte, 4096)
 		n, err := conn.Read(buf)
 		if err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			}
+			err = tcpProbeContextError(ctx, err)
 			return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 		}
 		if !strings.Contains(string(buf[:n]), p.expectedResponse) {

@@ -3,6 +3,7 @@ package healthcheck
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -128,6 +129,9 @@ func TestTCPProberReadHonorsContextDeadline(t *testing.T) {
 	if result.Error == nil {
 		t.Fatal("expected probe error")
 	}
+	if !errors.Is(result.Error, context.DeadlineExceeded) {
+		t.Fatalf("probe error = %v, want context deadline exceeded", result.Error)
+	}
 	if elapsed > time.Second {
 		t.Fatalf("probe took %s, want it to return when context deadline expires", elapsed)
 	}
@@ -150,6 +154,9 @@ func TestTCPProberReadHonorsContextCancel(t *testing.T) {
 	}
 	if result.Error == nil {
 		t.Fatal("expected probe error")
+	}
+	if !errors.Is(result.Error, context.Canceled) {
+		t.Fatalf("probe error = %v, want context canceled", result.Error)
 	}
 	if elapsed > time.Second {
 		t.Fatalf("probe took %s, want it to return when context is cancelled", elapsed)

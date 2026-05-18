@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Mock gRPC server for testing
@@ -1390,6 +1391,34 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 				Vips: []*pb.VIPConfig{{}},
 			},
 			wantErr: "vip config at index 0 is missing vip",
+		},
+		{
+			name: "invalid dscp above range",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:   "vip-1",
+							Dscp: wrapperspb.UInt32(64),
+						},
+					},
+				},
+			},
+			wantErr: "vip config at index 0 dscp must be between 0 and 63",
+		},
+		{
+			name: "zero dscp for default L3DSR",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:   "vip-1",
+							Dscp: wrapperspb.UInt32(0),
+						},
+					},
+				},
+			},
+			wantErr: "vip config at index 0 dscp must be 1-63 when encap_type is L3DSR",
 		},
 		{
 			name: "invalid health check config json",

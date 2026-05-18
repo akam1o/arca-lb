@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // ConfigHandler is called when a new configuration is received
@@ -624,12 +625,10 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 			return nil, fmt.Errorf("vip config at index %d is missing vip", i)
 		}
 
-		var dscp *uint8
-		if pbVipConfig.Vip.Dscp != nil {
-			if pbVipConfig.Vip.Dscp.Value <= 63 {
-				v := uint8(pbVipConfig.Vip.Dscp.Value)
-				dscp = &v
-			}
+		encapType := c.convertProtoEncapType(pbVipConfig.Vip.EncapType)
+		dscp, err := convertProtoDSCP(i, encapType, pbVipConfig.Vip.Dscp)
+		if err != nil {
+			return nil, err
 		}
 		vipCreatedAt := time.Time{}
 		if pbVipConfig.Vip.CreatedAt != nil {
@@ -647,7 +646,7 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 				Port:      int(pbVipConfig.Vip.Port),
 				Protocol:  c.convertProtoProtocol(pbVipConfig.Vip.Protocol),
 				LBMethod:  c.convertProtoLBMethod(pbVipConfig.Vip.LbMethod),
-				EncapType: c.convertProtoEncapType(pbVipConfig.Vip.EncapType),
+				EncapType: encapType,
 				DSCP:      dscp,
 				CreatedAt: vipCreatedAt,
 				UpdatedAt: vipUpdatedAt,
@@ -721,6 +720,28 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 	}
 
 	return config, nil
+}
+
+func convertProtoDSCP(vipIndex int, encapType models.EncapType, dscp *wrapperspb.UInt32Value) (*uint8, error) {
+	if dscp == nil {
+		return nil, nil
+	}
+	if dscp.Value > 63 {
+		return nil, fmt.Errorf("vip config at index %d dscp must be between 0 and 63, got %d", vipIndex, dscp.Value)
+	}
+	if effectiveProtoEncapType(encapType) == models.EncapTypeL3DSR && dscp.Value == 0 {
+		return nil, fmt.Errorf("vip config at index %d dscp must be 1-63 when encap_type is L3DSR", vipIndex)
+	}
+
+	value := uint8(dscp.Value)
+	return &value, nil
+}
+
+func effectiveProtoEncapType(encapType models.EncapType) models.EncapType {
+	if encapType == "" {
+		return models.EncapTypeL3DSR
+	}
+	return encapType
 }
 
 // convertProtoProtocol converts protobuf protocol to internal model

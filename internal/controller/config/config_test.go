@@ -109,6 +109,81 @@ func TestLoadConfigRejectsInvalidGRPCAPIKey(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsServerAPIKeyWithoutTLS(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+server:
+  api_key: controller-rest-secret
+`)
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "server.tls must be enabled when server.api_key is set") {
+		t.Fatalf("LoadConfig error = %v, want server.api_key TLS validation error", err)
+	}
+}
+
+func TestLoadConfigRequiresServerTLSFiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "missing cert",
+			yaml: `
+server:
+  tls: true
+`,
+			wantErr: "server.cert_file is required",
+		},
+		{
+			name: "missing key",
+			yaml: `
+server:
+  tls: true
+  cert_file: /tmp/server.crt
+`,
+			wantErr: "server.key_file is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, minimalEtcdConfig()+tt.yaml)
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsServerTLSWithAPIKey(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+server:
+  tls: true
+  cert_file: /tmp/server.crt
+  key_file: /tmp/server.key
+  api_key: controller-rest-secret
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.Server.TLS {
+		t.Fatal("Server.TLS = false, want true")
+	}
+	if cfg.Server.CertFile != "/tmp/server.crt" {
+		t.Fatalf("Server.CertFile = %q", cfg.Server.CertFile)
+	}
+	if cfg.Server.KeyFile != "/tmp/server.key" {
+		t.Fatalf("Server.KeyFile = %q", cfg.Server.KeyFile)
+	}
+	if cfg.Server.APIKey != "controller-rest-secret" {
+		t.Fatalf("Server.APIKey = %q", cfg.Server.APIKey)
+	}
+}
+
 func TestLoadConfigRejectsGRPCAPIKeyWithoutTLS(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:

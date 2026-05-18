@@ -23,6 +23,9 @@ type ServerConfig struct {
 	Host              string        `yaml:"host"`
 	Port              int           `yaml:"port"`
 	APIKey            string        `yaml:"api_key"`
+	TLS               bool          `yaml:"tls"`
+	CertFile          string        `yaml:"cert_file"`
+	KeyFile           string        `yaml:"key_file"`
 	ReadTimeout       time.Duration `yaml:"read_timeout"`
 	WriteTimeout      time.Duration `yaml:"write_timeout"`
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
@@ -156,6 +159,17 @@ func (c *Config) validate() error {
 	}
 	if err := validateAPIKey("server.api_key", c.Server.APIKey); err != nil {
 		return err
+	}
+	if c.Server.APIKey != "" && !c.Server.TLS {
+		return fmt.Errorf("server.tls must be enabled when server.api_key is set")
+	}
+	if c.Server.TLS {
+		if c.Server.CertFile == "" {
+			return fmt.Errorf("server.cert_file is required when server.tls is enabled")
+		}
+		if c.Server.KeyFile == "" {
+			return fmt.Errorf("server.key_file is required when server.tls is enabled")
+		}
 	}
 	if c.Server.ReadTimeout <= 0 {
 		return fmt.Errorf("server.read_timeout must be positive")

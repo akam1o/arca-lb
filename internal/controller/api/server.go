@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -314,7 +315,25 @@ func (s *Server) getRevision(c *gin.Context) {
 func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Server.Host, s.config.Server.Port)
 
-	s.httpServer = &http.Server{
+	s.httpServer = s.newHTTPServer(addr)
+
+	s.logger.WithField("addr", addr).Info("Starting REST API server")
+
+	var err error
+	if s.config.Server.TLS {
+		err = s.httpServer.ListenAndServeTLS(s.config.Server.CertFile, s.config.Server.KeyFile)
+	} else {
+		err = s.httpServer.ListenAndServe()
+	}
+	if err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("failed to start server: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Server) newHTTPServer(addr string) *http.Server {
+	server := &http.Server{
 		Addr:              addr,
 		Handler:           s.router,
 		ReadTimeout:       s.config.Server.ReadTimeout,
@@ -323,14 +342,13 @@ func (s *Server) Start() error {
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		MaxHeaderBytes:    s.config.Server.MaxHeaderBytes,
 	}
-
-	s.logger.WithField("addr", addr).Info("Starting REST API server")
-
-	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("failed to start server: %w", err)
+	if s.config.Server.TLS {
+		server.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
 	}
 
-	return nil
+	return server
 }
 
 // Shutdown gracefully shuts down the HTTP server

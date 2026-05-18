@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -103,6 +104,28 @@ func validateDSCPForEncap(encapType models.EncapType, dscp *uint8) error {
 	return nil
 }
 
+func validateEncapAddressFamily(vip string, encapType models.EncapType) error {
+	ip := net.ParseIP(vip)
+	if ip == nil {
+		return nil
+	}
+
+	effectiveEncap := effectiveEncapType(encapType)
+	isIPv4 := ip.To4() != nil
+	switch effectiveEncap {
+	case models.EncapTypeL3DSR, models.EncapTypeNAT4:
+		if !isIPv4 {
+			return badRequestError("encap_type " + string(effectiveEncap) + " requires an IPv4 vip")
+		}
+	case models.EncapTypeNAT6:
+		if isIPv4 {
+			return badRequestError("encap_type NAT6 requires an IPv6 vip")
+		}
+	}
+
+	return nil
+}
+
 // createVIP handles POST /api/v1/vips
 func (s *Server) createVIP(c *gin.Context) {
 	var req CreateVIPRequest
@@ -111,6 +134,11 @@ func (s *Server) createVIP(c *gin.Context) {
 		return
 	}
 	if err := validateHealthCheckRequest(req.HealthCheck); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validateEncapAddressFamily(req.VIP, req.EncapType); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -277,6 +305,11 @@ func (s *Server) updateVIP(c *gin.Context) {
 		} else {
 			vip.DSCP = req.DSCP
 		}
+	}
+
+	if err := validateEncapAddressFamily(vip.VIP, vip.EncapType); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	if err := validateDSCPForEncap(vip.EncapType, vip.DSCP); err != nil {

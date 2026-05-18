@@ -466,6 +466,35 @@ func TestCreateVIP(t *testing.T) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
+		{
+			name: "IPv6 VIP with default L3DSR",
+			requestBody: map[string]interface{}{
+				"vip":      "2001:db8::100",
+				"port":     80,
+				"protocol": "TCP",
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "IPv6 VIP with NAT4",
+			requestBody: map[string]interface{}{
+				"vip":        "2001:db8::100",
+				"port":       80,
+				"protocol":   "TCP",
+				"encap_type": "NAT4",
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "IPv4 VIP with NAT6",
+			requestBody: map[string]interface{}{
+				"vip":        "192.168.1.100",
+				"port":       80,
+				"protocol":   "TCP",
+				"encap_type": "NAT6",
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -716,6 +745,22 @@ func TestUpdateVIP(t *testing.T) {
 			requestBody: map[string]interface{}{
 				"encap_type": "L3DSR",
 				"dscp":       0,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "IPv6 VIP with default L3DSR",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"vip": "2001:db8::100",
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "IPv4 VIP with NAT6",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"encap_type": "NAT6",
 			},
 			expectedStatus: http.StatusBadRequest,
 		},

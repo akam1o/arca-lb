@@ -97,6 +97,10 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 		return fmt.Errorf("spec.encapType %q is not valid", spec.EncapType)
 	}
 
+	if err := validateEncapAddressFamily(spec.Address, spec.EncapType); err != nil {
+		return err
+	}
+
 	if spec.EncapType == v1alpha1.EncapTypeL3DSR && spec.DSCP != nil {
 		if *spec.DSCP == 0 || *spec.DSCP > 63 {
 			return fmt.Errorf("DSCP must be 1-63 when specified for L3DSR encapsulation")
@@ -120,6 +124,31 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 
 		if be.Weight < 1 || be.Weight > 100 {
 			return fmt.Errorf("spec.backends[%d].weight must be 1-100, got %d", i, be.Weight)
+		}
+	}
+
+	return nil
+}
+
+func validateEncapAddressFamily(address string, encapType v1alpha1.EncapType) error {
+	if encapType == "" {
+		return nil
+	}
+
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return nil
+	}
+
+	isIPv4 := ip.To4() != nil
+	switch encapType {
+	case v1alpha1.EncapTypeL3DSR, v1alpha1.EncapTypeNAT4:
+		if !isIPv4 {
+			return fmt.Errorf("spec.encapType %q requires an IPv4 spec.address", encapType)
+		}
+	case v1alpha1.EncapTypeNAT6:
+		if isIPv4 {
+			return fmt.Errorf("spec.encapType %q requires an IPv6 spec.address", encapType)
 		}
 	}
 

@@ -315,6 +315,10 @@ func (s *Server) getRevision(c *gin.Context) {
 func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Server.Host, s.config.Server.Port)
 
+	if s.config.Server.APIKey != "" && !s.config.Server.TLS {
+		return fmt.Errorf("server.tls must be enabled when server.api_key is set")
+	}
+
 	s.httpServer = s.newHTTPServer(addr)
 
 	s.logger.WithField("addr", addr).Info("Starting REST API server")

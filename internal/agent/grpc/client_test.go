@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -753,6 +754,9 @@ func TestClientLoadTLSConfigAllowsServerTLSWithoutClientCertificate(t *testing.T
 	}
 	if tlsConfig.RootCAs == nil {
 		t.Fatal("RootCAs is nil")
+	}
+	if tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %v, want TLS 1.2", tlsConfig.MinVersion)
 	}
 	if got := len(tlsConfig.Certificates); got != 0 {
 		t.Fatalf("client certificate count = %d, want 0", got)

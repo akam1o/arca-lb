@@ -588,6 +588,7 @@ func (c *Client) loadTLSConfig() (*tls.Config, error) {
 	tlsConfig := &tls.Config{
 		RootCAs:            caPool,
 		InsecureSkipVerify: c.config.Controller.TLS.InsecureSkipVerify,
+		MinVersion:         tls.VersionTLS12,
 	}
 
 	if c.config.Controller.TLS.CertFile != "" || c.config.Controller.TLS.KeyFile != "" {

@@ -98,6 +98,68 @@ func TestUpdateVIPStatusWritesHealthAndPreservesConditions(t *testing.T) {
 	}
 }
 
+func TestUpdateVIPStatusCountsOnlyConfiguredHealthyBackends(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 3,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+				{Address: "10.0.0.2", Weight: 100},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	updater := &Updater{
+		client:  k8sClient,
+		agentID: "node-a",
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	if err := updater.UpdateVIPStatus(context.Background(), vip, []v1alpha1.BackendSpec{
+		{Address: "10.0.0.2", Weight: 100},
+		{Address: "10.0.0.2", Weight: 100},
+		{Address: "10.0.0.99", Weight: 100},
+	}); err != nil {
+		t.Fatalf("UpdateVIPStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.Status.HealthyBackends != 1 {
+		t.Fatalf("HealthyBackends = %d, want only configured healthy backend count 1", got.Status.HealthyBackends)
+	}
+	if len(got.Status.AgentStatuses) != 1 {
+		t.Fatalf("AgentStatuses = %d, want 1", len(got.Status.AgentStatuses))
+	}
+	if got.Status.AgentStatuses[0].HealthyBackends != 1 {
+		t.Fatalf("AgentStatus HealthyBackends = %d, want only configured healthy backend count 1", got.Status.AgentStatuses[0].HealthyBackends)
+	}
+	if got.Status.Backends[0].Address != "10.0.0.1" || got.Status.Backends[0].Healthy {
+		t.Fatalf("first backend status = %+v, want unhealthy 10.0.0.1", got.Status.Backends[0])
+	}
+	if got.Status.Backends[1].Address != "10.0.0.2" || !got.Status.Backends[1].Healthy {
+		t.Fatalf("second backend status = %+v, want healthy 10.0.0.2", got.Status.Backends[1])
+	}
+}
+
 func TestUpdateVIPStatusWritesAgentConditions(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {

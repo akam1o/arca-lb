@@ -111,6 +111,7 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 	for _, be := range healthyBackends {
 		healthySet[be.Address] = struct{}{}
 	}
+	healthyCount := countConfiguredHealthyBackends(vip.Spec.Backends, healthySet)
 
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current v1alpha1.VirtualIP
@@ -137,7 +138,7 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 			AgentID:            agentID,
 			ObservedGeneration: vip.Generation,
 			TotalBackends:      len(vip.Spec.Backends),
-			HealthyBackends:    len(healthyBackends),
+			HealthyBackends:    healthyCount,
 			Backends:           buildBackendStatuses(vip.Spec.Backends, healthySet),
 			LastUpdateTime:     &now,
 			TTLSeconds:         durationSeconds(statusTTL),
@@ -191,6 +192,21 @@ func (u *Updater) UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.
 
 		return u.client.Status().Update(ctx, &current)
 	})
+}
+
+func countConfiguredHealthyBackends(backends []v1alpha1.BackendSpec, healthySet map[string]struct{}) int {
+	count := 0
+	seen := make(map[string]struct{}, len(backends))
+	for _, backend := range backends {
+		if _, alreadySeen := seen[backend.Address]; alreadySeen {
+			continue
+		}
+		seen[backend.Address] = struct{}{}
+		if _, healthy := healthySet[backend.Address]; healthy {
+			count++
+		}
+	}
+	return count
 }
 
 func buildBackendStatuses(backends []v1alpha1.BackendSpec, healthySet map[string]struct{}) []v1alpha1.BackendStatus {

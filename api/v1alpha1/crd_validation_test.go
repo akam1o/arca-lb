@@ -87,6 +87,36 @@ func TestVirtualIPCRDRejectsDuplicateBackendAddresses(t *testing.T) {
 	t.Fatalf("missing backend uniqueness validation in %#v", validations)
 }
 
+func TestVirtualIPCRDRejectsUnsupportedEncapAddressFamilies(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	spec := crdSchemaProperty(t, crd, "spec")
+	validations := nestedSlice(t, spec, "x-kubernetes-validations")
+
+	assertHasValidation(t, validations,
+		"spec.encapType L3DSR/NAT4 requires an IPv4 spec.address",
+		"!has(self.encapType) || (self.encapType != 'L3DSR' && self.encapType != 'NAT4') || self.address.matches('^([0-9]{1,3}[.]){3}[0-9]{1,3}$')",
+	)
+	assertHasValidation(t, validations,
+		"spec.encapType NAT6 requires an IPv6 spec.address",
+		"!has(self.encapType) || self.encapType != 'NAT6' || !self.address.matches('^([0-9]{1,3}[.]){3}[0-9]{1,3}$')",
+	)
+}
+
+func assertHasValidation(t *testing.T, validations []interface{}, wantMessage, wantRule string) {
+	t.Helper()
+
+	for _, raw := range validations {
+		validation, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Fatalf("validation item has type %T, want map[string]interface{}", raw)
+		}
+		if validation["message"] == wantMessage && validation["rule"] == wantRule {
+			return
+		}
+	}
+	t.Fatalf("missing CRD validation message %q and rule %q in %#v", wantMessage, wantRule, validations)
+}
+
 func loadVirtualIPCRD(t *testing.T) map[string]interface{} {
 	t.Helper()
 

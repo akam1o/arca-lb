@@ -236,6 +236,12 @@ spec:
             - port
             - protocol
             type: object
+            x-kubernetes-validations:
+            - message: spec.encapType L3DSR/NAT4 requires an IPv4 spec.address
+              rule: '!has(self.encapType) || (self.encapType != ''L3DSR'' && self.encapType
+                != ''NAT4'') || self.address.matches(''^([0-9]{1,3}[.]){3}[0-9]{1,3}$'')'
+            - message: spec.encapType NAT6 requires an IPv6 spec.address
+              rule: '!has(self.encapType) || self.encapType != ''NAT6'' || !self.address.matches(''^([0-9]{1,3}[.]){3}[0-9]{1,3}$'')'
           status:
             description: VirtualIPStatus defines the observed state of a VirtualIP.
             properties:

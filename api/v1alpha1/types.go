@@ -155,6 +155,8 @@ type TCPHealthCheck struct {
 }
 
 // VirtualIPSpec defines the desired state of a VirtualIP.
+// +kubebuilder:validation:XValidation:rule="!has(self.encapType) || (self.encapType != 'L3DSR' && self.encapType != 'NAT4') || self.address.matches('^([0-9]{1,3}[.]){3}[0-9]{1,3}$')",message="spec.encapType L3DSR/NAT4 requires an IPv4 spec.address"
+// +kubebuilder:validation:XValidation:rule="!has(self.encapType) || self.encapType != 'NAT6' || !self.address.matches('^([0-9]{1,3}[.]){3}[0-9]{1,3}$')",message="spec.encapType NAT6 requires an IPv6 spec.address"
 type VirtualIPSpec struct {
 	// Address is the virtual IP address.
 	// +kubebuilder:validation:Required

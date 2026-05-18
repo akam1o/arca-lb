@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"time"
 
@@ -22,6 +23,32 @@ type UpdateBackendRequest struct {
 	Weight int    `json:"weight" binding:"omitempty,min=1,max=100"`
 }
 
+func validateBackendAddressFamily(vip *models.VIP, backendIP string) error {
+	if vip == nil {
+		return nil
+	}
+
+	ip := net.ParseIP(backendIP)
+	if ip == nil {
+		return nil
+	}
+
+	encapType := effectiveEncapType(vip.EncapType)
+	isIPv4 := ip.To4() != nil
+	switch encapType {
+	case models.EncapTypeGRE4, models.EncapTypeL3DSR, models.EncapTypeNAT4:
+		if !isIPv4 {
+			return badRequestError("backend ip must be IPv4 when encap_type is " + string(encapType))
+		}
+	case models.EncapTypeGRE6, models.EncapTypeNAT6:
+		if isIPv4 {
+			return badRequestError("backend ip must be IPv6 when encap_type is " + string(encapType))
+		}
+	}
+
+	return nil
+}
+
 // createBackend handles POST /api/v1/backends
 func (s *Server) createBackend(c *gin.Context) {
 	var req CreateBackendRequest
@@ -34,10 +61,14 @@ func (s *Server) createBackend(c *gin.Context) {
 	defer cancel()
 
 	// Verify VIP exists
-	_, err := s.datastore.GetVIP(ctx, req.VIPID)
+	vip, err := s.datastore.GetVIP(ctx, req.VIPID)
 	if err != nil {
 		s.logger.WithError(err).WithField("vip_id", req.VIPID).Error("VIP not found")
 		handleDataStoreError(c, err, "VIP")
+		return
+	}
+	if err := validateBackendAddressFamily(vip, req.IP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -132,6 +163,17 @@ func (s *Server) updateBackend(c *gin.Context) {
 	}
 	if req.Weight != 0 {
 		backend.Weight = req.Weight
+	}
+
+	vip, err := s.datastore.GetVIP(ctx, backend.VIPID)
+	if err != nil {
+		s.logger.WithError(err).WithField("vip_id", backend.VIPID).Error("VIP not found for backend")
+		handleDataStoreError(c, err, "VIP")
+		return
+	}
+	if err := validateBackendAddressFamily(vip, backend.IP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	// Update backend in datastore

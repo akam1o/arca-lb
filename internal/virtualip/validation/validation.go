@@ -109,8 +109,12 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 
 	seen := make(map[string]bool)
 	for i, be := range spec.Backends {
-		if ip := net.ParseIP(be.Address); ip == nil {
+		ip := net.ParseIP(be.Address)
+		if ip == nil {
 			return fmt.Errorf("spec.backends[%d].address %q is not a valid IP", i, be.Address)
+		}
+		if err := validateBackendAddressFamily(i, be.Address, ip, spec.EncapType); err != nil {
+			return err
 		}
 		if be.MonitorAddress != "" {
 			if ip := net.ParseIP(be.MonitorAddress); ip == nil {
@@ -124,6 +128,26 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 
 		if be.Weight < 1 || be.Weight > 100 {
 			return fmt.Errorf("spec.backends[%d].weight must be 1-100, got %d", i, be.Weight)
+		}
+	}
+
+	return nil
+}
+
+func validateBackendAddressFamily(index int, address string, ip net.IP, encapType v1alpha1.EncapType) error {
+	if encapType == "" {
+		return nil
+	}
+
+	isIPv4 := ip.To4() != nil
+	switch encapType {
+	case v1alpha1.EncapTypeGRE4, v1alpha1.EncapTypeL3DSR, v1alpha1.EncapTypeNAT4:
+		if !isIPv4 {
+			return fmt.Errorf("spec.backends[%d].address %q must be IPv4 for encapType %q", index, address, encapType)
+		}
+	case v1alpha1.EncapTypeGRE6, v1alpha1.EncapTypeNAT6:
+		if isIPv4 {
+			return fmt.Errorf("spec.backends[%d].address %q must be IPv6 for encapType %q", index, address, encapType)
 		}
 	}
 

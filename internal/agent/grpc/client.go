@@ -737,10 +737,70 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 			vipConfig.Backends = append(vipConfig.Backends, backend)
 		}
 
+		if err := validateVIPConfigDataPlane(i, &vipConfig); err != nil {
+			return nil, err
+		}
+
 		config.VIPs = append(config.VIPs, vipConfig)
 	}
 
 	return config, nil
+}
+
+func validateVIPConfigDataPlane(vipIndex int, vipConfig *models.VIPConfig) error {
+	vipIP := net.ParseIP(vipConfig.VIP.VIP)
+	if vipIP == nil {
+		return fmt.Errorf("vip config at index %d vip %q is not a valid IP address", vipIndex, vipConfig.VIP.VIP)
+	}
+
+	encapType := effectiveProtoEncapType(vipConfig.VIP.EncapType)
+	if err := validateVIPAddressFamily(vipIndex, vipIP, encapType); err != nil {
+		return err
+	}
+
+	for backendIndex, backend := range vipConfig.Backends {
+		backendIP := net.ParseIP(backend.IP)
+		if backendIP == nil {
+			return fmt.Errorf("backend at vip index %d backend index %d ip %q is not a valid IP address", vipIndex, backendIndex, backend.IP)
+		}
+		if err := validateBackendAddressFamily(vipIndex, backendIndex, backend.IP, backendIP, encapType); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateVIPAddressFamily(vipIndex int, vipIP net.IP, encapType models.EncapType) error {
+	isIPv4 := vipIP.To4() != nil
+	switch encapType {
+	case models.EncapTypeL3DSR, models.EncapTypeNAT4:
+		if !isIPv4 {
+			return fmt.Errorf("vip config at index %d encap_type %s requires an IPv4 vip", vipIndex, encapType)
+		}
+	case models.EncapTypeNAT6:
+		if isIPv4 {
+			return fmt.Errorf("vip config at index %d encap_type NAT6 requires an IPv6 vip", vipIndex)
+		}
+	}
+
+	return nil
+}
+
+func validateBackendAddressFamily(vipIndex, backendIndex int, address string, backendIP net.IP, encapType models.EncapType) error {
+	isIPv4 := backendIP.To4() != nil
+	switch encapType {
+	case models.EncapTypeGRE4, models.EncapTypeL3DSR, models.EncapTypeNAT4:
+		if !isIPv4 {
+			return fmt.Errorf("backend at vip index %d backend index %d ip %q must be IPv4 for encap_type %s", vipIndex, backendIndex, address, encapType)
+		}
+	case models.EncapTypeGRE6, models.EncapTypeNAT6:
+		if isIPv4 {
+			return fmt.Errorf("backend at vip index %d backend index %d ip %q must be IPv6 for encap_type %s", vipIndex, backendIndex, address, encapType)
+		}
+	}
+
+	return nil
 }
 
 func convertProtoDSCP(vipIndex int, encapType models.EncapType, dscp *wrapperspb.UInt32Value) (*uint8, error) {

@@ -1572,6 +1572,111 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 			},
 			wantErr: "backend at vip index 0 backend index 0 is required",
 		},
+		{
+			name: "invalid VIP address",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:  "vip-1",
+							Vip: "not-an-ip",
+						},
+					},
+				},
+			},
+			wantErr: `vip config at index 0 vip "not-an-ip" is not a valid IP address`,
+		},
+		{
+			name: "default L3DSR with IPv6 VIP",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:  "vip-1",
+							Vip: "2001:db8::10",
+						},
+					},
+				},
+			},
+			wantErr: "vip config at index 0 encap_type L3DSR requires an IPv4 vip",
+		},
+		{
+			name: "NAT6 with IPv4 VIP",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:        "vip-1",
+							Vip:       "192.0.2.10",
+							EncapType: pb.EncapType_ENCAP_TYPE_NAT6,
+						},
+					},
+				},
+			},
+			wantErr: "vip config at index 0 encap_type NAT6 requires an IPv6 vip",
+		},
+		{
+			name: "invalid backend IP",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:  "vip-1",
+							Vip: "192.0.2.10",
+						},
+						Backends: []*pb.Backend{
+							{
+								Id: "backend-1",
+								Ip: "not-an-ip",
+							},
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 0 ip "not-an-ip" is not a valid IP address`,
+		},
+		{
+			name: "GRE4 with IPv6 backend",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:        "vip-1",
+							Vip:       "2001:db8::10",
+							EncapType: pb.EncapType_ENCAP_TYPE_GRE4,
+						},
+						Backends: []*pb.Backend{
+							{
+								Id: "backend-1",
+								Ip: "2001:db8::20",
+							},
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 0 ip "2001:db8::20" must be IPv4 for encap_type GRE4`,
+		},
+		{
+			name: "NAT6 with IPv4 backend",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:        "vip-1",
+							Vip:       "2001:db8::10",
+							EncapType: pb.EncapType_ENCAP_TYPE_NAT6,
+						},
+						Backends: []*pb.Backend{
+							{
+								Id: "backend-1",
+								Ip: "10.0.0.1",
+							},
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 0 ip "10.0.0.1" must be IPv6 for encap_type NAT6`,
+		},
 	}
 
 	for _, tt := range tests {

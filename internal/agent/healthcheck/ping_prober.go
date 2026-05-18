@@ -35,6 +35,8 @@ func NewPingProber(hc *models.HealthCheck, logger *logrus.Logger) (*PingProber, 
 // Probe performs an ICMP ping health check
 func (p *PingProber) Probe(ctx context.Context, target string) ProbeResult {
 	startTime := time.Now()
+	probeCtx, cancel := contextWithDefaultTimeout(ctx, p.timeout)
+	defer cancel()
 
 	// Build ping command based on OS
 	var cmd *exec.Cmd
@@ -42,15 +44,15 @@ func (p *PingProber) Probe(ctx context.Context, target string) ProbeResult {
 	case "linux":
 		// Linux: ping -c 1 -W <timeout_secs> <target>
 		timeoutSecs := fmt.Sprintf("%d", int(p.timeout.Seconds()))
-		cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-W", timeoutSecs, target)
+		cmd = exec.CommandContext(probeCtx, "ping", "-c", "1", "-W", timeoutSecs, target)
 	case "darwin":
 		// macOS: ping -c 1 -W <timeout_ms> <target>
 		timeoutMs := fmt.Sprintf("%d", p.timeout.Milliseconds())
-		cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-W", timeoutMs, target)
+		cmd = exec.CommandContext(probeCtx, "ping", "-c", "1", "-W", timeoutMs, target)
 	case "windows":
 		// Windows: ping -n 1 -w <timeout_ms> <target>
 		timeoutMs := fmt.Sprintf("%d", p.timeout.Milliseconds())
-		cmd = exec.CommandContext(ctx, "ping", "-n", "1", "-w", timeoutMs, target)
+		cmd = exec.CommandContext(probeCtx, "ping", "-n", "1", "-w", timeoutMs, target)
 	default:
 		return ProbeResult{
 			Success:   false,
@@ -65,6 +67,9 @@ func (p *PingProber) Probe(ctx context.Context, target string) ProbeResult {
 	latency := time.Since(startTime)
 
 	if err != nil {
+		if probeCtx.Err() != nil {
+			err = probeCtx.Err()
+		}
 		// Ping failed
 		return ProbeResult{
 			Success:   false,

@@ -2,7 +2,6 @@ package healthcheck
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -53,9 +52,7 @@ func NewHTTPProber(hc *models.HealthCheck, useHTTPS bool, logger *logrus.Logger)
 	prober.client = &http.Client{
 		Timeout: prober.timeout,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: prober.tlsSkipVerify,
-			},
+			TLSClientConfig: newHealthCheckTLSConfig(prober.tlsSkipVerify),
 			DialContext: (&net.Dialer{
 				Timeout:   prober.timeout,
 				KeepAlive: 30 * time.Second,

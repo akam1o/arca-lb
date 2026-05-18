@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,27 @@ func TestBuildHTTPProbeURLIPv6(t *testing.T) {
 	}
 	if parsed.RawQuery != "ready=1" {
 		t.Fatalf("URL query = %q, want ready=1", parsed.RawQuery)
+	}
+}
+
+func TestHTTPProberFromSpecUsesTLS12MinimumForHTTPS(t *testing.T) {
+	prober, err := newHTTPProberFromSpec(&v1alpha1.HTTPHealthCheck{
+		Port: 443,
+	}, true)
+	if err != nil {
+		t.Fatalf("newHTTPProberFromSpec: %v", err)
+	}
+	defer func() { _ = prober.Close() }()
+
+	transport, ok := prober.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", prober.client.Transport)
+	}
+	if transport.TLSClientConfig == nil {
+		t.Fatal("TLSClientConfig is nil")
+	}
+	if transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %v, want TLS 1.2", transport.TLSClientConfig.MinVersion)
 	}
 }
 

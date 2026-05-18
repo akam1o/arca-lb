@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"testing"
@@ -108,6 +109,26 @@ func TestNewHTTPProber(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewHTTPProberUsesTLS12MinimumForHTTPS(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	prober, err := NewHTTPProber(&models.HealthCheck{
+		Type:       models.HCTypeHTTPS,
+		TimeoutSec: 5,
+		Config: models.HCConfig{
+			"port": 443,
+		},
+	}, true, logger)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, prober.Close()) }()
+
+	transport, ok := prober.client.Transport.(*http.Transport)
+	require.True(t, ok, "transport type = %T", prober.client.Transport)
+	require.NotNil(t, transport.TLSClientConfig)
+	assert.Equal(t, uint16(tls.VersionTLS12), transport.TLSClientConfig.MinVersion)
 }
 
 func TestHTTPProber_Probe(t *testing.T) {

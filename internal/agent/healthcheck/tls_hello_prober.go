@@ -70,9 +70,7 @@ func (p *TLSHelloProber) Probe(ctx context.Context, target string) ProbeResult {
 
 	dialer := tls.Dialer{
 		NetDialer: &net.Dialer{},
-		Config: &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec // TLS-HELLO only verifies that the backend completes a TLS handshake.
-		},
+		Config:    newHealthCheckTLSConfig(true),
 	}
 	conn, err := dialer.DialContext(probeCtx, "tcp", tcpProbeAddress(target, p.port))
 	if err != nil {

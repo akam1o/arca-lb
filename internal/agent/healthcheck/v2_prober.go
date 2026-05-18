@@ -71,8 +71,8 @@ func newHTTPProberFromSpec(cfg *v1alpha1.HTTPHealthCheck, useTLS bool) (*httpPro
 		MaxIdleConns:    10,
 		IdleConnTimeout: 30 * time.Second,
 	}
-	if useTLS && cfg.SkipTLSVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // user-configured
+	if useTLS {
+		transport.TLSClientConfig = newHealthCheckTLSConfig(cfg.SkipTLSVerify)
 	}
 
 	method := cfg.Method
@@ -293,9 +293,7 @@ func (p *tlsHelloProber) Probe(ctx context.Context, target string) V2ProbeResult
 
 	dialer := tls.Dialer{
 		NetDialer: &net.Dialer{},
-		Config: &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec // TLS-HELLO only verifies that the backend completes a TLS handshake.
-		},
+		Config:    newHealthCheckTLSConfig(true),
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {

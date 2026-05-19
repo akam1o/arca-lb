@@ -310,6 +310,10 @@ const defaultPingTimeout = 2 * time.Second
 
 func (p *pingProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
+	if err := validatePingTarget(target); err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
+
 	pingCtx, cancel := contextWithDefaultTimeout(ctx, defaultPingTimeout)
 	defer cancel()
 

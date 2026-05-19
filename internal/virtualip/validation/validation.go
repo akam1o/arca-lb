@@ -9,6 +9,7 @@ import (
 	"net/url"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	"github.com/akam1o/arca-lb/internal/common/models"
 )
 
 // Validate validates a VirtualIP object.
@@ -226,11 +227,23 @@ func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
 	if hc.IntervalSeconds < 1 {
 		return fmt.Errorf("spec.healthCheck.intervalSeconds must be >= 1")
 	}
+	if hc.IntervalSeconds > models.MaxHealthCheckSeconds {
+		return fmt.Errorf("spec.healthCheck.intervalSeconds must be <= %d", models.MaxHealthCheckSeconds)
+	}
 	if hc.TimeoutSeconds < 1 {
 		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be >= 1")
 	}
+	if hc.TimeoutSeconds > models.MaxHealthCheckSeconds {
+		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be <= %d", models.MaxHealthCheckSeconds)
+	}
 	if hc.TimeoutSeconds >= hc.IntervalSeconds {
 		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be less than intervalSeconds")
+	}
+	if hc.RiseCount > models.MaxHealthCheckCount {
+		return fmt.Errorf("spec.healthCheck.riseCount must be <= %d", models.MaxHealthCheckCount)
+	}
+	if hc.FallCount > models.MaxHealthCheckCount {
+		return fmt.Errorf("spec.healthCheck.fallCount must be <= %d", models.MaxHealthCheckCount)
 	}
 
 	return nil

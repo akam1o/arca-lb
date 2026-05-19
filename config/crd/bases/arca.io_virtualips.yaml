@@ -120,6 +120,7 @@ spec:
                     default: 2
                     description: FallCount is the number of consecutive failures to
                       mark a backend unhealthy.
+                    maximum: 2147483647
                     minimum: 1
                     type: integer
                   http:
@@ -168,12 +169,14 @@ spec:
                   intervalSeconds:
                     default: 5
                     description: IntervalSeconds is the time between probes.
+                    maximum: 2147483647
                     minimum: 1
                     type: integer
                   riseCount:
                     default: 3
                     description: RiseCount is the number of consecutive successes
                       to mark a backend healthy.
+                    maximum: 2147483647
                     minimum: 1
                     type: integer
                   tcp:
@@ -198,6 +201,7 @@ spec:
                     default: 3
                     description: TimeoutSeconds is the maximum time to wait for a
                       probe response.
+                    maximum: 2147483647
                     minimum: 1
                     type: integer
                   type:

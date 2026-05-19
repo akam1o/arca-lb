@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
@@ -312,6 +313,23 @@ func (s *ConfigSyncService) convertConfigToProto(config *models.Config) (*pb.Con
 		// Convert health check if present
 		var pbHealthCheck *pb.HealthCheck
 		if vipConfig.HealthCheck != nil {
+			intervalSec, err := healthCheckInt32("interval_sec", vipConfig.HealthCheck.IntervalSec, models.MaxHealthCheckSeconds)
+			if err != nil {
+				return nil, err
+			}
+			timeoutSec, err := healthCheckInt32("timeout_sec", vipConfig.HealthCheck.TimeoutSec, models.MaxHealthCheckSeconds)
+			if err != nil {
+				return nil, err
+			}
+			riseCount, err := healthCheckInt32("rise_count", vipConfig.HealthCheck.RiseCount, models.MaxHealthCheckCount)
+			if err != nil {
+				return nil, err
+			}
+			fallCount, err := healthCheckInt32("fall_count", vipConfig.HealthCheck.FallCount, models.MaxHealthCheckCount)
+			if err != nil {
+				return nil, err
+			}
+
 			// Convert HCConfig map to JSON string
 			configJSON := ""
 			if vipConfig.HealthCheck.Config != nil {
@@ -324,10 +342,10 @@ func (s *ConfigSyncService) convertConfigToProto(config *models.Config) (*pb.Con
 				Id:          vipConfig.HealthCheck.ID,
 				VipId:       vipConfig.HealthCheck.VIPID,
 				Type:        s.convertHCType(vipConfig.HealthCheck.Type),
-				IntervalSec: int32(vipConfig.HealthCheck.IntervalSec),
-				TimeoutSec:  int32(vipConfig.HealthCheck.TimeoutSec),
-				RiseCount:   int32(vipConfig.HealthCheck.RiseCount),
-				FallCount:   int32(vipConfig.HealthCheck.FallCount),
+				IntervalSec: intervalSec,
+				TimeoutSec:  timeoutSec,
+				RiseCount:   riseCount,
+				FallCount:   fallCount,
 				Config:      configJSON,
 				CreatedAt:   timestamppb.New(vipConfig.HealthCheck.CreatedAt),
 				UpdatedAt:   timestamppb.New(vipConfig.HealthCheck.UpdatedAt),
@@ -358,6 +376,13 @@ func (s *ConfigSyncService) convertConfigToProto(config *models.Config) (*pb.Con
 		Revision: config.Revision,
 		Vips:     pbVips,
 	}, nil
+}
+
+func healthCheckInt32(field string, value, max int) (int32, error) {
+	if value < 1 || value > max {
+		return 0, fmt.Errorf("health check %s must be between 1 and %d, got %d", field, max, value)
+	}
+	return int32(value), nil
 }
 
 // convertProtocol converts internal protocol to protobuf

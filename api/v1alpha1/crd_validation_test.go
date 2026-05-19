@@ -45,6 +45,13 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	if !containsString(typeEnum, "tls-hello") {
 		t.Fatalf("healthCheck.type enum does not include tls-hello: %#v", typeEnum)
 	}
+
+	for _, field := range []string{"intervalSeconds", "timeoutSeconds", "riseCount", "fallCount"} {
+		fieldSchema := nestedMap(t, healthCheck, "properties", field)
+		if got := fieldSchema["maximum"]; got != 2147483647 {
+			t.Fatalf("healthCheck.%s maximum = %v, want 2147483647", field, got)
+		}
+	}
 }
 
 func TestVirtualIPCRDRequiresSpec(t *testing.T) {

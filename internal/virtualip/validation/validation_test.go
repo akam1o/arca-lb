@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	commonmodels "github.com/akam1o/arca-lb/internal/common/models"
 )
 
 func validVirtualIPSpec() *v1alpha1.VirtualIPSpec {
@@ -80,6 +81,59 @@ func TestValidateSpecRejectsInvalidHTTPHealthCheckMethodAndPath(t *testing.T) {
 			spec := validVirtualIPSpec()
 			spec.HealthCheck = validHTTPHealthCheckSpec()
 			tt.mutate(spec.HealthCheck.HTTP)
+
+			err := ValidateSpec(spec)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateSpec() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateSpecRejectsHealthCheckValuesExceedingInt32(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*v1alpha1.HealthCheckSpec)
+		wantErr string
+	}{
+		{
+			name: "interval",
+			mutate: func(hc *v1alpha1.HealthCheckSpec) {
+				hc.IntervalSeconds = commonmodels.MaxHealthCheckSeconds + 1
+			},
+			wantErr: "spec.healthCheck.intervalSeconds must be <=",
+		},
+		{
+			name: "timeout",
+			mutate: func(hc *v1alpha1.HealthCheckSpec) {
+				hc.IntervalSeconds = commonmodels.MaxHealthCheckSeconds
+				hc.TimeoutSeconds = commonmodels.MaxHealthCheckSeconds + 1
+			},
+			wantErr: "spec.healthCheck.timeoutSeconds must be <=",
+		},
+		{
+			name: "rise count",
+			mutate: func(hc *v1alpha1.HealthCheckSpec) {
+				hc.RiseCount = commonmodels.MaxHealthCheckCount + 1
+			},
+			wantErr: "spec.healthCheck.riseCount must be <=",
+		},
+		{
+			name: "fall count",
+			mutate: func(hc *v1alpha1.HealthCheckSpec) {
+				hc.FallCount = commonmodels.MaxHealthCheckCount + 1
+			},
+			wantErr: "spec.healthCheck.fallCount must be <=",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := validVirtualIPSpec()
+			spec.HealthCheck = validHTTPHealthCheckSpec()
+			spec.HealthCheck.RiseCount = 3
+			spec.HealthCheck.FallCount = 2
+			tt.mutate(spec.HealthCheck)
 
 			err := ValidateSpec(spec)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {

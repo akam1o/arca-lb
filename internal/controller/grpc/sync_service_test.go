@@ -198,6 +198,38 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "rejects health check value outside protobuf int32 range",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{
+					Revision: 8,
+					VIPs: []models.VIPConfig{
+						{
+							VIP: models.VIP{
+								ID:       "vip-1",
+								VIP:      "192.168.1.100",
+								Port:     80,
+								Protocol: models.ProtocolTCP,
+								LBMethod: models.LBMethodMaglev,
+							},
+							HealthCheck: &models.HealthCheck{
+								ID:          "hc-1",
+								VIPID:       "vip-1",
+								Type:        models.HCTypeHTTP,
+								IntervalSec: models.MaxHealthCheckSeconds + 1,
+								TimeoutSec:  1,
+								RiseCount:   1,
+								FallCount:   1,
+								Config: map[string]interface{}{
+									"port": 8080,
+								},
+							},
+						},
+					},
+				})
+			},
+			expectedError: codes.Internal,
+		},
+		{
 			name: "datastore error",
 			setupMock: func(mock *testutil.MockDataStore) {
 				mock.SetGetConfigError(datastore.ErrNotFound)

@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 type HCType string
 
@@ -10,6 +13,12 @@ const (
 	HCTypeTCP      HCType = "tcp"
 	HCTypePing     HCType = "ping"
 	HCTypeTLSHello HCType = "tls-hello"
+)
+
+const (
+	// MaxHealthCheckSeconds keeps API, MySQL INT, and protobuf int32 fields aligned.
+	MaxHealthCheckSeconds = math.MaxInt32
+	MaxHealthCheckCount   = math.MaxInt32
 )
 
 // HCConfig holds additional health check settings.

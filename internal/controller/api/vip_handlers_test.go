@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -336,6 +337,41 @@ func TestCreateVIP(t *testing.T) {
 					"type":     "http",
 					"interval": "500ms",
 					"timeout":  "1s",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check interval exceeds int32",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "http",
+					"interval": "2147483648s",
+					"timeout":  "1s",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check rise count exceeds int32",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":       "http",
+					"interval":   "10s",
+					"timeout":    "1s",
+					"rise_count": math.MaxInt32 + 1,
 					"config": map[string]interface{}{
 						"port": 8080,
 					},

@@ -23,8 +23,8 @@ type HealthCheckRequest struct {
 	Type      string          `json:"type" binding:"required"`
 	Interval  string          `json:"interval" binding:"required"`
 	Timeout   string          `json:"timeout" binding:"required"`
-	RiseCount int             `json:"rise_count" binding:"omitempty,min=1"`
-	FallCount int             `json:"fall_count" binding:"omitempty,min=1"`
+	RiseCount int             `json:"rise_count" binding:"omitempty,min=1,max=2147483647"`
+	FallCount int             `json:"fall_count" binding:"omitempty,min=1,max=2147483647"`
 	Config    models.HCConfig `json:"config,omitempty"`
 }
 
@@ -86,6 +86,9 @@ func parseHealthCheckDuration(value, field string) (time.Duration, error) {
 	}
 	if duration%time.Second != 0 {
 		return 0, badRequestError("health check " + field + " must be a whole number of seconds")
+	}
+	if duration/time.Second > time.Duration(models.MaxHealthCheckSeconds) {
+		return 0, badRequestError("health check " + field + " must be at most 2147483647 seconds")
 	}
 	return duration, nil
 }

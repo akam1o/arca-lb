@@ -74,21 +74,25 @@ type HealthCheckSpec struct {
 
 	// IntervalSeconds is the time between probes.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +kubebuilder:default=5
 	IntervalSeconds int `json:"intervalSeconds,omitempty"`
 
 	// TimeoutSeconds is the maximum time to wait for a probe response.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +kubebuilder:default=3
 	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 
 	// RiseCount is the number of consecutive successes to mark a backend healthy.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +kubebuilder:default=3
 	RiseCount int `json:"riseCount,omitempty"`
 
 	// FallCount is the number of consecutive failures to mark a backend unhealthy.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +kubebuilder:default=2
 	FallCount int `json:"fallCount,omitempty"`
 

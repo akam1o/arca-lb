@@ -452,17 +452,21 @@ components:
         interval_sec:
           type: integer
           minimum: 1
+          maximum: 2147483647
           description: Probe interval in whole seconds.
         timeout_sec:
           type: integer
           minimum: 1
+          maximum: 2147483647
           description: Probe timeout in whole seconds.
         rise_count:
           type: integer
           minimum: 1
+          maximum: 2147483647
         fall_count:
           type: integer
           minimum: 1
+          maximum: 2147483647
         config:
           type: object
           additionalProperties: true
@@ -483,17 +487,19 @@ components:
           enum: [http, https, tcp, ping, tls-hello]
         interval:
           type: string
-          description: Go duration string that must resolve to positive whole seconds (e.g. "10s", "1m").
+          description: Go duration string that must resolve to positive whole seconds, at most 2147483647 seconds (e.g. "10s", "1m").
         timeout:
           type: string
-          description: Go duration string that must resolve to positive whole seconds (e.g. "3s", "1m").
+          description: Go duration string that must resolve to positive whole seconds, at most 2147483647 seconds (e.g. "3s", "1m").
         rise_count:
           type: integer
           minimum: 1
+          maximum: 2147483647
           description: Consecutive successes to mark backend Up (default 3).
         fall_count:
           type: integer
           minimum: 1
+          maximum: 2147483647
           description: Consecutive failures to mark backend Down (default 2).
         config:
           type: object

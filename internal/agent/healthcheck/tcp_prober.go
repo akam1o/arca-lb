@@ -28,6 +28,9 @@ func NewTCPProber(hc *models.HealthCheck, logger *logrus.Logger) (*TCPProber, er
 	if hc == nil {
 		return nil, fmt.Errorf("health check configuration is nil")
 	}
+	if err := models.ValidateHealthCheckConfig(hc.Type, hc.Config); err != nil {
+		return nil, fmt.Errorf("invalid TCP health check config: %w", err)
+	}
 
 	prober := &TCPProber{
 		logger:  logger,

@@ -36,6 +36,9 @@ func NewHTTPProber(hc *models.HealthCheck, useHTTPS bool, logger *logrus.Logger)
 	if hc == nil {
 		return nil, fmt.Errorf("health check configuration is nil")
 	}
+	if err := models.ValidateHealthCheckConfig(hc.Type, hc.Config); err != nil {
+		return nil, fmt.Errorf("invalid HTTP health check config: %w", err)
+	}
 
 	prober := &HTTPProber{
 		logger:   logger,

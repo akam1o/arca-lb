@@ -131,6 +131,57 @@ func TestNewHTTPProberUsesTLS12MinimumForHTTPS(t *testing.T) {
 	assert.Equal(t, uint16(tls.VersionTLS12), transport.TLSClientConfig.MinVersion)
 }
 
+func TestNewHTTPProberRejectsInvalidRuntimeConfig(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	tests := []struct {
+		name   string
+		config models.HCConfig
+	}{
+		{
+			name: "fractional port",
+			config: models.HCConfig{
+				"port": 80.5,
+			},
+		},
+		{
+			name: "out of range port",
+			config: models.HCConfig{
+				"port": 70000,
+			},
+		},
+		{
+			name: "absolute path",
+			config: models.HCConfig{
+				"port": 80,
+				"path": "https://example.test/healthz",
+			},
+		},
+		{
+			name: "invalid expected code",
+			config: models.HCConfig{
+				"port":           80,
+				"expected_codes": []interface{}{99},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prober, err := NewHTTPProber(&models.HealthCheck{
+				Type:       models.HCTypeHTTP,
+				TimeoutSec: 5,
+				Config:     tt.config,
+			}, false, logger)
+
+			require.Error(t, err)
+			assert.Nil(t, prober)
+			assert.Contains(t, err.Error(), "invalid HTTP health check config")
+		})
+	}
+}
+
 func TestHTTPProber_Probe(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)

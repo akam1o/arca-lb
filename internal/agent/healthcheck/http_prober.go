@@ -3,6 +3,7 @@ package healthcheck
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -80,14 +81,11 @@ func (p *HTTPProber) parseConfig(config models.HCConfig) error {
 	if !ok {
 		return fmt.Errorf("port is required in HTTP health check config")
 	}
-	switch v := port.(type) {
-	case int:
-		p.port = v
-	case float64:
-		p.port = int(v)
-	default:
+	parsedPort, ok := healthCheckConfigInt(port)
+	if !ok {
 		return fmt.Errorf("port must be an integer, got %T", port)
 	}
+	p.port = parsedPort
 
 	// Path (optional, default: "/")
 	if path, ok := config["path"].(string); ok {
@@ -105,17 +103,12 @@ func (p *HTTPProber) parseConfig(config models.HCConfig) error {
 
 	// Expected status codes (optional, default: [200])
 	p.expectedCodes = make(map[int]bool)
-	if expectedCodes, ok := config["expected_codes"].([]interface{}); ok {
-		for _, code := range expectedCodes {
-			switch v := code.(type) {
-			case int:
-				p.expectedCodes[v] = true
-			case float64:
-				p.expectedCodes[int(v)] = true
-			default:
-				return fmt.Errorf("expected_codes must be integers, got %T", code)
-			}
+	if expectedCodes, ok := config["expected_codes"]; ok && expectedCodes != nil {
+		codes, err := parseHTTPExpectedCodes(expectedCodes)
+		if err != nil {
+			return err
 		}
+		p.expectedCodes = codes
 	} else {
 		// Default to 200
 		p.expectedCodes[200] = true
@@ -123,11 +116,19 @@ func (p *HTTPProber) parseConfig(config models.HCConfig) error {
 
 	// Headers (optional)
 	p.headers = make(map[string]string)
-	if headers, ok := config["headers"].(map[string]interface{}); ok {
+	switch headers := config["headers"].(type) {
+	case map[string]interface{}:
 		for key, value := range headers {
+			if value == nil {
+				continue
+			}
 			if strValue, ok := value.(string); ok {
 				p.headers[key] = strValue
 			}
+		}
+	case map[string]string:
+		for key, value := range headers {
+			p.headers[key] = value
 		}
 	}
 
@@ -142,6 +143,55 @@ func (p *HTTPProber) parseConfig(config models.HCConfig) error {
 	}
 
 	return nil
+}
+
+func parseHTTPExpectedCodes(raw any) (map[int]bool, error) {
+	codes := make(map[int]bool)
+
+	switch values := raw.(type) {
+	case []interface{}:
+		for _, value := range values {
+			code, ok := healthCheckConfigInt(value)
+			if !ok {
+				return nil, fmt.Errorf("expected_codes must be integers, got %T", value)
+			}
+			codes[code] = true
+		}
+	case []int:
+		for _, value := range values {
+			codes[value] = true
+		}
+	case []float64:
+		for _, value := range values {
+			code, ok := healthCheckConfigInt(value)
+			if !ok {
+				return nil, fmt.Errorf("expected_codes must be integers, got %T", value)
+			}
+			codes[code] = true
+		}
+	default:
+		return nil, fmt.Errorf("expected_codes must be an array of integers")
+	}
+
+	return codes, nil
+}
+
+func healthCheckConfigInt(raw any) (int, bool) {
+	switch value := raw.(type) {
+	case int:
+		return value, true
+	case int32:
+		return int(value), true
+	case int64:
+		return int(value), true
+	case float64:
+		if math.IsNaN(value) || math.IsInf(value, 0) || value != math.Trunc(value) {
+			return 0, false
+		}
+		return int(value), true
+	default:
+		return 0, false
+	}
 }
 
 // Probe performs an HTTP/HTTPS health check

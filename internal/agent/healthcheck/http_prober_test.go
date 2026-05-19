@@ -350,6 +350,51 @@ func TestHTTPProber_Probe_WithCustomHeaders(t *testing.T) {
 	assert.NoError(t, result.Error)
 }
 
+func TestHTTPProber_Probe_WithValidatedRuntimeConfigShapes(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	listener := startBufferedHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Custom-Header") != "test-value" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	hc := &models.HealthCheck{
+		Type:        models.HCTypeHTTP,
+		IntervalSec: 10,
+		TimeoutSec:  5,
+		Config: models.HCConfig{
+			"port": 8082,
+			"headers": map[string]string{
+				"X-Custom-Header": "test-value",
+			},
+			"expected_codes": []int{http.StatusNoContent},
+		},
+	}
+
+	prober, err := NewHTTPProber(hc, false, logger)
+	require.NoError(t, err)
+
+	prober.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		},
+	}
+	defer func() { require.NoError(t, prober.Close()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := prober.Probe(ctx, "buffered-server")
+
+	assert.True(t, result.Success, "Expected success with runtime config shapes: %v", result.Error)
+	assert.Equal(t, http.StatusNoContent, result.StatusCode)
+	assert.NoError(t, result.Error)
+}
+
 func TestHTTPProber_Probe_WithIPv6Target(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)

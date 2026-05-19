@@ -691,6 +691,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         """Add a backend to the VirtualIP."""
         m = member.to_dict() if hasattr(member, 'to_dict') else member
         self._validate_member_supported(m)
+        self._validate_member_addresses(m)
         pool_id = m.get("pool_id")
         address = m.get("address")
         weight = self._member_weight(m)
@@ -843,14 +844,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     f"{self._member_id(m) or address}"
                 ),
             )
-        if not address:
-            raise driver_exc.UnsupportedOptionError(
-                user_fault_string="Member address is required.",
-                operator_fault_string=(
-                    "Cannot resolve address for Octavia member update "
-                    f"{self._member_id(m)}"
-                ),
-            )
+        self._validate_member_addresses(m)
         is_draining = self._member_is_draining(m)
         backend = None if is_draining else self._backend_from_member(m)
 
@@ -904,6 +898,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 ]
                 for m in member_dicts:
                     self._validate_member_supported(m)
+                    self._validate_member_addresses(m)
                 self._push_deferred_member_active_status(
                     pool_id, deferred_context["lb_id"], member_dicts
                 )
@@ -921,6 +916,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         ]
         for m in member_dicts:
             self._validate_member_supported(m)
+            self._validate_member_addresses(m)
             self._validate_member_dataplane_port(vip, m)
 
         name = vip["metadata"]["name"]
@@ -1797,6 +1793,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     if not member.get("address"):
                         continue
                     self._validate_member_supported(member)
+                    self._validate_member_addresses(member)
                     self._validate_member_dataplane_port(effective_vip, member)
                     is_draining = self._member_is_draining(member)
                     member_id = self._member_id(member)
@@ -2116,6 +2113,27 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 f"{cls._member_id(member) or member.get('address')}"
             ),
         )
+
+    @classmethod
+    def _validate_member_addresses(cls, member):
+        member = cls._as_dict(member)
+        address = member.get("address")
+        if not address:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Member address is required.",
+                operator_fault_string=(
+                    "Octavia member address is required for member "
+                    f"{cls._member_id(member) or '<unknown>'}"
+                ),
+            )
+
+        cls._validate_ip_address(address, "Member address")
+
+        monitor_address = member.get("monitor_address")
+        if monitor_address:
+            cls._validate_ip_address(
+                monitor_address, "Member monitor_address"
+            )
 
     @classmethod
     def _backends_with_member_state(cls, backends, address, backend,

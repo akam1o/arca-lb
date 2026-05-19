@@ -52,14 +52,11 @@ func (p *TCPProber) parseConfig(config models.HCConfig) error {
 	if !ok {
 		return fmt.Errorf("port is required in TCP health check config")
 	}
-	switch v := port.(type) {
-	case int:
-		p.port = v
-	case float64:
-		p.port = int(v)
-	default:
+	parsedPort, ok := healthCheckConfigInt(port)
+	if !ok {
 		return fmt.Errorf("port must be an integer, got %T", port)
 	}
+	p.port = parsedPort
 
 	// Send (optional)
 	if send, ok := config["send"].(string); ok {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"math"
 	"net"
 	"time"
 
@@ -23,6 +22,9 @@ type TLSHelloProber struct {
 func NewTLSHelloProber(hc *models.HealthCheck, logger *logrus.Logger) (*TLSHelloProber, error) {
 	if hc == nil {
 		return nil, fmt.Errorf("health check configuration is nil")
+	}
+	if err := models.ValidateHealthCheckConfig(hc.Type, hc.Config); err != nil {
+		return nil, fmt.Errorf("invalid TLS hello health check config: %w", err)
 	}
 
 	port, err := parseTLSHelloPort(hc.Config)
@@ -43,16 +45,8 @@ func parseTLSHelloPort(config models.HCConfig) (int, error) {
 		return 0, fmt.Errorf("port is required in TLS hello health check config")
 	}
 
-	var port int
-	switch v := portRaw.(type) {
-	case int:
-		port = v
-	case float64:
-		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) {
-			return 0, fmt.Errorf("port must be an integer, got %v", v)
-		}
-		port = int(v)
-	default:
+	port, ok := healthCheckConfigInt(portRaw)
+	if !ok {
 		return 0, fmt.Errorf("port must be an integer, got %T", portRaw)
 	}
 	if port < 1 || port > 65535 {

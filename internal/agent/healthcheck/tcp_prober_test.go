@@ -27,6 +27,33 @@ func TestTCPProberUsesIPv6SafeAddress(t *testing.T) {
 	require.Equal(t, "[2001:db8::1]:8080", tcpProbeAddress("2001:db8::1", prober.port))
 }
 
+func TestNewTCPProberAcceptsValidatedIntegerPortShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		port any
+		want int
+	}{
+		{name: "int32", port: int32(8080), want: 8080},
+		{name: "int64", port: int64(8081), want: 8081},
+		{name: "float64 integer", port: float64(8082), want: 8082},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prober, err := NewTCPProber(&models.HealthCheck{
+				Type:       models.HCTypeTCP,
+				TimeoutSec: 5,
+				Config: models.HCConfig{
+					"port": tt.port,
+				},
+			}, logrus.New())
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, prober.port)
+		})
+	}
+}
+
 func TestNewTCPProberRejectsInvalidRuntimeConfig(t *testing.T) {
 	tests := []struct {
 		name   string

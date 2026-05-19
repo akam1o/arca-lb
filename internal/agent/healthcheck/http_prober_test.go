@@ -262,7 +262,7 @@ func TestHTTPProber_Probe(t *testing.T) {
 			if tt.serverHandler != nil {
 				listener = startBufferedHTTPServer(t, tt.serverHandler)
 				port = 8080
-				target = "buffered-server"
+				target = "127.0.0.1"
 
 				// Update HC config with actual port
 				tt.hc.Config["port"] = port
@@ -343,7 +343,7 @@ func TestHTTPProber_Probe_WithCustomHeaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := prober.Probe(ctx, "buffered-server")
+	result := prober.Probe(ctx, "127.0.0.1")
 
 	assert.True(t, result.Success, "Expected success with custom header")
 	assert.Equal(t, 200, result.StatusCode)
@@ -388,7 +388,7 @@ func TestHTTPProber_Probe_WithValidatedRuntimeConfigShapes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := prober.Probe(ctx, "buffered-server")
+	result := prober.Probe(ctx, "127.0.0.1")
 
 	assert.True(t, result.Success, "Expected success with runtime config shapes: %v", result.Error)
 	assert.Equal(t, http.StatusNoContent, result.StatusCode)

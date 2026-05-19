@@ -59,6 +59,15 @@ func parseTLSHelloPort(config models.HCConfig) (int, error) {
 // Probe performs a TLS hello health check.
 func (p *TLSHelloProber) Probe(ctx context.Context, target string) ProbeResult {
 	startTime := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return ProbeResult{
+			Success:   false,
+			Latency:   time.Since(startTime),
+			Error:     err,
+			Timestamp: startTime,
+		}
+	}
+
 	probeCtx, cancel := contextWithDefaultTimeout(ctx, p.timeout)
 	defer cancel()
 

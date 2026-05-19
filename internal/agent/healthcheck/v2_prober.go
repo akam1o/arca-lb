@@ -159,6 +159,9 @@ func (p *httpProber) Close() error {
 }
 
 func buildHTTPProbeURL(scheme, target string, port int, probePath string) (string, error) {
+	if err := validateProbeTarget(target); err != nil {
+		return "", err
+	}
 	if probePath == "" {
 		probePath = "/"
 	}
@@ -204,6 +207,9 @@ func newTCPProberFromSpec(cfg *v1alpha1.TCPHealthCheck) (*tcpProber, error) {
 
 func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
 	addr := tcpProbeAddress(target, p.port)
 
 	var d net.Dialer
@@ -285,6 +291,9 @@ func newTLSHelloProberFromSpec(cfg *v1alpha1.TCPHealthCheck) (*tlsHelloProber, e
 
 func (p *tlsHelloProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
 	addr := tcpProbeAddress(target, p.port)
 
 	dialer := tls.Dialer{
@@ -310,7 +319,7 @@ const defaultPingTimeout = 2 * time.Second
 
 func (p *pingProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
-	if err := validatePingTarget(target); err != nil {
+	if err := validateProbeTarget(target); err != nil {
 		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 	}
 

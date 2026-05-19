@@ -197,6 +197,14 @@ func healthCheckConfigInt(raw any) (int, bool) {
 // Probe performs an HTTP/HTTPS health check
 func (p *HTTPProber) Probe(ctx context.Context, target string) ProbeResult {
 	startTime := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return ProbeResult{
+			Success:   false,
+			Latency:   time.Since(startTime),
+			Error:     err,
+			Timestamp: startTime,
+		}
+	}
 
 	scheme := "http"
 	if p.useHTTPS {

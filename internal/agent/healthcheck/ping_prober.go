@@ -35,7 +35,7 @@ func NewPingProber(hc *models.HealthCheck, logger *logrus.Logger) (*PingProber, 
 // Probe performs an ICMP ping health check
 func (p *PingProber) Probe(ctx context.Context, target string) ProbeResult {
 	startTime := time.Now()
-	if err := validatePingTarget(target); err != nil {
+	if err := validateProbeTarget(target); err != nil {
 		return ProbeResult{
 			Success:   false,
 			Latency:   time.Since(startTime),

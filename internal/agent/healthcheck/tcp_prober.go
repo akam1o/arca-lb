@@ -74,6 +74,14 @@ func (p *TCPProber) parseConfig(config models.HCConfig) error {
 // Probe performs a TCP health check
 func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	startTime := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return ProbeResult{
+			Success:   false,
+			Latency:   time.Since(startTime),
+			Error:     err,
+			Timestamp: startTime,
+		}
+	}
 
 	address := tcpProbeAddress(target, p.port)
 

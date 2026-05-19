@@ -15,6 +15,7 @@ Mapping:
 """
 
 import copy
+import ipaddress
 import json
 import logging
 import threading
@@ -107,6 +108,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 user_fault_string="VIP address is required.",
                 operator_fault_string="loadbalancer_create called without vip_address",
             )
+        self._validate_ip_address(vip_address, "VIP address")
 
         self._remember_loadbalancer_context(
             lb_id,
@@ -169,6 +171,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         lb_id = lb.get("loadbalancer_id")
         admin_state = lb.get("admin_state_up")
         vip_address = lb.get("vip_address")
+        if vip_address:
+            self._validate_ip_address(vip_address, "VIP address")
         self._remember_loadbalancer_context(
             lb_id,
             vip_address=vip_address,
@@ -281,6 +285,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     f"No vip_address for listener {listener_id}, lb {lb_id}"
                 ),
             )
+        self._validate_ip_address(vip_address, "VIP address")
+        port = self._validate_required_port(port, "Listener protocol_port")
 
         # Parse flavor metadata for encap settings.
         flavor = self._listener_flavor(lst, lb_id)
@@ -416,10 +422,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         port = lst.get("protocol_port")
         old_port = self._valid_port(spec.get("port"))
-        new_port = self._valid_port(port)
-        port_changed = port is not None and new_port != old_port
+        new_port = None
         if port is not None:
-            spec["port"] = port
+            new_port = self._validate_required_port(
+                port, "Listener protocol_port"
+            )
+        port_changed = new_port is not None and new_port != old_port
+        if new_port is not None:
+            spec["port"] = new_port
 
         should_restore_pool = False
         pool_detached = False
@@ -442,8 +452,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         def prepare_restore_update(current_spec, current_annotations):
             if mapped_protocol:
                 current_spec["protocol"] = mapped_protocol
-            if port is not None:
-                current_spec["port"] = port
+            if new_port is not None:
+                current_spec["port"] = new_port
             if pool_id:
                 current_annotations[constants.ANNOTATION_POOL_ID] = pool_id
             self._set_admin_state_annotation(
@@ -497,8 +507,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
             if mapped_protocol:
                 current_spec["protocol"] = mapped_protocol
-            if port is not None:
-                current_spec["port"] = port
+            if new_port is not None:
+                current_spec["port"] = new_port
             if pool_detached:
                 self._clear_pool_association(
                     current_spec, current_annotations
@@ -2465,6 +2475,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return {}
 
     @staticmethod
+    def _validate_ip_address(value, field):
+        try:
+            ipaddress.ip_address(str(value))
+        except (TypeError, ValueError):
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=f"{field} must be a valid IP address.",
+                operator_fault_string=f"Invalid {field}: {value}",
+            )
+
+    @staticmethod
     def _valid_port(value):
         try:
             port = int(value)
@@ -2473,6 +2493,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if 1 <= port <= 65535:
             return port
         return None
+
+    @classmethod
+    def _validate_required_port(cls, value, field):
+        port = cls._valid_port(value)
+        if port is None:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=f"{field} must be between 1 and 65535.",
+                operator_fault_string=f"Invalid {field}: {value}",
+            )
+        return port
 
     @classmethod
     def _vip_port(cls, vip):

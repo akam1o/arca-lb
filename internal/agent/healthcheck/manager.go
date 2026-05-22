@@ -183,17 +183,8 @@ func (m *Manager) StartHealthCheck(vipConfig *models.VIPConfig) error {
 
 	// Validate health check configuration
 	hc := vipConfig.HealthCheck
-	if hc.IntervalSec <= 0 {
-		return fmt.Errorf("health check interval_sec must be positive, got %d", hc.IntervalSec)
-	}
-	if hc.TimeoutSec <= 0 {
-		return fmt.Errorf("health check timeout_sec must be positive, got %d", hc.TimeoutSec)
-	}
-	if hc.RiseCount <= 0 {
-		return fmt.Errorf("health check rise_count must be positive, got %d", hc.RiseCount)
-	}
-	if hc.FallCount <= 0 {
-		return fmt.Errorf("health check fall_count must be positive, got %d", hc.FallCount)
+	if err := models.ValidateHealthCheckTiming(hc); err != nil {
+		return err
 	}
 
 	m.mu.Lock()

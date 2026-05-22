@@ -1592,8 +1592,10 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 				Vips: []*pb.VIPConfig{
 					{
 						Vip: &pb.VIP{
-							Id:  "vip-1",
-							Vip: "2001:db8::10",
+							Id:       "vip-1",
+							Vip:      "2001:db8::10",
+							Port:     80,
+							Protocol: pb.Protocol_PROTOCOL_TCP,
 						},
 					},
 				},
@@ -1608,6 +1610,8 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 						Vip: &pb.VIP{
 							Id:        "vip-1",
 							Vip:       "192.0.2.10",
+							Port:      80,
+							Protocol:  pb.Protocol_PROTOCOL_TCP,
 							EncapType: pb.EncapType_ENCAP_TYPE_NAT6,
 						},
 					},
@@ -1616,13 +1620,133 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 			wantErr: "vip config at index 0 encap_type NAT6 requires an IPv6 vip",
 		},
 		{
+			name: "invalid VIP port",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:       "vip-1",
+							Vip:      "192.0.2.10",
+							Port:     0,
+							Protocol: pb.Protocol_PROTOCOL_TCP,
+						},
+					},
+				},
+			},
+			wantErr: "vip config at index 0 port must be between 1 and 65535",
+		},
+		{
+			name: "unspecified protocol",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:       "vip-1",
+							Vip:      "192.0.2.10",
+							Port:     80,
+							Protocol: pb.Protocol_PROTOCOL_UNSPECIFIED,
+						},
+					},
+				},
+			},
+			wantErr: "vip config at index 0 protocol must be TCP or UDP",
+		},
+		{
+			name: "unknown lb method",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:       "vip-1",
+							Vip:      "192.0.2.10",
+							Port:     80,
+							Protocol: pb.Protocol_PROTOCOL_TCP,
+							LbMethod: pb.LBMethod(99),
+						},
+					},
+				},
+			},
+			wantErr: "vip config at index 0 lb_method must be maglev",
+		},
+		{
+			name: "unknown encap type",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:        "vip-1",
+							Vip:       "192.0.2.10",
+							Port:      80,
+							Protocol:  pb.Protocol_PROTOCOL_TCP,
+							EncapType: pb.EncapType(99),
+						},
+					},
+				},
+			},
+			wantErr: `vip config at index 0 encap_type "invalid" is not valid`,
+		},
+		{
+			name: "health check timeout must be less than interval",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:       "vip-1",
+							Vip:      "192.0.2.10",
+							Port:     80,
+							Protocol: pb.Protocol_PROTOCOL_TCP,
+						},
+						HealthCheck: &pb.HealthCheck{
+							Id:          "hc-1",
+							VipId:       "vip-1",
+							Type:        pb.HCType_HC_TYPE_TCP,
+							IntervalSec: 5,
+							TimeoutSec:  5,
+							RiseCount:   1,
+							FallCount:   1,
+							Config:      `{"port":8080}`,
+						},
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 is invalid: health check timeout_sec must be less than interval_sec",
+		},
+		{
+			name: "unspecified health check type",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:       "vip-1",
+							Vip:      "192.0.2.10",
+							Port:     80,
+							Protocol: pb.Protocol_PROTOCOL_TCP,
+						},
+						HealthCheck: &pb.HealthCheck{
+							Id:          "hc-1",
+							VipId:       "vip-1",
+							Type:        pb.HCType_HC_TYPE_UNSPECIFIED,
+							IntervalSec: 5,
+							TimeoutSec:  3,
+							RiseCount:   1,
+							FallCount:   1,
+							Config:      `{"port":8080}`,
+						},
+					},
+				},
+			},
+			wantErr: "health check config at vip index 0 is invalid: unsupported health check type",
+		},
+		{
 			name: "invalid backend IP",
 			input: &pb.ConfigSnapshot{
 				Vips: []*pb.VIPConfig{
 					{
 						Vip: &pb.VIP{
-							Id:  "vip-1",
-							Vip: "192.0.2.10",
+							Id:       "vip-1",
+							Vip:      "192.0.2.10",
+							Port:     80,
+							Protocol: pb.Protocol_PROTOCOL_TCP,
 						},
 						Backends: []*pb.Backend{
 							{
@@ -1643,6 +1767,8 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 						Vip: &pb.VIP{
 							Id:        "vip-1",
 							Vip:       "2001:db8::10",
+							Port:      80,
+							Protocol:  pb.Protocol_PROTOCOL_TCP,
 							EncapType: pb.EncapType_ENCAP_TYPE_GRE4,
 						},
 						Backends: []*pb.Backend{
@@ -1664,6 +1790,8 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 						Vip: &pb.VIP{
 							Id:        "vip-1",
 							Vip:       "2001:db8::10",
+							Port:      80,
+							Protocol:  pb.Protocol_PROTOCOL_TCP,
 							EncapType: pb.EncapType_ENCAP_TYPE_NAT6,
 						},
 						Backends: []*pb.Backend{
@@ -1676,6 +1804,29 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 				},
 			},
 			wantErr: `backend at vip index 0 backend index 0 ip "10.0.0.1" must be IPv6 for encap_type NAT6`,
+		},
+		{
+			name: "invalid backend weight",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: &pb.VIP{
+							Id:       "vip-1",
+							Vip:      "192.0.2.10",
+							Port:     80,
+							Protocol: pb.Protocol_PROTOCOL_TCP,
+						},
+						Backends: []*pb.Backend{
+							{
+								Id:     "backend-1",
+								Ip:     "10.0.0.1",
+								Weight: 0,
+							},
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 weight must be between 1 and 100",
 		},
 	}
 
@@ -1699,15 +1850,20 @@ func TestConvertProtoToConfigAllowsMissingTimestamps(t *testing.T) {
 		Vips: []*pb.VIPConfig{
 			{
 				Vip: &pb.VIP{
-					Id:   "vip-1",
-					Vip:  "192.168.1.100",
-					Port: 80,
+					Id:       "vip-1",
+					Vip:      "192.168.1.100",
+					Port:     80,
+					Protocol: pb.Protocol_PROTOCOL_TCP,
 				},
 				HealthCheck: &pb.HealthCheck{
-					Id:     "hc-1",
-					VipId:  "vip-1",
-					Type:   pb.HCType_HC_TYPE_TCP,
-					Config: `{"port":8080}`,
+					Id:          "hc-1",
+					VipId:       "vip-1",
+					Type:        pb.HCType_HC_TYPE_TCP,
+					IntervalSec: 5,
+					TimeoutSec:  3,
+					RiseCount:   1,
+					FallCount:   1,
+					Config:      `{"port":8080}`,
 				},
 				Backends: []*pb.Backend{
 					{
@@ -1755,7 +1911,7 @@ func TestConvertProtoHCType(t *testing.T) {
 		{name: "tcp", in: pb.HCType_HC_TYPE_TCP, want: models.HCTypeTCP},
 		{name: "ping", in: pb.HCType_HC_TYPE_PING, want: models.HCTypePing},
 		{name: "tls hello", in: pb.HCType_HC_TYPE_TLS_HELLO, want: models.HCTypeTLSHello},
-		{name: "unknown", in: pb.HCType_HC_TYPE_UNSPECIFIED, want: models.HCTypeTCP},
+		{name: "unknown", in: pb.HCType_HC_TYPE_UNSPECIFIED, want: models.HCType("")},
 	}
 
 	for _, tt := range tests {

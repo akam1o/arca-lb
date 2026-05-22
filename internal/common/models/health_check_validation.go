@@ -36,6 +36,29 @@ func ValidateHealthCheckConfig(hcType HCType, config HCConfig) error {
 	}
 }
 
+// ValidateHealthCheckTiming validates health check timing and threshold fields.
+func ValidateHealthCheckTiming(hc *HealthCheck) error {
+	if hc == nil {
+		return fmt.Errorf("health check is required")
+	}
+	if hc.IntervalSec < 1 || hc.IntervalSec > MaxHealthCheckSeconds {
+		return fmt.Errorf("health check interval_sec must be between 1 and %d, got %d", MaxHealthCheckSeconds, hc.IntervalSec)
+	}
+	if hc.TimeoutSec < 1 || hc.TimeoutSec > MaxHealthCheckSeconds {
+		return fmt.Errorf("health check timeout_sec must be between 1 and %d, got %d", MaxHealthCheckSeconds, hc.TimeoutSec)
+	}
+	if hc.TimeoutSec >= hc.IntervalSec {
+		return fmt.Errorf("health check timeout_sec must be less than interval_sec")
+	}
+	if hc.RiseCount < 1 || hc.RiseCount > MaxHealthCheckCount {
+		return fmt.Errorf("health check rise_count must be between 1 and %d, got %d", MaxHealthCheckCount, hc.RiseCount)
+	}
+	if hc.FallCount < 1 || hc.FallCount > MaxHealthCheckCount {
+		return fmt.Errorf("health check fall_count must be between 1 and %d, got %d", MaxHealthCheckCount, hc.FallCount)
+	}
+	return nil
+}
+
 func validateHTTPHealthCheckConfig(config HCConfig) error {
 	if err := optionalStringHealthCheckConfig(config, "path"); err != nil {
 		return err

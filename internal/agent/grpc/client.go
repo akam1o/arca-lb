@@ -711,6 +711,9 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 			if err := models.ValidateHealthCheckConfig(vipConfig.HealthCheck.Type, vipConfig.HealthCheck.Config); err != nil {
 				return nil, fmt.Errorf("health check config at vip index %d is invalid: %w", i, err)
 			}
+			if err := models.ValidateHealthCheckTiming(vipConfig.HealthCheck); err != nil {
+				return nil, fmt.Errorf("health check at vip index %d is invalid: %w", i, err)
+			}
 		}
 
 		// Convert backends
@@ -752,8 +755,26 @@ func validateVIPConfigDataPlane(vipIndex int, vipConfig *models.VIPConfig) error
 	if vipIP == nil {
 		return fmt.Errorf("vip config at index %d vip %q is not a valid IP address", vipIndex, vipConfig.VIP.VIP)
 	}
+	if vipConfig.VIP.Port < 1 || vipConfig.VIP.Port > 65535 {
+		return fmt.Errorf("vip config at index %d port must be between 1 and 65535, got %d", vipIndex, vipConfig.VIP.Port)
+	}
 
 	encapType := effectiveProtoEncapType(vipConfig.VIP.EncapType)
+	switch vipConfig.VIP.Protocol {
+	case models.ProtocolTCP, models.ProtocolUDP:
+	default:
+		return fmt.Errorf("vip config at index %d protocol must be TCP or UDP", vipIndex)
+	}
+	switch vipConfig.VIP.LBMethod {
+	case models.LBMethodMaglev:
+	default:
+		return fmt.Errorf("vip config at index %d lb_method must be maglev", vipIndex)
+	}
+	switch vipConfig.VIP.EncapType {
+	case "", models.EncapTypeGRE4, models.EncapTypeGRE6, models.EncapTypeL3DSR, models.EncapTypeNAT4, models.EncapTypeNAT6:
+	default:
+		return fmt.Errorf("vip config at index %d encap_type %q is not valid", vipIndex, vipConfig.VIP.EncapType)
+	}
 	if err := validateVIPAddressFamily(vipIndex, vipIP, encapType); err != nil {
 		return err
 	}
@@ -765,6 +786,9 @@ func validateVIPConfigDataPlane(vipIndex int, vipConfig *models.VIPConfig) error
 		}
 		if err := validateBackendAddressFamily(vipIndex, backendIndex, backend.IP, backendIP, encapType); err != nil {
 			return err
+		}
+		if backend.Weight < 1 || backend.Weight > 100 {
+			return fmt.Errorf("backend at vip index %d backend index %d weight must be between 1 and 100, got %d", vipIndex, backendIndex, backend.Weight)
 		}
 	}
 
@@ -833,17 +857,17 @@ func (c *Client) convertProtoProtocol(protocol pb.Protocol) models.Protocol {
 	case pb.Protocol_PROTOCOL_UDP:
 		return models.ProtocolUDP
 	default:
-		return models.ProtocolTCP
+		return ""
 	}
 }
 
 // convertProtoLBMethod converts protobuf LB method to internal model
 func (c *Client) convertProtoLBMethod(method pb.LBMethod) models.LBMethod {
 	switch method {
-	case pb.LBMethod_LB_METHOD_MAGLEV:
+	case pb.LBMethod_LB_METHOD_UNSPECIFIED, pb.LBMethod_LB_METHOD_MAGLEV:
 		return models.LBMethodMaglev
 	default:
-		return models.LBMethodMaglev
+		return models.LBMethod("invalid")
 	}
 }
 
@@ -860,8 +884,10 @@ func (c *Client) convertProtoEncapType(encapType pb.EncapType) models.EncapType 
 		return models.EncapTypeNAT4
 	case pb.EncapType_ENCAP_TYPE_NAT6:
 		return models.EncapTypeNAT6
-	default:
+	case pb.EncapType_ENCAP_TYPE_UNSPECIFIED:
 		return ""
+	default:
+		return models.EncapType("invalid")
 	}
 }
 
@@ -879,7 +905,7 @@ func (c *Client) convertProtoHCType(hcType pb.HCType) models.HCType {
 	case pb.HCType_HC_TYPE_TLS_HELLO:
 		return models.HCTypeTLSHello
 	default:
-		return models.HCTypeTCP
+		return ""
 	}
 }
 

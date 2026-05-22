@@ -140,3 +140,79 @@ func TestValidateHealthCheckConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateHealthCheckTiming(t *testing.T) {
+	tests := []struct {
+		name    string
+		hc      *HealthCheck
+		wantErr string
+	}{
+		{
+			name: "valid",
+			hc: &HealthCheck{
+				IntervalSec: 5,
+				TimeoutSec:  3,
+				RiseCount:   2,
+				FallCount:   2,
+			},
+		},
+		{
+			name:    "nil",
+			wantErr: "health check is required",
+		},
+		{
+			name: "zero interval",
+			hc: &HealthCheck{
+				TimeoutSec: 1,
+				RiseCount:  1,
+				FallCount:  1,
+			},
+			wantErr: "interval_sec must be between",
+		},
+		{
+			name: "timeout equals interval",
+			hc: &HealthCheck{
+				IntervalSec: 5,
+				TimeoutSec:  5,
+				RiseCount:   1,
+				FallCount:   1,
+			},
+			wantErr: "timeout_sec must be less than interval_sec",
+		},
+		{
+			name: "rise count above range",
+			hc: &HealthCheck{
+				IntervalSec: 5,
+				TimeoutSec:  3,
+				RiseCount:   MaxHealthCheckCount + 1,
+				FallCount:   1,
+			},
+			wantErr: "rise_count must be between",
+		},
+		{
+			name: "fall count above range",
+			hc: &HealthCheck{
+				IntervalSec: 5,
+				TimeoutSec:  3,
+				RiseCount:   1,
+				FallCount:   MaxHealthCheckCount + 1,
+			},
+			wantErr: "fall_count must be between",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateHealthCheckTiming(tt.hc)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateHealthCheckTiming() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateHealthCheckTiming() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}

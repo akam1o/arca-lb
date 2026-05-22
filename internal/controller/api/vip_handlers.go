@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,8 @@ import (
 type badRequestError string
 
 func (e badRequestError) Error() string { return string(e) }
+
+const maxResourceIDBytes = 256
 
 // HealthCheckRequest represents the request body for an optional health check when creating a VIP.
 type HealthCheckRequest struct {
@@ -47,6 +50,25 @@ type UpdateVIPRequest struct {
 	LBMethod  *models.LBMethod  `json:"lb_method" binding:"omitempty,oneof=maglev"`
 	EncapType *models.EncapType `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
 	DSCP      *uint8            `json:"dscp" binding:"omitempty,min=0,max=63"`
+}
+
+func validateResourceID(field, value string) error {
+	if value == "" {
+		return badRequestError(field + " is required")
+	}
+	if len(value) > maxResourceIDBytes {
+		return badRequestError(field + " must be at most 256 bytes")
+	}
+	if strings.Contains(value, "/") {
+		return badRequestError(field + " must not contain '/'")
+	}
+	if strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return badRequestError(field + " must not contain whitespace")
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return badRequestError(field + " must not contain control characters")
+	}
+	return nil
 }
 
 func validateHealthCheckRequest(req *HealthCheckRequest) error {
@@ -271,6 +293,10 @@ func (s *Server) listVIPs(c *gin.Context) {
 // getVIP handles GET /api/v1/vips/:id
 func (s *Server) getVIP(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -288,6 +314,10 @@ func (s *Server) getVIP(c *gin.Context) {
 // updateVIP handles PUT /api/v1/vips/:id
 func (s *Server) updateVIP(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	var requestFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
@@ -375,6 +405,10 @@ func (s *Server) updateVIP(c *gin.Context) {
 // deleteVIP handles DELETE /api/v1/vips/:id
 func (s *Server) deleteVIP(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()

@@ -58,6 +58,10 @@ func (s *Server) createBackend(c *gin.Context) {
 		handleBindError(c, err)
 		return
 	}
+	if err := validateResourceID("vip_id", req.VIPID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -100,8 +104,8 @@ func (s *Server) createBackend(c *gin.Context) {
 // listBackends handles GET /api/v1/backends?vip_id=xxx
 func (s *Server) listBackends(c *gin.Context) {
 	vipID := c.Query("vip_id")
-	if vipID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vip_id query parameter is required"})
+	if err := validateResourceID("vip_id", vipID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -124,6 +128,10 @@ func (s *Server) listBackends(c *gin.Context) {
 // getBackend handles GET /api/v1/backends/:id
 func (s *Server) getBackend(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -141,6 +149,10 @@ func (s *Server) getBackend(c *gin.Context) {
 // updateBackend handles PUT /api/v1/backends/:id
 func (s *Server) updateBackend(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	var requestFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
@@ -202,6 +214,10 @@ func (s *Server) updateBackend(c *gin.Context) {
 // deleteBackend handles DELETE /api/v1/backends/:id
 func (s *Server) deleteBackend(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()

@@ -67,6 +67,14 @@ func TestCreateBackend(t *testing.T) {
 			expectedStatus: http.StatusNotFound,
 		},
 		{
+			name: "malformed VIP id",
+			requestBody: map[string]interface{}{
+				"vip_id": "vip/1",
+				"ip":     "10.0.0.1",
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "invalid IP",
 			requestBody: map[string]interface{}{
 				"vip_id": "vip-1",
@@ -188,6 +196,11 @@ func TestListBackends(t *testing.T) {
 		{
 			name:           "missing vip_id",
 			vipID:          "",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "malformed vip_id",
+			vipID:          "vip/1",
 			expectedStatus: http.StatusBadRequest,
 		},
 	}

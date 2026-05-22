@@ -41,6 +41,64 @@ func setupTestServer() (*Server, *testutil.MockDataStore) {
 	return server, mockDS
 }
 
+func TestValidateResourceID(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		expectErr bool
+	}{
+		{
+			name:  "simple id",
+			value: "vip-1",
+		},
+		{
+			name:  "max length",
+			value: strings.Repeat("a", maxResourceIDBytes),
+		},
+		{
+			name:      "empty",
+			value:     "",
+			expectErr: true,
+		},
+		{
+			name:      "space only",
+			value:     " ",
+			expectErr: true,
+		},
+		{
+			name:      "contains slash",
+			value:     "vip/1",
+			expectErr: true,
+		},
+		{
+			name:      "contains whitespace",
+			value:     "vip 1",
+			expectErr: true,
+		},
+		{
+			name:      "contains control character",
+			value:     "vip\x001",
+			expectErr: true,
+		},
+		{
+			name:      "too long",
+			value:     strings.Repeat("a", maxResourceIDBytes+1),
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateResourceID("id", tt.value)
+			if tt.expectErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func TestRequestBodyLimitRejectsOversizedCreateVIP(t *testing.T) {
 	server, _ := setupTestServer()
 	server.config.Server.MaxBodyBytes = 32

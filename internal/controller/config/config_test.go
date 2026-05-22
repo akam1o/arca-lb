@@ -34,6 +34,49 @@ grpc:
 	}
 }
 
+func TestLoadConfigRejectsGRPCTLSFilesWithoutTLS(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "cert file",
+			yaml: `
+grpc:
+  cert_file: /tmp/server.crt
+`,
+			wantErr: "grpc.tls must be enabled when grpc.cert_file is set",
+		},
+		{
+			name: "key file",
+			yaml: `
+grpc:
+  key_file: /tmp/server.key
+`,
+			wantErr: "grpc.tls must be enabled when grpc.key_file is set",
+		},
+		{
+			name: "client CA file",
+			yaml: `
+grpc:
+  client_ca_file: /tmp/ca.crt
+`,
+			wantErr: "grpc.tls must be enabled when grpc.client_ca_file is set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, minimalEtcdConfig()+tt.yaml)
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadConfigRejectsUnknownFields(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 server:
@@ -155,6 +198,41 @@ server:
   cert_file: /tmp/server.crt
 `,
 			wantErr: "server.key_file is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, minimalEtcdConfig()+tt.yaml)
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsServerTLSFilesWithoutTLS(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "cert file",
+			yaml: `
+server:
+  cert_file: /tmp/server.crt
+`,
+			wantErr: "server.tls must be enabled when server.cert_file is set",
+		},
+		{
+			name: "key file",
+			yaml: `
+server:
+  key_file: /tmp/server.key
+`,
+			wantErr: "server.tls must be enabled when server.key_file is set",
 		},
 	}
 
@@ -298,6 +376,36 @@ func TestLoadConfigRejectsInvalidDataStoreSettings(t *testing.T) {
     ca_file: /tmp/ca.crt
 `,
 			wantErr: "datastore.etcd.cert_file and datastore.etcd.key_file",
+		},
+		{
+			name: "etcd ca without tls",
+			yaml: `datastore:
+  type: etcd
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+    ca_file: /tmp/ca.crt
+`,
+			wantErr: "datastore.etcd.tls must be enabled when datastore.etcd.ca_file is set",
+		},
+		{
+			name: "etcd cert without tls",
+			yaml: `datastore:
+  type: etcd
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+    cert_file: /tmp/client.crt
+`,
+			wantErr: "datastore.etcd.tls must be enabled when datastore.etcd.cert_file is set",
+		},
+		{
+			name: "etcd key without tls",
+			yaml: `datastore:
+  type: etcd
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+    key_file: /tmp/client.key
+`,
+			wantErr: "datastore.etcd.tls must be enabled when datastore.etcd.key_file is set",
 		},
 		{
 			name: "etcd negative timeout",

@@ -162,6 +162,14 @@ func (c *Config) validate() error {
 	if c.Server.APIKey != "" && !c.Server.TLS {
 		return fmt.Errorf("server.tls must be enabled when server.api_key is set")
 	}
+	if !c.Server.TLS {
+		if c.Server.CertFile != "" {
+			return fmt.Errorf("server.tls must be enabled when server.cert_file is set")
+		}
+		if c.Server.KeyFile != "" {
+			return fmt.Errorf("server.tls must be enabled when server.key_file is set")
+		}
+	}
 	if c.Server.TLS {
 		if c.Server.CertFile == "" {
 			return fmt.Errorf("server.cert_file is required when server.tls is enabled")
@@ -205,6 +213,17 @@ func (c *Config) validate() error {
 	}
 	if c.GRPC.AuthorizeAgentIDWithClientCert && !c.GRPC.RequireClientCert {
 		return fmt.Errorf("grpc.require_client_cert must be enabled when grpc.authorize_agent_id_with_client_cert is enabled")
+	}
+	if !c.GRPC.TLS {
+		if c.GRPC.CertFile != "" {
+			return fmt.Errorf("grpc.tls must be enabled when grpc.cert_file is set")
+		}
+		if c.GRPC.KeyFile != "" {
+			return fmt.Errorf("grpc.tls must be enabled when grpc.key_file is set")
+		}
+		if c.GRPC.ClientCAFile != "" {
+			return fmt.Errorf("grpc.tls must be enabled when grpc.client_ca_file is set")
+		}
 	}
 	if c.GRPC.TLS {
 		if c.GRPC.CertFile == "" {
@@ -260,6 +279,17 @@ func validateEtcdConfig(cfg EtcdConfig) error {
 	}
 	if cfg.RequestTimeout < 0 {
 		return fmt.Errorf("datastore.etcd.request_timeout must be non-negative")
+	}
+	if !cfg.TLS {
+		if cfg.CAFile != "" {
+			return fmt.Errorf("datastore.etcd.tls must be enabled when datastore.etcd.ca_file is set")
+		}
+		if cfg.CertFile != "" {
+			return fmt.Errorf("datastore.etcd.tls must be enabled when datastore.etcd.cert_file is set")
+		}
+		if cfg.KeyFile != "" {
+			return fmt.Errorf("datastore.etcd.tls must be enabled when datastore.etcd.key_file is set")
+		}
 	}
 	if cfg.TLS {
 		if cfg.CAFile == "" {

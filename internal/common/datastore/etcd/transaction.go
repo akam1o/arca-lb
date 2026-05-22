@@ -163,6 +163,10 @@ func etcdWriteOpKeyFor(op clientv3.Op) etcdWriteOpKey {
 
 // CreateVIP adds a VIP creation operation to the transaction
 func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	// Generate UUID if not set
 	if vip.ID == "" {
 		vip.ID = uuid.New().String()
@@ -217,6 +221,10 @@ func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error
 
 // AddBackend adds a backend creation operation to the transaction
 func (tx *EtcdTransaction) AddBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	// Generate UUID if not set
 	if backend.ID == "" {
 		backend.ID = uuid.New().String()
@@ -289,6 +297,10 @@ func (tx *EtcdTransaction) AddBackend(ctx context.Context, backend *models.Backe
 
 // UpdateVIP adds a VIP update operation to the transaction
 func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	if vip.ID == "" {
 		return fmt.Errorf("VIP ID is required")
 	}

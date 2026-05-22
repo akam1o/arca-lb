@@ -52,6 +52,10 @@ func (HealthCheckRecord) TableName() string {
 
 // CreateVIP creates a new VIP in MySQL
 func (ds *MySQLDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	// Generate UUID if not set
 	if vip.ID == "" {
 		vip.ID = uuid.New().String()
@@ -324,6 +328,10 @@ func vipUpdateValues(vip *models.VIP, fallback VIPRecord) map[string]interface{}
 
 // UpdateVIP updates an existing VIP in MySQL
 func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	if vip.ID == "" {
 		return fmt.Errorf("VIP ID is required")
 	}

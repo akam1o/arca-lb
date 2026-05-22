@@ -29,6 +29,10 @@ func (BackendRecord) TableName() string {
 
 // AddBackend adds a new backend to MySQL
 func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	// Generate UUID if not set
 	if backend.ID == "" {
 		backend.ID = uuid.New().String()
@@ -136,6 +140,10 @@ func (ds *MySQLDataStore) ListBackends(ctx context.Context, vipID string) ([]mod
 
 // UpdateBackend updates an existing backend in MySQL
 func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	if backend.ID == "" {
 		return fmt.Errorf("backend ID is required")
 	}

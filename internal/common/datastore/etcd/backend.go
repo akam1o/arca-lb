@@ -15,6 +15,10 @@ import (
 
 // AddBackend adds a new backend to etcd
 func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
@@ -212,6 +216,10 @@ func (ds *EtcdDataStore) ListBackends(ctx context.Context, vipID string) ([]mode
 
 // UpdateBackend updates an existing backend in etcd
 func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 

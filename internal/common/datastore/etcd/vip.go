@@ -15,6 +15,10 @@ import (
 
 // CreateVIP creates a new VIP in etcd
 func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
@@ -136,6 +140,10 @@ func (ds *EtcdDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
 
 // UpdateVIP updates an existing VIP in etcd
 func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 

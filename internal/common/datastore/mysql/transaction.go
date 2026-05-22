@@ -46,6 +46,10 @@ func (ds *MySQLDataStore) BeginTx(ctx context.Context) (datastore.Transaction, e
 
 // CreateVIP adds a VIP creation operation to the transaction
 func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	db := tx.tx.WithContext(ctx)
 
 	// Generate UUID if not set
@@ -133,6 +137,10 @@ func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) erro
 
 // AddBackend adds a backend creation operation to the transaction
 func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	db := tx.tx.WithContext(ctx)
 
 	// Generate UUID if not set
@@ -182,6 +190,10 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 
 // UpdateVIP adds a VIP update operation to the transaction
 func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	db := tx.tx.WithContext(ctx)
 
 	if vip.ID == "" {

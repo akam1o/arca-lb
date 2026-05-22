@@ -807,12 +807,13 @@ type backendConfigLocation struct {
 }
 
 func validateVIPConfigIdentity(vipIndex int, vipConfig *models.VIPConfig, seenVIPIDs, seenVIPTuples map[string]int, seenBackendIDs map[string]backendConfigLocation) error {
-	if vipConfig.VIP.ID != "" {
-		if firstIndex, ok := seenVIPIDs[vipConfig.VIP.ID]; ok {
-			return fmt.Errorf("vip config at index %d duplicates vip id %q first seen at index %d", vipIndex, vipConfig.VIP.ID, firstIndex)
-		}
-		seenVIPIDs[vipConfig.VIP.ID] = vipIndex
+	if vipConfig.VIP.ID == "" {
+		return fmt.Errorf("vip config at index %d id is required", vipIndex)
 	}
+	if firstIndex, ok := seenVIPIDs[vipConfig.VIP.ID]; ok {
+		return fmt.Errorf("vip config at index %d duplicates vip id %q first seen at index %d", vipIndex, vipConfig.VIP.ID, firstIndex)
+	}
+	seenVIPIDs[vipConfig.VIP.ID] = vipIndex
 
 	tupleKey := vipTupleKey(vipConfig.VIP)
 	if firstIndex, ok := seenVIPTuples[tupleKey]; ok {
@@ -820,23 +821,32 @@ func validateVIPConfigIdentity(vipIndex int, vipConfig *models.VIPConfig, seenVI
 	}
 	seenVIPTuples[tupleKey] = vipIndex
 
-	if vipConfig.HealthCheck != nil && vipConfig.VIP.ID != "" && vipConfig.HealthCheck.VIPID != "" && vipConfig.HealthCheck.VIPID != vipConfig.VIP.ID {
-		return fmt.Errorf("health check at vip index %d vip_id %q does not match vip id %q", vipIndex, vipConfig.HealthCheck.VIPID, vipConfig.VIP.ID)
+	if vipConfig.HealthCheck != nil {
+		if vipConfig.HealthCheck.VIPID == "" {
+			return fmt.Errorf("health check at vip index %d vip_id is required", vipIndex)
+		}
+		if vipConfig.HealthCheck.VIPID != vipConfig.VIP.ID {
+			return fmt.Errorf("health check at vip index %d vip_id %q does not match vip id %q", vipIndex, vipConfig.HealthCheck.VIPID, vipConfig.VIP.ID)
+		}
 	}
 
 	seenBackendIPs := make(map[string]int, len(vipConfig.Backends))
 	for backendIndex, backend := range vipConfig.Backends {
-		if vipConfig.VIP.ID != "" && backend.VIPID != "" && backend.VIPID != vipConfig.VIP.ID {
+		if backend.ID == "" {
+			return fmt.Errorf("backend at vip index %d backend index %d id is required", vipIndex, backendIndex)
+		}
+		if backend.VIPID == "" {
+			return fmt.Errorf("backend at vip index %d backend index %d vip_id is required", vipIndex, backendIndex)
+		}
+		if backend.VIPID != vipConfig.VIP.ID {
 			return fmt.Errorf("backend at vip index %d backend index %d vip_id %q does not match vip id %q", vipIndex, backendIndex, backend.VIPID, vipConfig.VIP.ID)
 		}
-		if backend.ID != "" {
-			if firstLocation, ok := seenBackendIDs[backend.ID]; ok {
-				return fmt.Errorf("backend at vip index %d backend index %d duplicates backend id %q first seen at vip index %d backend index %d", vipIndex, backendIndex, backend.ID, firstLocation.vipIndex, firstLocation.backendIndex)
-			}
-			seenBackendIDs[backend.ID] = backendConfigLocation{
-				vipIndex:     vipIndex,
-				backendIndex: backendIndex,
-			}
+		if firstLocation, ok := seenBackendIDs[backend.ID]; ok {
+			return fmt.Errorf("backend at vip index %d backend index %d duplicates backend id %q first seen at vip index %d backend index %d", vipIndex, backendIndex, backend.ID, firstLocation.vipIndex, firstLocation.backendIndex)
+		}
+		seenBackendIDs[backend.ID] = backendConfigLocation{
+			vipIndex:     vipIndex,
+			backendIndex: backendIndex,
 		}
 
 		backendIP := net.ParseIP(backend.IP)

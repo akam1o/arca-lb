@@ -490,6 +490,43 @@ func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
 	}
 }
 
+func TestConvertConfigToProtoRejectsUnmarshalableHealthCheckConfig(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	service := NewConfigSyncService(testutil.NewMockDataStore(), logger)
+
+	_, err := service.convertConfigToProto(&models.Config{
+		Revision: 1,
+		VIPs: []models.VIPConfig{
+			{
+				VIP: models.VIP{
+					ID:       "vip-1",
+					VIP:      "192.0.2.10",
+					Port:     80,
+					Protocol: models.ProtocolTCP,
+					LBMethod: models.LBMethodMaglev,
+				},
+				HealthCheck: &models.HealthCheck{
+					ID:          "hc-1",
+					VIPID:       "vip-1",
+					Type:        models.HCTypeTCP,
+					IntervalSec: 5,
+					TimeoutSec:  3,
+					RiseCount:   1,
+					FallCount:   1,
+					Config: models.HCConfig{
+						"send": func() {},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "health check config at vip index 0 is invalid")
+	assert.Contains(t, err.Error(), "unsupported type")
+}
+
 func TestConfigSyncService_WatchConfig(t *testing.T) {
 	tests := []struct {
 		name          string

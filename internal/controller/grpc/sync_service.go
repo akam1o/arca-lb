@@ -297,7 +297,7 @@ func (s *ConfigSyncService) convertConfigToProto(config *models.Config) (*pb.Con
 
 	pbVips := make([]*pb.VIPConfig, 0, len(config.VIPs))
 
-	for _, vipConfig := range config.VIPs {
+	for vipIndex, vipConfig := range config.VIPs {
 		var pbDscp *wrapperspb.UInt32Value
 		if vipConfig.VIP.DSCP != nil {
 			pbDscp = wrapperspb.UInt32(uint32(*vipConfig.VIP.DSCP))
@@ -338,9 +338,11 @@ func (s *ConfigSyncService) convertConfigToProto(config *models.Config) (*pb.Con
 			// Convert HCConfig map to JSON string
 			configJSON := ""
 			if vipConfig.HealthCheck.Config != nil {
-				if jsonBytes, err := json.Marshal(vipConfig.HealthCheck.Config); err == nil {
-					configJSON = string(jsonBytes)
+				jsonBytes, err := json.Marshal(vipConfig.HealthCheck.Config)
+				if err != nil {
+					return nil, fmt.Errorf("health check config at vip index %d is invalid: %w", vipIndex, err)
 				}
+				configJSON = string(jsonBytes)
 			}
 
 			pbHealthCheck = &pb.HealthCheck{

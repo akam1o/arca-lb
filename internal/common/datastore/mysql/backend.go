@@ -32,8 +32,8 @@ func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backen
 	if backend == nil {
 		return datastore.ErrInvalidInput
 	}
-	if backend.VIPID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
 	}
 
 	// Generate UUID if not set
@@ -149,6 +149,9 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 
 	if backend.ID == "" {
 		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
 	}
 
 	// Check if backend exists

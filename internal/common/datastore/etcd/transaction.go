@@ -166,6 +166,9 @@ func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error
 	if vip == nil {
 		return datastore.ErrInvalidInput
 	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
+	}
 
 	// Generate UUID if not set
 	if vip.ID == "" {
@@ -224,8 +227,8 @@ func (tx *EtcdTransaction) AddBackend(ctx context.Context, backend *models.Backe
 	if backend == nil {
 		return datastore.ErrInvalidInput
 	}
-	if backend.VIPID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
 	}
 
 	// Generate UUID if not set
@@ -306,6 +309,9 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 
 	if vip.ID == "" {
 		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
 	}
 	if _, deleted := tx.deletedVIPIDs[vip.ID]; deleted {
 		return datastore.ErrNotFound

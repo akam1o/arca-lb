@@ -18,8 +18,8 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 	if backend == nil {
 		return datastore.ErrInvalidInput
 	}
-	if backend.VIPID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
 	}
 
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
@@ -228,6 +228,9 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 
 	if backend.ID == "" {
 		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
 	}
 
 	// Check if backend exists

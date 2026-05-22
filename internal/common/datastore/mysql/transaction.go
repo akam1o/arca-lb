@@ -49,6 +49,9 @@ func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) erro
 	if vip == nil {
 		return datastore.ErrInvalidInput
 	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
+	}
 
 	db := tx.tx.WithContext(ctx)
 
@@ -140,8 +143,8 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 	if backend == nil {
 		return datastore.ErrInvalidInput
 	}
-	if backend.VIPID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
 	}
 
 	db := tx.tx.WithContext(ctx)
@@ -198,6 +201,9 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 	}
 	if vip.ID == "" {
 		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
 	}
 
 	db := tx.tx.WithContext(ctx)

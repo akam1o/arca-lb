@@ -18,6 +18,9 @@ func (ds *EtcdDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
 	if vip == nil {
 		return datastore.ErrInvalidInput
 	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
+	}
 
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
@@ -149,6 +152,9 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 	if vip.ID == "" {
 		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
 	}
 
 	// Check if VIP exists

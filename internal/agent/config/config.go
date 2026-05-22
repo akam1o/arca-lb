@@ -377,6 +377,20 @@ func validate(cfg *Config) error {
 	if cfg.Controller.APIKey != "" && cfg.Controller.TLS.InsecureSkipVerify {
 		return fmt.Errorf("controller.tls.insecure_skip_verify must be false when controller.api_key is set")
 	}
+	if !cfg.Controller.TLS.Enabled {
+		if cfg.Controller.TLS.CAFile != "" {
+			return fmt.Errorf("controller.tls.enabled must be enabled when controller.tls.ca_file is set")
+		}
+		if cfg.Controller.TLS.CertFile != "" {
+			return fmt.Errorf("controller.tls.enabled must be enabled when controller.tls.cert_file is set")
+		}
+		if cfg.Controller.TLS.KeyFile != "" {
+			return fmt.Errorf("controller.tls.enabled must be enabled when controller.tls.key_file is set")
+		}
+		if cfg.Controller.TLS.InsecureSkipVerify {
+			return fmt.Errorf("controller.tls.enabled must be enabled when controller.tls.insecure_skip_verify is set")
+		}
+	}
 
 	// Validate VPP socket path
 	if cfg.VPP.SocketPath == "" {

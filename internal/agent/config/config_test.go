@@ -305,6 +305,95 @@ log:
 	}
 }
 
+func TestLoadConfigRejectsControllerTLSFieldsWithoutTLS(t *testing.T) {
+	tests := []struct {
+		name    string
+		tlsYAML string
+		wantErr string
+	}{
+		{
+			name: "ca file",
+			tlsYAML: `
+    ca_file: /tmp/ca.crt
+`,
+			wantErr: "controller.tls.enabled must be enabled when controller.tls.ca_file is set",
+		},
+		{
+			name: "cert file",
+			tlsYAML: `
+    cert_file: /tmp/client.crt
+`,
+			wantErr: "controller.tls.enabled must be enabled when controller.tls.cert_file is set",
+		},
+		{
+			name: "key file",
+			tlsYAML: `
+    key_file: /tmp/client.key
+`,
+			wantErr: "controller.tls.enabled must be enabled when controller.tls.key_file is set",
+		},
+		{
+			name: "insecure skip verify",
+			tlsYAML: `
+    insecure_skip_verify: true
+`,
+			wantErr: "controller.tls.enabled must be enabled when controller.tls.insecure_skip_verify is set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "agent.yaml")
+			configContent := `
+agent:
+  id: "test-agent"
+
+controller:
+  address: "localhost:50051"
+  tls:` + tt.tlsYAML + `
+
+vpp:
+  socket_path: "/tmp/vpp.sock"
+
+log:
+  level: "info"
+  format: "json"
+`
+			if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			_, err := LoadConfig(configPath)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsEnvControllerTLSFileWithoutTLS(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	configContent := `
+agent:
+  id: "test-agent"
+
+controller:
+  address: "localhost:50051"
+
+vpp:
+  socket_path: "/tmp/vpp.sock"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("ARCA_TLS_CA", "/tmp/ca.crt")
+
+	_, err := LoadConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "controller.tls.enabled must be enabled when controller.tls.ca_file is set") {
+		t.Fatalf("LoadConfig error = %v, want controller.tls.ca_file TLS validation error", err)
+	}
+}
+
 func TestLoadConfigAcceptsControllerAPIKeyWithTLS(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "agent.yaml")
 	configContent := `

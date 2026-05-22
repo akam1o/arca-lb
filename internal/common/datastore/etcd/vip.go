@@ -148,7 +148,7 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 	defer cancel()
 
 	if vip.ID == "" {
-		return fmt.Errorf("VIP ID is required")
+		return datastore.ErrInvalidInput
 	}
 
 	// Check if VIP exists
@@ -222,6 +222,10 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 // DeleteVIP deletes a VIP and its associated backends from etcd
 func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
+	if id == "" {
+		return datastore.ErrInvalidInput
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 

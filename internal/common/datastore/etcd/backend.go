@@ -18,6 +18,9 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 	if backend == nil {
 		return datastore.ErrInvalidInput
 	}
+	if backend.VIPID == "" {
+		return datastore.ErrInvalidInput
+	}
 
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
@@ -224,7 +227,7 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	defer cancel()
 
 	if backend.ID == "" {
-		return fmt.Errorf("backend ID is required")
+		return datastore.ErrInvalidInput
 	}
 
 	// Check if backend exists
@@ -304,6 +307,10 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 
 // DeleteBackend deletes a backend and its index from etcd
 func (ds *EtcdDataStore) DeleteBackend(ctx context.Context, id string) error {
+	if id == "" {
+		return datastore.ErrInvalidInput
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 

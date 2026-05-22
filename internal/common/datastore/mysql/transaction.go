@@ -140,6 +140,9 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 	if backend == nil {
 		return datastore.ErrInvalidInput
 	}
+	if backend.VIPID == "" {
+		return datastore.ErrInvalidInput
+	}
 
 	db := tx.tx.WithContext(ctx)
 
@@ -193,12 +196,11 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 	if vip == nil {
 		return datastore.ErrInvalidInput
 	}
+	if vip.ID == "" {
+		return datastore.ErrInvalidInput
+	}
 
 	db := tx.tx.WithContext(ctx)
-
-	if vip.ID == "" {
-		return fmt.Errorf("VIP ID is required")
-	}
 
 	// Check if VIP exists
 	var existingRecord VIPRecord
@@ -297,6 +299,10 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 
 // DeleteVIP adds a VIP deletion operation to the transaction
 func (tx *MySQLTransaction) DeleteVIP(ctx context.Context, id string) error {
+	if id == "" {
+		return datastore.ErrInvalidInput
+	}
+
 	db := tx.tx.WithContext(ctx)
 
 	// Delete VIP (CASCADE will delete health checks and backends)

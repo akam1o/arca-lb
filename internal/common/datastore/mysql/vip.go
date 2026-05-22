@@ -333,7 +333,7 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 	}
 
 	if vip.ID == "" {
-		return fmt.Errorf("VIP ID is required")
+		return datastore.ErrInvalidInput
 	}
 
 	// Check if VIP exists
@@ -457,6 +457,10 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 
 // DeleteVIP deletes a VIP and its associated backends from MySQL
 func (ds *MySQLDataStore) DeleteVIP(ctx context.Context, id string) error {
+	if id == "" {
+		return datastore.ErrInvalidInput
+	}
+
 	// Delete VIP in transaction (CASCADE will handle backends and health checks)
 	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Delete VIP (CASCADE will delete health checks and backends)

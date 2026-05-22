@@ -135,6 +135,53 @@ dataplane:
 	}
 }
 
+func TestLoadV2ConfigRejectsInvalidEnvOverrides(t *testing.T) {
+	tests := []struct {
+		name    string
+		envName string
+		value   string
+	}{
+		{
+			name:    "agent status ttl",
+			envName: "ARCA_AGENT_STATUS_TTL",
+			value:   "later",
+		},
+		{
+			name:    "otlp insecure",
+			envName: "ARCA_OTLP_INSECURE",
+			value:   "definitely",
+		},
+		{
+			name:    "rollout enabled",
+			envName: "ARCA_ROLLOUT_ENABLED",
+			value:   "sometimes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+
+			content := `
+agent:
+  id: test-agent
+dataplane:
+  type: noop
+`
+			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(tt.envName, tt.value)
+
+			_, err := LoadV2Config(cfgPath)
+			if err == nil || !strings.Contains(err.Error(), tt.envName) {
+				t.Fatalf("LoadV2Config error = %v, want %s validation error", err, tt.envName)
+			}
+		})
+	}
+}
+
 func TestLoadV2Config_TelemetryInsecureYAML(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")

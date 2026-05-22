@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -192,7 +193,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	// Apply environment variable overrides
-	applyEnvOverrides(&config)
+	if err := applyEnvOverrides(&config); err != nil {
+		return nil, fmt.Errorf("invalid environment override: %w", err)
+	}
 
 	// Apply defaults
 	applyDefaults(&config)
@@ -205,8 +208,8 @@ func LoadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-// applyEnvOverrides applies environment variable overrides
-func applyEnvOverrides(cfg *Config) {
+// applyEnvOverrides applies environment variable overrides.
+func applyEnvOverrides(cfg *Config) error {
 	// Agent ID
 	if v := os.Getenv("ARCA_AGENT_ID"); v != "" {
 		cfg.Agent.ID = v
@@ -237,7 +240,11 @@ func applyEnvOverrides(cfg *Config) {
 
 	// TLS settings
 	if v := os.Getenv("ARCA_TLS_ENABLED"); v != "" {
-		cfg.Controller.TLS.Enabled = v == "true"
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ARCA_TLS_ENABLED must be a boolean: %w", err)
+		}
+		cfg.Controller.TLS.Enabled = enabled
 	}
 	if v := os.Getenv("ARCA_TLS_CERT"); v != "" {
 		cfg.Controller.TLS.CertFile = v
@@ -248,6 +255,7 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("ARCA_TLS_CA"); v != "" {
 		cfg.Controller.TLS.CAFile = v
 	}
+	return nil
 }
 
 // applyDefaults applies default values to configuration

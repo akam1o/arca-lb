@@ -101,7 +101,9 @@ func LoadV2Config(path string) (*V2Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	applyV2EnvOverrides(cfg)
+	if err := applyV2EnvOverrides(cfg); err != nil {
+		return nil, fmt.Errorf("invalid environment override: %w", err)
+	}
 	applyV2Defaults(cfg)
 
 	if err := validateV2(cfg); err != nil {
@@ -111,14 +113,16 @@ func LoadV2Config(path string) (*V2Config, error) {
 	return cfg, nil
 }
 
-func applyV2EnvOverrides(cfg *V2Config) {
+func applyV2EnvOverrides(cfg *V2Config) error {
 	if v := os.Getenv("ARCA_AGENT_ID"); v != "" {
 		cfg.Agent.ID = v
 	}
 	if v := os.Getenv("ARCA_AGENT_STATUS_TTL"); v != "" {
-		if ttl, err := time.ParseDuration(v); err == nil {
-			cfg.Agent.StatusTTL = ttl
+		ttl, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("ARCA_AGENT_STATUS_TTL must be a duration: %w", err)
 		}
+		cfg.Agent.StatusTTL = ttl
 	}
 	if v := os.Getenv("ARCA_KUBECONFIG"); v != "" {
 		cfg.Kubernetes.Kubeconfig = v
@@ -133,21 +137,26 @@ func applyV2EnvOverrides(cfg *V2Config) {
 		cfg.Telemetry.OTLPEndpoint = v
 	}
 	if v := os.Getenv("ARCA_OTLP_INSECURE"); v != "" {
-		if insecure, err := strconv.ParseBool(v); err == nil {
-			cfg.Telemetry.OTLPInsecure = insecure
+		insecure, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ARCA_OTLP_INSECURE must be a boolean: %w", err)
 		}
+		cfg.Telemetry.OTLPInsecure = insecure
 	}
 	if v := os.Getenv("ARCA_METRICS_ADDRESS"); v != "" {
 		cfg.Metrics.Address = v
 	}
 	if v := os.Getenv("ARCA_ROLLOUT_ENABLED"); v != "" {
-		if enabled, err := strconv.ParseBool(v); err == nil {
-			cfg.Rollout.Enabled = enabled
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ARCA_ROLLOUT_ENABLED must be a boolean: %w", err)
 		}
+		cfg.Rollout.Enabled = enabled
 	}
 	if v := os.Getenv("ARCA_ROLLOUT_LEASE_NAMESPACE"); v != "" {
 		cfg.Rollout.LeaseNamespace = v
 	}
+	return nil
 }
 
 func applyV2Defaults(cfg *V2Config) {

@@ -153,7 +153,9 @@ func TestEnvOverrides(t *testing.T) {
 		},
 	}
 
-	applyEnvOverrides(cfg)
+	if err := applyEnvOverrides(cfg); err != nil {
+		t.Fatalf("applyEnvOverrides: %v", err)
+	}
 
 	// Verify environment variables override config
 	if cfg.Agent.ID != "env-agent" {
@@ -173,6 +175,27 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Log.Format != "text" {
 		t.Errorf("Expected env override log format, got '%s'", cfg.Log.Format)
+	}
+}
+
+func TestLoadConfigRejectsInvalidEnvOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	configContent := `
+agent:
+  id: "test-agent"
+controller:
+  address: "localhost:50051"
+vpp:
+  socket_path: "/tmp/vpp.sock"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("ARCA_TLS_ENABLED", "definitely")
+
+	_, err := LoadConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "ARCA_TLS_ENABLED") {
+		t.Fatalf("LoadConfig error = %v, want ARCA_TLS_ENABLED validation error", err)
 	}
 }
 

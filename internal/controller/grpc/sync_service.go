@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
@@ -290,6 +291,10 @@ func (s *ConfigSyncService) authorizeAgentID(ctx context.Context, agentID string
 
 // convertConfigToProto converts internal config model to protobuf
 func (s *ConfigSyncService) convertConfigToProto(config *models.Config) (*pb.ConfigSnapshot, error) {
+	if err := validateConfigIdentity(config); err != nil {
+		return nil, err
+	}
+
 	pbVips := make([]*pb.VIPConfig, 0, len(config.VIPs))
 
 	for _, vipConfig := range config.VIPs {
@@ -383,6 +388,86 @@ func healthCheckInt32(field string, value, max int) (int32, error) {
 		return 0, fmt.Errorf("health check %s must be between 1 and %d, got %d", field, max, value)
 	}
 	return int32(value), nil
+}
+
+type backendConfigLocation struct {
+	vipIndex     int
+	backendIndex int
+}
+
+func validateConfigIdentity(config *models.Config) error {
+	if config == nil {
+		return fmt.Errorf("config is required")
+	}
+
+	seenVIPIDs := make(map[string]int, len(config.VIPs))
+	seenVIPTuples := make(map[string]int, len(config.VIPs))
+	seenBackendIDs := make(map[string]backendConfigLocation)
+	for vipIndex := range config.VIPs {
+		vipConfig := &config.VIPs[vipIndex]
+		if vipConfig.VIP.ID == "" {
+			return fmt.Errorf("vip config at index %d id is required", vipIndex)
+		}
+		if firstIndex, ok := seenVIPIDs[vipConfig.VIP.ID]; ok {
+			return fmt.Errorf("vip config at index %d duplicates vip id %q first seen at index %d", vipIndex, vipConfig.VIP.ID, firstIndex)
+		}
+		seenVIPIDs[vipConfig.VIP.ID] = vipIndex
+
+		tupleKey := vipTupleKey(vipConfig.VIP)
+		if firstIndex, ok := seenVIPTuples[tupleKey]; ok {
+			return fmt.Errorf("vip config at index %d duplicates vip tuple %s first seen at index %d", vipIndex, tupleKey, firstIndex)
+		}
+		seenVIPTuples[tupleKey] = vipIndex
+
+		if vipConfig.HealthCheck != nil {
+			if vipConfig.HealthCheck.VIPID == "" {
+				return fmt.Errorf("health check at vip index %d vip_id is required", vipIndex)
+			}
+			if vipConfig.HealthCheck.VIPID != vipConfig.VIP.ID {
+				return fmt.Errorf("health check at vip index %d vip_id %q does not match vip id %q", vipIndex, vipConfig.HealthCheck.VIPID, vipConfig.VIP.ID)
+			}
+		}
+
+		seenBackendIPs := make(map[string]int, len(vipConfig.Backends))
+		for backendIndex, backend := range vipConfig.Backends {
+			if backend.ID == "" {
+				return fmt.Errorf("backend at vip index %d backend index %d id is required", vipIndex, backendIndex)
+			}
+			if backend.VIPID == "" {
+				return fmt.Errorf("backend at vip index %d backend index %d vip_id is required", vipIndex, backendIndex)
+			}
+			if backend.VIPID != vipConfig.VIP.ID {
+				return fmt.Errorf("backend at vip index %d backend index %d vip_id %q does not match vip id %q", vipIndex, backendIndex, backend.VIPID, vipConfig.VIP.ID)
+			}
+			if firstLocation, ok := seenBackendIDs[backend.ID]; ok {
+				return fmt.Errorf("backend at vip index %d backend index %d duplicates backend id %q first seen at vip index %d backend index %d", vipIndex, backendIndex, backend.ID, firstLocation.vipIndex, firstLocation.backendIndex)
+			}
+			seenBackendIDs[backend.ID] = backendConfigLocation{
+				vipIndex:     vipIndex,
+				backendIndex: backendIndex,
+			}
+
+			backendIP := net.ParseIP(backend.IP)
+			if backendIP == nil {
+				continue
+			}
+			backendIPKey := backendIP.String()
+			if firstIndex, ok := seenBackendIPs[backendIPKey]; ok {
+				return fmt.Errorf("backend at vip index %d backend index %d duplicates backend ip %q first seen at backend index %d", vipIndex, backendIndex, backendIPKey, firstIndex)
+			}
+			seenBackendIPs[backendIPKey] = backendIndex
+		}
+	}
+
+	return nil
+}
+
+func vipTupleKey(vip models.VIP) string {
+	vipIP := net.ParseIP(vip.VIP)
+	if vipIP != nil {
+		return fmt.Sprintf("%s/%d/%s", vipIP.String(), vip.Port, vip.Protocol)
+	}
+	return fmt.Sprintf("%s/%d/%s", vip.VIP, vip.Port, vip.Protocol)
 }
 
 // convertProtocol converts internal protocol to protobuf

@@ -285,6 +285,211 @@ func TestConfigSyncService_GetConfigRejectsNilRequest(t *testing.T) {
 	assert.Equal(t, codes.InvalidArgument, st.Code())
 }
 
+func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	service := NewConfigSyncService(testutil.NewMockDataStore(), logger)
+
+	validVIP := func(id, vip string) models.VIP {
+		return models.VIP{
+			ID:       id,
+			VIP:      vip,
+			Port:     80,
+			Protocol: models.ProtocolTCP,
+			LBMethod: models.LBMethodMaglev,
+		}
+	}
+	validHealthCheck := func(vipID string) *models.HealthCheck {
+		return &models.HealthCheck{
+			ID:          "hc-1",
+			VIPID:       vipID,
+			Type:        models.HCTypeTCP,
+			IntervalSec: 5,
+			TimeoutSec:  3,
+			RiseCount:   1,
+			FallCount:   1,
+			Config: map[string]interface{}{
+				"port": 8080,
+			},
+		}
+	}
+	validBackend := func(id, vipID, ip string) models.Backend {
+		return models.Backend{
+			ID:     id,
+			VIPID:  vipID,
+			IP:     ip,
+			Weight: 1,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		config  *models.Config
+		wantErr string
+	}{
+		{
+			name:    "nil config",
+			config:  nil,
+			wantErr: "config is required",
+		},
+		{
+			name: "missing VIP id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("", "192.0.2.10"),
+					},
+				},
+			},
+			wantErr: "vip config at index 0 id is required",
+		},
+		{
+			name: "duplicate VIP id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{VIP: validVIP("vip-1", "192.0.2.10")},
+					{VIP: validVIP("vip-1", "192.0.2.11")},
+				},
+			},
+			wantErr: `vip config at index 1 duplicates vip id "vip-1" first seen at index 0`,
+		},
+		{
+			name: "duplicate VIP tuple",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{VIP: validVIP("vip-1", "192.0.2.10")},
+					{VIP: validVIP("vip-2", "192.0.2.10")},
+				},
+			},
+			wantErr: "vip config at index 1 duplicates vip tuple 192.0.2.10/80/TCP first seen at index 0",
+		},
+		{
+			name: "missing health check vip id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck(""),
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 vip_id is required",
+		},
+		{
+			name: "health check vip id mismatch",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck("vip-2"),
+					},
+				},
+			},
+			wantErr: `health check at vip index 0 vip_id "vip-2" does not match vip id "vip-1"`,
+		},
+		{
+			name: "missing backend id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("", "vip-1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 id is required",
+		},
+		{
+			name: "missing backend vip id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 vip_id is required",
+		},
+		{
+			name: "backend vip id mismatch",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-2", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 0 vip_id "vip-2" does not match vip id "vip-1"`,
+		},
+		{
+			name: "duplicate backend id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+							validBackend("backend-1", "vip-1", "10.0.0.2"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 1 duplicates backend id "backend-1" first seen at vip index 0 backend index 0`,
+		},
+		{
+			name: "duplicate backend id across VIPs",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+						},
+					},
+					{
+						VIP: validVIP("vip-2", "192.0.2.11"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-2", "10.0.0.2"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 1 backend index 0 duplicates backend id "backend-1" first seen at vip index 0 backend index 0`,
+		},
+		{
+			name: "duplicate backend IP",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+							validBackend("backend-2", "vip-1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 1 duplicates backend ip "10.0.0.1" first seen at backend index 0`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.convertConfigToProto(tt.config)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestConfigSyncService_WatchConfig(t *testing.T) {
 	tests := []struct {
 		name          string

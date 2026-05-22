@@ -5,8 +5,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Config represents the agent configuration
@@ -189,7 +187,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Parse YAML
 	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	if err := decodeStrictYAML(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 

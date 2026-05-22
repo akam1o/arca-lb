@@ -9,8 +9,6 @@ import (
 	"time"
 
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
-
-	"gopkg.in/yaml.v3"
 )
 
 // V2Config is the top-level configuration for the v2 agent.
@@ -99,7 +97,7 @@ func LoadV2Config(path string) (*V2Config, error) {
 	}
 
 	cfg := &V2Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	if err := decodeStrictYAML(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 

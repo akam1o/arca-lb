@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
-	"gopkg.in/yaml.v3"
 )
 
 // Config represents the controller configuration
@@ -94,7 +93,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := decodeStrictYAML(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 

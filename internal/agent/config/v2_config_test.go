@@ -64,6 +64,27 @@ dataplane:
 	}
 }
 
+func TestLoadV2ConfigRejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+  status_ttl_seconds: 120
+dataplane:
+  type: noop
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadV2Config(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), "field status_ttl_seconds not found") {
+		t.Fatalf("LoadV2Config error = %v, want unknown field error", err)
+	}
+}
+
 func TestLoadV2Config_EnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")

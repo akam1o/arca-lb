@@ -34,6 +34,18 @@ grpc:
 	}
 }
 
+func TestLoadConfigRejectsUnknownFields(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+server:
+  api_kee: controller-rest-secret
+`)
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "field api_kee not found") {
+		t.Fatalf("LoadConfig error = %v, want unknown field error", err)
+	}
+}
+
 func TestLoadConfigRejectsGRPCClientCertWithoutTLS(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:

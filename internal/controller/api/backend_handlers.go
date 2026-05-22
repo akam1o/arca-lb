@@ -2,12 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 // CreateBackendRequest represents the request body for creating a backend
@@ -19,8 +21,8 @@ type CreateBackendRequest struct {
 
 // UpdateBackendRequest represents the request body for updating a backend
 type UpdateBackendRequest struct {
-	IP     string `json:"ip" binding:"omitempty,ip"`
-	Weight int    `json:"weight" binding:"omitempty,min=1,max=100"`
+	IP     *string `json:"ip" binding:"omitempty,ip"`
+	Weight *int    `json:"weight" binding:"omitempty,min=1,max=100"`
 }
 
 func validateBackendAddressFamily(vip *models.VIP, backendIP string) error {
@@ -140,8 +142,18 @@ func (s *Server) getBackend(c *gin.Context) {
 func (s *Server) updateBackend(c *gin.Context) {
 	id := c.Param("id")
 
+	var requestFields map[string]json.RawMessage
+	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+	if err := validateNonNullJSONFields(requestFields, "ip", "weight"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	var req UpdateBackendRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		handleBindError(c, err)
 		return
 	}
@@ -158,11 +170,11 @@ func (s *Server) updateBackend(c *gin.Context) {
 	}
 
 	// Update fields if provided
-	if req.IP != "" {
-		backend.IP = req.IP
+	if req.IP != nil {
+		backend.IP = *req.IP
 	}
-	if req.Weight != 0 {
-		backend.Weight = req.Weight
+	if req.Weight != nil {
+		backend.Weight = *req.Weight
 	}
 
 	vip, err := s.datastore.GetVIP(ctx, backend.VIPID)

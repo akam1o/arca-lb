@@ -41,12 +41,12 @@ type CreateVIPRequest struct {
 
 // UpdateVIPRequest represents the request body for updating a VIP
 type UpdateVIPRequest struct {
-	VIP       string           `json:"vip" binding:"omitempty,ip"`
-	Port      int              `json:"port" binding:"omitempty,min=1,max=65535"`
-	Protocol  models.Protocol  `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
-	LBMethod  models.LBMethod  `json:"lb_method" binding:"omitempty,oneof=maglev"`
-	EncapType models.EncapType `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
-	DSCP      *uint8           `json:"dscp" binding:"omitempty,min=0,max=63"`
+	VIP       *string           `json:"vip" binding:"omitempty,ip"`
+	Port      *int              `json:"port" binding:"omitempty,min=1,max=65535"`
+	Protocol  *models.Protocol  `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
+	LBMethod  *models.LBMethod  `json:"lb_method" binding:"omitempty,oneof=maglev"`
+	EncapType *models.EncapType `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
+	DSCP      *uint8            `json:"dscp" binding:"omitempty,min=0,max=63"`
 }
 
 func validateHealthCheckRequest(req *HealthCheckRequest) error {
@@ -103,6 +103,22 @@ func effectiveEncapType(encapType models.EncapType) models.EncapType {
 func validateDSCPForEncap(encapType models.EncapType, dscp *uint8) error {
 	if effectiveEncapType(encapType) == models.EncapTypeL3DSR && dscp != nil && *dscp == 0 {
 		return badRequestError("dscp must be 1-63 when encap_type is L3DSR (DSCP mode)")
+	}
+	return nil
+}
+
+func rawJSONIsNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+func validateNonNullJSONFields(fields map[string]json.RawMessage, names ...string) error {
+	if fields == nil {
+		return badRequestError("request body must be a JSON object")
+	}
+	for _, name := range names {
+		if raw, ok := fields[name]; ok && rawJSONIsNull(raw) {
+			return badRequestError(name + " must not be null")
+		}
 	}
 	return nil
 }
@@ -278,6 +294,10 @@ func (s *Server) updateVIP(c *gin.Context) {
 		handleBindError(c, err)
 		return
 	}
+	if err := validateNonNullJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	var req UpdateVIPRequest
 	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
@@ -297,23 +317,23 @@ func (s *Server) updateVIP(c *gin.Context) {
 	}
 
 	// Update fields if provided
-	if req.VIP != "" {
-		vip.VIP = req.VIP
+	if req.VIP != nil {
+		vip.VIP = *req.VIP
 	}
-	if req.Port != 0 {
-		vip.Port = req.Port
+	if req.Port != nil {
+		vip.Port = *req.Port
 	}
-	if req.Protocol != "" {
-		vip.Protocol = req.Protocol
+	if req.Protocol != nil {
+		vip.Protocol = *req.Protocol
 	}
-	if req.LBMethod != "" {
-		vip.LBMethod = req.LBMethod
+	if req.LBMethod != nil {
+		vip.LBMethod = *req.LBMethod
 	}
-	if req.EncapType != "" {
-		vip.EncapType = req.EncapType
+	if req.EncapType != nil {
+		vip.EncapType = *req.EncapType
 	}
 	if rawDSCP, ok := requestFields["dscp"]; ok {
-		if bytes.Equal(bytes.TrimSpace(rawDSCP), []byte("null")) {
+		if rawJSONIsNull(rawDSCP) {
 			vip.DSCP = nil
 		} else {
 			vip.DSCP = req.DSCP

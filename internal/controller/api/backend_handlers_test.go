@@ -313,7 +313,7 @@ func TestUpdateBackend(t *testing.T) {
 	tests := []struct {
 		name           string
 		backendID      string
-		requestBody    map[string]interface{}
+		requestBody    interface{}
 		expectedStatus int
 	}{
 		{
@@ -338,6 +338,36 @@ func TestUpdateBackend(t *testing.T) {
 			requestBody: map[string]interface{}{
 				"weight": 200,
 			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:      "zero weight",
+			backendID: backend.ID,
+			requestBody: map[string]interface{}{
+				"weight": 0,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:      "null weight",
+			backendID: backend.ID,
+			requestBody: map[string]interface{}{
+				"weight": nil,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:      "empty ip",
+			backendID: backend.ID,
+			requestBody: map[string]interface{}{
+				"ip": "",
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "null body",
+			backendID:      backend.ID,
+			requestBody:    nil,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{

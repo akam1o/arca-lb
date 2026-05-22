@@ -728,7 +728,7 @@ func TestUpdateVIP(t *testing.T) {
 	tests := []struct {
 		name           string
 		vipID          string
-		requestBody    map[string]interface{}
+		requestBody    interface{}
 		expectedStatus int
 		setupMock      func()
 	}{
@@ -754,6 +754,36 @@ func TestUpdateVIP(t *testing.T) {
 			requestBody: map[string]interface{}{
 				"port": 70000,
 			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "zero port",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"port": 0,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "null port",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"port": nil,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "empty protocol",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"protocol": "",
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "null body",
+			vipID:          "vip-1",
+			requestBody:    nil,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -822,8 +852,10 @@ func TestUpdateVIP(t *testing.T) {
 				err := json.Unmarshal(w.Body.Bytes(), &updatedVIP)
 				require.NoError(t, err)
 				assert.Equal(t, tt.vipID, updatedVIP.ID)
-				if port, ok := tt.requestBody["port"].(int); ok {
-					assert.Equal(t, port, updatedVIP.Port)
+				if requestBody, ok := tt.requestBody.(map[string]interface{}); ok {
+					if port, ok := requestBody["port"].(int); ok {
+						assert.Equal(t, port, updatedVIP.Port)
+					}
 				}
 			}
 		})

@@ -190,6 +190,7 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 				mock.SetGetConfigError(errors.New("GetConfig should not be called"))
 			},
 			request: &pb.GetConfigRequest{
+				AgentId:         "agent-1",
 				CurrentRevision: 7,
 			},
 			validate: func(t *testing.T, resp *pb.GetConfigResponse) {
@@ -230,6 +231,16 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 			expectedError: codes.Internal,
 		},
 		{
+			name: "missing agent id",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{Revision: 1})
+			},
+			request: &pb.GetConfigRequest{
+				AgentId: " ",
+			},
+			expectedError: codes.InvalidArgument,
+		},
+		{
 			name: "datastore error",
 			setupMock: func(mock *testutil.MockDataStore) {
 				mock.SetGetConfigError(datastore.ErrNotFound)
@@ -250,7 +261,7 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 
 			req := tt.request
 			if req == nil {
-				req = &pb.GetConfigRequest{}
+				req = &pb.GetConfigRequest{AgentId: "agent-1"}
 			}
 
 			resp, err := client.GetConfig(ctx, req)

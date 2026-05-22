@@ -52,10 +52,10 @@ func (s *ConfigSyncService) GetConfig(ctx context.Context, req *pb.GetConfigRequ
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
+	if err := validateAgentID(req.AgentId); err != nil {
+		return nil, err
+	}
 	if s.authorizeAgentIDWithClientCert {
-		if err := validateAgentID(req.AgentId); err != nil {
-			return nil, err
-		}
 		if err := s.authorizeAgentID(ctx, req.AgentId); err != nil {
 			return nil, err
 		}

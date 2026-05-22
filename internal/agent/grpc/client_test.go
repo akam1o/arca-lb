@@ -1441,6 +1441,34 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
 	client := NewClient(&config.Config{}, logger, nil)
+	validVIP := func(id, vip string) *pb.VIP {
+		return &pb.VIP{
+			Id:       id,
+			Vip:      vip,
+			Port:     80,
+			Protocol: pb.Protocol_PROTOCOL_TCP,
+		}
+	}
+	validHealthCheck := func(id, vipID string) *pb.HealthCheck {
+		return &pb.HealthCheck{
+			Id:          id,
+			VipId:       vipID,
+			Type:        pb.HCType_HC_TYPE_TCP,
+			IntervalSec: 5,
+			TimeoutSec:  3,
+			RiseCount:   1,
+			FallCount:   1,
+			Config:      `{"port":8080}`,
+		}
+	}
+	validBackend := func(id, vipID, ip string) *pb.Backend {
+		return &pb.Backend{
+			Id:     id,
+			VipId:  vipID,
+			Ip:     ip,
+			Weight: 1,
+		}
+	}
 
 	tests := []struct {
 		name    string
@@ -1686,6 +1714,34 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 			wantErr: `vip config at index 0 encap_type "invalid" is not valid`,
 		},
 		{
+			name: "duplicate VIP id",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip-1", "192.0.2.10"),
+					},
+					{
+						Vip: validVIP("vip-1", "192.0.2.11"),
+					},
+				},
+			},
+			wantErr: `vip config at index 1 duplicates vip id "vip-1" first seen at index 0`,
+		},
+		{
+			name: "duplicate VIP tuple",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip-1", "192.0.2.10"),
+					},
+					{
+						Vip: validVIP("vip-2", "192.0.2.10"),
+					},
+				},
+			},
+			wantErr: `vip config at index 1 duplicates vip tuple 192.0.2.10/80/TCP first seen at index 0`,
+		},
+		{
 			name: "health check timeout must be less than interval",
 			input: &pb.ConfigSnapshot{
 				Vips: []*pb.VIPConfig{
@@ -1736,6 +1792,18 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 				},
 			},
 			wantErr: "health check config at vip index 0 is invalid: unsupported health check type",
+		},
+		{
+			name: "health check vip id mismatch",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck("hc-1", "vip-2"),
+					},
+				},
+			},
+			wantErr: `health check at vip index 0 vip_id "vip-2" does not match vip id "vip-1"`,
 		},
 		{
 			name: "invalid backend IP",
@@ -1827,6 +1895,70 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 				},
 			},
 			wantErr: "backend at vip index 0 backend index 0 weight must be between 1 and 100",
+		},
+		{
+			name: "backend vip id mismatch",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip-1", "192.0.2.10"),
+						Backends: []*pb.Backend{
+							validBackend("backend-1", "vip-2", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 0 vip_id "vip-2" does not match vip id "vip-1"`,
+		},
+		{
+			name: "duplicate backend id",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip-1", "192.0.2.10"),
+						Backends: []*pb.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+							validBackend("backend-1", "vip-1", "10.0.0.2"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 1 duplicates backend id "backend-1" first seen at vip index 0 backend index 0`,
+		},
+		{
+			name: "duplicate backend id across VIPs",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip-1", "192.0.2.10"),
+						Backends: []*pb.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+						},
+					},
+					{
+						Vip: validVIP("vip-2", "192.0.2.11"),
+						Backends: []*pb.Backend{
+							validBackend("backend-1", "vip-2", "10.0.0.2"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 1 backend index 0 duplicates backend id "backend-1" first seen at vip index 0 backend index 0`,
+		},
+		{
+			name: "duplicate backend IP",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip-1", "192.0.2.10"),
+						Backends: []*pb.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+							validBackend("backend-2", "vip-1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 1 duplicates backend ip "10.0.0.1" first seen at backend index 0`,
 		},
 	}
 

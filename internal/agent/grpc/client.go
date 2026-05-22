@@ -637,6 +637,9 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 		Revision: pbConfig.Revision,
 		VIPs:     make([]models.VIPConfig, 0, len(pbConfig.Vips)),
 	}
+	seenVIPIDs := make(map[string]int, len(pbConfig.Vips))
+	seenVIPTuples := make(map[string]int, len(pbConfig.Vips))
+	seenBackendIDs := make(map[string]backendConfigLocation)
 
 	for i, pbVipConfig := range pbConfig.Vips {
 		if pbVipConfig == nil {
@@ -743,6 +746,9 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Conf
 		if err := validateVIPConfigDataPlane(i, &vipConfig); err != nil {
 			return nil, err
 		}
+		if err := validateVIPConfigIdentity(i, &vipConfig, seenVIPIDs, seenVIPTuples, seenBackendIDs); err != nil {
+			return nil, err
+		}
 
 		config.VIPs = append(config.VIPs, vipConfig)
 	}
@@ -793,6 +799,66 @@ func validateVIPConfigDataPlane(vipIndex int, vipConfig *models.VIPConfig) error
 	}
 
 	return nil
+}
+
+type backendConfigLocation struct {
+	vipIndex     int
+	backendIndex int
+}
+
+func validateVIPConfigIdentity(vipIndex int, vipConfig *models.VIPConfig, seenVIPIDs, seenVIPTuples map[string]int, seenBackendIDs map[string]backendConfigLocation) error {
+	if vipConfig.VIP.ID != "" {
+		if firstIndex, ok := seenVIPIDs[vipConfig.VIP.ID]; ok {
+			return fmt.Errorf("vip config at index %d duplicates vip id %q first seen at index %d", vipIndex, vipConfig.VIP.ID, firstIndex)
+		}
+		seenVIPIDs[vipConfig.VIP.ID] = vipIndex
+	}
+
+	tupleKey := vipTupleKey(vipConfig.VIP)
+	if firstIndex, ok := seenVIPTuples[tupleKey]; ok {
+		return fmt.Errorf("vip config at index %d duplicates vip tuple %s first seen at index %d", vipIndex, tupleKey, firstIndex)
+	}
+	seenVIPTuples[tupleKey] = vipIndex
+
+	if vipConfig.HealthCheck != nil && vipConfig.VIP.ID != "" && vipConfig.HealthCheck.VIPID != "" && vipConfig.HealthCheck.VIPID != vipConfig.VIP.ID {
+		return fmt.Errorf("health check at vip index %d vip_id %q does not match vip id %q", vipIndex, vipConfig.HealthCheck.VIPID, vipConfig.VIP.ID)
+	}
+
+	seenBackendIPs := make(map[string]int, len(vipConfig.Backends))
+	for backendIndex, backend := range vipConfig.Backends {
+		if vipConfig.VIP.ID != "" && backend.VIPID != "" && backend.VIPID != vipConfig.VIP.ID {
+			return fmt.Errorf("backend at vip index %d backend index %d vip_id %q does not match vip id %q", vipIndex, backendIndex, backend.VIPID, vipConfig.VIP.ID)
+		}
+		if backend.ID != "" {
+			if firstLocation, ok := seenBackendIDs[backend.ID]; ok {
+				return fmt.Errorf("backend at vip index %d backend index %d duplicates backend id %q first seen at vip index %d backend index %d", vipIndex, backendIndex, backend.ID, firstLocation.vipIndex, firstLocation.backendIndex)
+			}
+			seenBackendIDs[backend.ID] = backendConfigLocation{
+				vipIndex:     vipIndex,
+				backendIndex: backendIndex,
+			}
+		}
+
+		backendIP := net.ParseIP(backend.IP)
+		if backendIP == nil {
+			continue
+		}
+		backendIPKey := backendIP.String()
+		if firstIndex, ok := seenBackendIPs[backendIPKey]; ok {
+			return fmt.Errorf("backend at vip index %d backend index %d duplicates backend ip %q first seen at backend index %d", vipIndex, backendIndex, backendIPKey, firstIndex)
+		}
+		seenBackendIPs[backendIPKey] = backendIndex
+	}
+
+	return nil
+}
+
+func vipTupleKey(vip models.VIP) string {
+	vipIP := net.ParseIP(vip.VIP)
+	if vipIP != nil {
+		return fmt.Sprintf("%s/%d/%s", vipIP.String(), vip.Port, vip.Protocol)
+	}
+	return fmt.Sprintf("%s/%d/%s", vip.VIP, vip.Port, vip.Protocol)
 }
 
 func validateVIPAddressFamily(vipIndex int, vipIP net.IP, encapType models.EncapType) error {

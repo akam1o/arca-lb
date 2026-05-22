@@ -330,15 +330,20 @@ func testBackendCRUD(t *testing.T, factory DataStoreFactory) {
 	}
 	assert.True(t, found, "Created backend should be in list")
 
-	// Update Backend
-	backend.Weight = 20
-	err = ds.UpdateBackend(ctx, backend)
+	// Update Backend. VIPID is preserved from the existing record.
+	backendUpdate := &models.Backend{
+		ID:     backend.ID,
+		IP:     backend.IP,
+		Weight: 20,
+	}
+	err = ds.UpdateBackend(ctx, backendUpdate)
 	require.NoError(t, err)
 
 	// Verify update
 	updated, err := ds.GetBackend(ctx, backend.ID)
 	require.NoError(t, err)
 	assert.Equal(t, 20, updated.Weight)
+	assert.Equal(t, backend.VIPID, updated.VIPID)
 
 	// Delete Backend
 	err = ds.DeleteBackend(ctx, backend.ID)

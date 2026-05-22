@@ -229,7 +229,7 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	if backend.ID == "" {
 		return datastore.ErrInvalidInput
 	}
-	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+	if err := datastore.ValidateBackendFieldsForWrite(backend); err != nil {
 		return err
 	}
 
@@ -247,6 +247,9 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	backend.CreatedAt = existing.CreatedAt
 	backend.VIPID = existing.VIPID
 	backend.UpdatedAt = time.Now()
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
+	}
 
 	// Serialize backend to JSON
 	data, err := json.Marshal(backend)

@@ -45,12 +45,9 @@ func ValidateVIPForWrite(vip *models.VIP) error {
 	return nil
 }
 
-// ValidateBackendForWrite validates Backend fields before a datastore mutation.
-func ValidateBackendForWrite(backend *models.Backend) error {
+// ValidateBackendFieldsForWrite validates Backend fields that are mutable on writes.
+func ValidateBackendFieldsForWrite(backend *models.Backend) error {
 	if backend == nil {
-		return ErrInvalidInput
-	}
-	if backend.VIPID == "" {
 		return ErrInvalidInput
 	}
 	if net.ParseIP(backend.IP) == nil {
@@ -58,6 +55,17 @@ func ValidateBackendForWrite(backend *models.Backend) error {
 	}
 	if backend.Weight < 1 || backend.Weight > 100 {
 		return fmt.Errorf("%w: backend weight must be between 1 and 100", ErrInvalidInput)
+	}
+	return nil
+}
+
+// ValidateBackendForWrite validates Backend fields before a datastore mutation.
+func ValidateBackendForWrite(backend *models.Backend) error {
+	if err := ValidateBackendFieldsForWrite(backend); err != nil {
+		return err
+	}
+	if backend.VIPID == "" {
+		return ErrInvalidInput
 	}
 	return nil
 }

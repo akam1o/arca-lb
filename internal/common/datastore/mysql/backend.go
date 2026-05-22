@@ -150,7 +150,7 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 	if backend.ID == "" {
 		return datastore.ErrInvalidInput
 	}
-	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+	if err := datastore.ValidateBackendFieldsForWrite(backend); err != nil {
 		return err
 	}
 
@@ -167,6 +167,9 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 	backend.CreatedAt = existing.CreatedAt
 	backend.VIPID = existing.VIPID
 	backend.UpdatedAt = time.Now()
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
+	}
 
 	// Convert to database record
 	backendRecord := BackendRecord{

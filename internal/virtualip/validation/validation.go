@@ -207,6 +207,12 @@ func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
 				return fmt.Errorf("spec.healthCheck.http.path must be relative, got %q", hc.HTTP.Path)
 			}
 		}
+		if err := models.ValidateHTTPHostHeader(hc.HTTP.Host); err != nil {
+			return fmt.Errorf("spec.healthCheck.http.host %w", err)
+		}
+		if err := models.ValidateHTTPHeaders(hc.HTTP.Headers); err != nil {
+			return fmt.Errorf("spec.healthCheck.http.headers: %w", err)
+		}
 		for i, code := range hc.HTTP.ExpectedCodes {
 			if code < 100 || code > 599 {
 				return fmt.Errorf("spec.healthCheck.http.expectedCodes[%d] must be 100-599, got %d", i, code)

@@ -61,6 +61,37 @@ func TestValidateHealthCheckConfig(t *testing.T) {
 			wantErr: "headers values must be strings",
 		},
 		{
+			name:   "http rejects invalid host header",
+			hcType: HCTypeHTTP,
+			config: HCConfig{
+				"port":        8080,
+				"host_header": "bad\nhost",
+			},
+			wantErr: "host_header",
+		},
+		{
+			name:   "http rejects invalid header name",
+			hcType: HCTypeHTTP,
+			config: HCConfig{
+				"port": 8080,
+				"headers": map[string]interface{}{
+					"Bad Header": "value",
+				},
+			},
+			wantErr: "invalid header name",
+		},
+		{
+			name:   "http rejects invalid header value",
+			hcType: HCTypeHTTP,
+			config: HCConfig{
+				"port": 8080,
+				"headers": map[string]interface{}{
+					"X-Health": "bad\nvalue",
+				},
+			},
+			wantErr: "invalid header value",
+		},
+		{
 			name:   "http rejects unsupported method",
 			hcType: HCTypeHTTP,
 			config: HCConfig{

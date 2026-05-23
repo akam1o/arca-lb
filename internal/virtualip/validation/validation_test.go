@@ -90,6 +90,49 @@ func TestValidateSpecRejectsInvalidHTTPHealthCheckMethodAndPath(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsInvalidHTTPHealthCheckHostAndHeaders(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*v1alpha1.HTTPHealthCheck)
+		wantErr string
+	}{
+		{
+			name: "invalid host header",
+			mutate: func(hc *v1alpha1.HTTPHealthCheck) {
+				hc.Host = "bad\nhost"
+			},
+			wantErr: "spec.healthCheck.http.host",
+		},
+		{
+			name: "invalid header name",
+			mutate: func(hc *v1alpha1.HTTPHealthCheck) {
+				hc.Headers = map[string]string{"Bad Header": "value"}
+			},
+			wantErr: "spec.healthCheck.http.headers",
+		},
+		{
+			name: "invalid header value",
+			mutate: func(hc *v1alpha1.HTTPHealthCheck) {
+				hc.Headers = map[string]string{"X-Health": "bad\nvalue"}
+			},
+			wantErr: "spec.healthCheck.http.headers",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := validVirtualIPSpec()
+			spec.HealthCheck = validHTTPHealthCheckSpec()
+			tt.mutate(spec.HealthCheck.HTTP)
+
+			err := ValidateSpec(spec)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateSpec() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateSpecRejectsHealthCheckValuesExceedingInt32(t *testing.T) {
 	tests := []struct {
 		name    string

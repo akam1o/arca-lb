@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // ValidateHealthCheckConfig validates the runtime health check config map.
@@ -75,6 +77,9 @@ func validateHTTPHealthCheckConfig(config HCConfig) error {
 	if err := optionalStringHealthCheckConfig(config, "host_header"); err != nil {
 		return err
 	}
+	if err := validateHTTPHostHeaderConfig(config["host_header"]); err != nil {
+		return err
+	}
 	if raw, ok := config["tls_skip_verify"]; ok && raw != nil {
 		if _, ok := raw.(bool); !ok {
 			return fmt.Errorf("tls_skip_verify must be a boolean")
@@ -118,6 +123,28 @@ func validateHTTPMethodConfig(raw any) error {
 	default:
 		return fmt.Errorf("method must be one of GET, HEAD, POST")
 	}
+}
+
+// ValidateHTTPHostHeader validates a configured HTTP Host header value.
+func ValidateHTTPHostHeader(host string) error {
+	if host == "" {
+		return nil
+	}
+	if !httpguts.ValidHostHeader(host) {
+		return fmt.Errorf("must be a valid HTTP Host header")
+	}
+	return nil
+}
+
+func validateHTTPHostHeaderConfig(raw any) error {
+	host, ok := raw.(string)
+	if !ok {
+		return nil
+	}
+	if err := ValidateHTTPHostHeader(host); err != nil {
+		return fmt.Errorf("host_header %w", err)
+	}
+	return nil
 }
 
 func validateTCPHealthCheckConfig(config HCConfig) error {
@@ -196,18 +223,42 @@ func validateHeaders(raw any) error {
 
 	switch headers := raw.(type) {
 	case map[string]interface{}:
-		for _, value := range headers {
+		for key, value := range headers {
 			if value == nil {
 				continue
 			}
-			if _, ok := value.(string); !ok {
+			strValue, ok := value.(string)
+			if !ok {
 				return fmt.Errorf("headers values must be strings")
+			}
+			if err := validateHTTPHeader(key, strValue); err != nil {
+				return err
 			}
 		}
 	case map[string]string:
-		return nil
+		return ValidateHTTPHeaders(headers)
 	default:
 		return fmt.Errorf("headers must be an object")
+	}
+	return nil
+}
+
+// ValidateHTTPHeaders validates configured HTTP request headers.
+func ValidateHTTPHeaders(headers map[string]string) error {
+	for key, value := range headers {
+		if err := validateHTTPHeader(key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHTTPHeader(name, value string) error {
+	if !httpguts.ValidHeaderFieldName(name) {
+		return fmt.Errorf("headers contains invalid header name %q", name)
+	}
+	if !httpguts.ValidHeaderFieldValue(value) {
+		return fmt.Errorf("headers[%q] contains invalid header value", name)
 	}
 	return nil
 }

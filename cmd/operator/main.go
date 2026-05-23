@@ -24,40 +24,39 @@ import (
 
 var scheme = runtime.NewScheme()
 
+type operatorOptions struct {
+	metricsAddr              string
+	probeAddr                string
+	enableWebhooks           bool
+	enableLeaderElection     bool
+	agentStatusTTL           time.Duration
+	agentStatusPruneInterval time.Duration
+}
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(v1alpha1.AddToScheme(scheme))
 }
 
 func main() {
-	var metricsAddr string
-	var probeAddr string
-	var enableWebhooks bool
-	var enableLeaderElection bool
-	var agentStatusTTL time.Duration
-	var agentStatusPruneInterval time.Duration
-
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
-	flag.BoolVar(&enableWebhooks, "enable-webhooks", false, "Enable admission webhooks.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election.")
-	flag.DurationVar(&agentStatusTTL, "agent-status-ttl", 0, "Fallback maximum age for per-agent VirtualIP status observations without ttlSeconds. Zero uses the default.")
-	flag.DurationVar(&agentStatusPruneInterval, "agent-status-prune-interval", 0, "How often to recheck VirtualIPs with current per-agent status. Zero uses half of --agent-status-ttl.")
+	var opts operatorOptions
+	var zapOpts zap.Options
+	bindOperatorFlags(flag.CommandLine, &opts, &zapOpts)
 	flag.Parse()
 
-	ctrllog.SetLogger(zap.New(zap.UseDevMode(true)))
+	ctrllog.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 	logger := slog.Default()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
+			BindAddress: opts.metricsAddr,
 		},
 		WebhookServer: ctrlwebhook.NewServer(ctrlwebhook.Options{
 			Port: 9443,
 		}),
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
+		HealthProbeBindAddress: opts.probeAddr,
+		LeaderElection:         opts.enableLeaderElection,
 		LeaderElectionID:       "arca-lb-operator.arca.io",
 	})
 	if err != nil {
@@ -69,15 +68,15 @@ func main() {
 	if err := (&controller.VirtualIPReconciler{
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
-		AgentStatusTTL:          agentStatusTTL,
-		AgentStatusRequeueAfter: agentStatusPruneInterval,
+		AgentStatusTTL:          opts.agentStatusTTL,
+		AgentStatusRequeueAfter: opts.agentStatusPruneInterval,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error("unable to create controller", "controller", "VirtualIP", "error", err)
 		os.Exit(1)
 	}
 
 	// Register webhooks
-	if enableWebhooks {
+	if opts.enableWebhooks {
 		if err := (&webhook.VirtualIPValidator{}).SetupWithManager(mgr); err != nil {
 			logger.Error("unable to create webhook", "webhook", "VirtualIP", "error", err)
 			os.Exit(1)
@@ -99,4 +98,14 @@ func main() {
 		logger.Error("unable to run manager", "error", err)
 		os.Exit(1)
 	}
+}
+
+func bindOperatorFlags(fs *flag.FlagSet, opts *operatorOptions, zapOpts *zap.Options) {
+	fs.StringVar(&opts.metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
+	fs.StringVar(&opts.probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
+	fs.BoolVar(&opts.enableWebhooks, "enable-webhooks", false, "Enable admission webhooks.")
+	fs.BoolVar(&opts.enableLeaderElection, "leader-elect", false, "Enable leader election.")
+	fs.DurationVar(&opts.agentStatusTTL, "agent-status-ttl", 0, "Fallback maximum age for per-agent VirtualIP status observations without ttlSeconds. Zero uses the default.")
+	fs.DurationVar(&opts.agentStatusPruneInterval, "agent-status-prune-interval", 0, "How often to recheck VirtualIPs with current per-agent status. Zero uses half of --agent-status-ttl.")
+	zapOpts.BindFlags(fs)
 }

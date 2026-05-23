@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func TestNewHTTPServerSetsTLS12MinimumWhenEnabled(t *testing.T) {
@@ -54,6 +55,63 @@ func TestNewServerDoesNotTrustForwardedClientIPHeaders(t *testing.T) {
 	}
 	if got := w.Body.String(); got != "192.0.2.10" {
 		t.Fatalf("client IP = %q, want remote address IP", got)
+	}
+}
+
+func TestLoggingMiddlewarePropagatesRequestID(t *testing.T) {
+	server, _ := setupTestServer()
+	logger, hook := logrustest.NewNullLogger()
+	server.logger = logger
+	server.router.GET("/request-id-test", func(c *gin.Context) {
+		requestID, ok := c.Get("request_id")
+		if !ok {
+			t.Fatal("request_id was not set in gin context")
+		}
+		c.String(http.StatusOK, requestID.(string))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/request-id-test", nil)
+	req.Header.Set(requestIDHeader, "req-123")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if got := w.Header().Get(requestIDHeader); got != "req-123" {
+		t.Fatalf("%s response header = %q, want req-123", requestIDHeader, got)
+	}
+	if got := w.Body.String(); got != "req-123" {
+		t.Fatalf("request id context value = %q, want req-123", got)
+	}
+	entry := hook.LastEntry()
+	if entry == nil {
+		t.Fatal("log entry was not captured")
+	}
+	if got := entry.Data["request_id"]; got != "req-123" {
+		t.Fatalf("logged request_id = %v, want req-123", got)
+	}
+}
+
+func TestLoggingMiddlewareGeneratesRequestID(t *testing.T) {
+	server, _ := setupTestServer()
+	logger, _ := logrustest.NewNullLogger()
+	server.logger = logger
+	server.router.GET("/generated-request-id-test", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/generated-request-id-test", nil)
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+	if got := w.Header().Get(requestIDHeader); got == "" {
+		t.Fatalf("%s response header is empty, want generated request id", requestIDHeader)
 	}
 }
 

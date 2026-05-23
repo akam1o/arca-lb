@@ -14,8 +14,11 @@ import (
 	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/controller/config"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
+
+const requestIDHeader = "X-Request-ID"
 
 // Server represents the REST API server
 type Server struct {
@@ -102,6 +105,12 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 		start := time.Now()
 		path := c.Request.URL.Path
 		method := c.Request.Method
+		requestID := strings.TrimSpace(c.GetHeader(requestIDHeader))
+		if requestID == "" {
+			requestID = uuid.NewString()
+		}
+		c.Set("request_id", requestID)
+		c.Writer.Header().Set(requestIDHeader, requestID)
 
 		c.Next()
 
@@ -115,6 +124,7 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 			"path":       path,
 			"ip":         clientIP,
 			"latency_ms": latency.Milliseconds(),
+			"request_id": requestID,
 		}).Info("HTTP request")
 	}
 }

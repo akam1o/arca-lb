@@ -47,7 +47,7 @@ healthCheck:
 
 metrics:
   enabled: true
-  address: ":9090"  # (ARCA_METRICS_ADDRESS)
+  address: "127.0.0.1:9090"  # (ARCA_METRICS_ADDRESS)
   path: /metrics
 
 telemetry:

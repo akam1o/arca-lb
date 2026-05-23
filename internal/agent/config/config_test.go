@@ -172,6 +172,10 @@ func TestApplyDefaults(t *testing.T) {
 	if cfg.Log.Format != "json" {
 		t.Errorf("Expected default log format 'json', got '%s'", cfg.Log.Format)
 	}
+
+	if cfg.Metrics.ListenAddress != "127.0.0.1:9090" {
+		t.Errorf("Expected default metrics listen address '127.0.0.1:9090', got '%s'", cfg.Metrics.ListenAddress)
+	}
 }
 
 func TestEnvOverrides(t *testing.T) {

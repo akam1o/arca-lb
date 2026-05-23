@@ -145,8 +145,10 @@
    - Agent 設定で `metrics.enabled: true` になっているか確認。
 
 2. **ポートの問題**
-   - メトリクスのポートを確認（デフォルト: `:9090`）。
-   - ファイアウォールルールを確認。
+   - メトリクスのポートを確認（Agent のデフォルト: `127.0.0.1:9090`）。
+   - 同梱 manifest は metrics を loopback に限定し、認証なしの Prometheus
+     auto-scrape annotation を有効化しません。metrics を公開する場合は、
+     認証済み proxy または NetworkPolicy で制限した scrape 経路を使用してください。
 
 3. **メトリクスサーバーが起動していない**
    - Agent ログでメトリクスサーバーのエラーを確認。

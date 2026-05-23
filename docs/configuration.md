@@ -46,7 +46,7 @@ healthCheck:
 
 metrics:
   enabled: true
-  address: ":9090"
+  address: "127.0.0.1:9090"
   path: "/metrics"
 
 telemetry:
@@ -130,8 +130,13 @@ the cluster.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `metrics.enabled` | Enable Prometheus metrics endpoint | `false` |
-| `metrics.address` | Listen address for the metrics server | `:9090` |
+| `metrics.address` | Listen address for the metrics server | `127.0.0.1:9090` |
 | `metrics.path` | HTTP path for the metrics endpoint | `/metrics` |
+
+The bundled Agent manifests bind metrics and health endpoints to loopback and
+do not enable unauthenticated Prometheus auto-scrape annotations. Use a
+kube-rbac-proxy, a Service with NetworkPolicy, or another authenticated scrape
+path before exposing metrics outside the node-local loopback listener.
 
 ### Telemetry settings
 
@@ -153,7 +158,7 @@ The Operator is configured via command-line flags:
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--metrics-bind-address` | Address for the metrics endpoint | `:8080` |
+| `--metrics-bind-address` | Address for the metrics endpoint | `127.0.0.1:8080` |
 | `--health-probe-bind-address` | Address for the health probe endpoint | `:8081` |
 | `--enable-webhooks` | Enable admission webhooks | `true` |
 | `--leader-elect` | Enable leader election | `false` |

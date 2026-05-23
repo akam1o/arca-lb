@@ -218,7 +218,7 @@ func applyV2Defaults(cfg *V2Config) {
 		cfg.HealthCheck.DefaultTimeout = 3 * time.Second
 	}
 	if cfg.Metrics.Address == "" {
-		cfg.Metrics.Address = ":9090"
+		cfg.Metrics.Address = "127.0.0.1:9090"
 	}
 	if cfg.Metrics.Path == "" {
 		cfg.Metrics.Path = "/metrics"

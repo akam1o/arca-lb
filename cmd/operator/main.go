@@ -127,7 +127,7 @@ func runOperator(fs *flag.FlagSet, rt operatorRuntime) int {
 }
 
 func bindOperatorFlags(fs *flag.FlagSet, opts *operatorOptions, zapOpts *zap.Options) {
-	fs.StringVar(&opts.metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
+	fs.StringVar(&opts.metricsAddr, "metrics-bind-address", "127.0.0.1:8080", "The address the metrics endpoint binds to.")
 	fs.StringVar(&opts.probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
 	fs.BoolVar(&opts.enableWebhooks, "enable-webhooks", true, "Enable admission webhooks.")
 	fs.BoolVar(&opts.enableLeaderElection, "leader-elect", false, "Enable leader election.")

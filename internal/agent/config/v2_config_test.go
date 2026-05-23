@@ -43,8 +43,8 @@ routing:
 	if cfg.HealthCheck.WorkerCount != 4 {
 		t.Errorf("HealthCheck.WorkerCount = %d, want 4", cfg.HealthCheck.WorkerCount)
 	}
-	if cfg.Metrics.Address != ":9090" {
-		t.Errorf("Metrics.Address = %q, want :9090", cfg.Metrics.Address)
+	if cfg.Metrics.Address != "127.0.0.1:9090" {
+		t.Errorf("Metrics.Address = %q, want 127.0.0.1:9090", cfg.Metrics.Address)
 	}
 	if cfg.Rollout.LeaseDuration == 0 {
 		t.Error("Rollout.LeaseDuration should default")

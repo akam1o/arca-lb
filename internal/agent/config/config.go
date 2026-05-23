@@ -349,7 +349,7 @@ func applyDefaults(cfg *Config) {
 
 	// Metrics defaults
 	if cfg.Metrics.ListenAddress == "" {
-		cfg.Metrics.ListenAddress = "0.0.0.0:9090"
+		cfg.Metrics.ListenAddress = "127.0.0.1:9090"
 	}
 	if cfg.Metrics.Path == "" {
 		cfg.Metrics.Path = "/metrics"

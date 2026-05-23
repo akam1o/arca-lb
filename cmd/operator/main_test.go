@@ -27,8 +27,8 @@ func TestBindOperatorFlagsDefaultsToProductionZap(t *testing.T) {
 	if zapOpts.Development {
 		t.Fatal("expected zap development mode to be disabled by default")
 	}
-	if opts.metricsAddr != ":8080" {
-		t.Fatalf("metricsAddr = %q, want :8080", opts.metricsAddr)
+	if opts.metricsAddr != "127.0.0.1:8080" {
+		t.Fatalf("metricsAddr = %q, want 127.0.0.1:8080", opts.metricsAddr)
 	}
 	if opts.probeAddr != ":8081" {
 		t.Fatalf("probeAddr = %q, want :8081", opts.probeAddr)

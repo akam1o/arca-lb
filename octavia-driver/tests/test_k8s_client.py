@@ -159,6 +159,9 @@ class TestVirtualIPStatusWatcher(unittest.TestCase):
         watcher._watch_lock = threading.Lock()
         watcher._namespace = "arca-lb-system"
         watcher._sync_interval = 10
+        watcher._callback_retry_delays = []
+        watcher._callback_failures_total = 0
+        watcher._callback_failure_streak = 0
         return watcher
 
     def test_stop_stops_active_watch_and_keeps_live_thread(self):
@@ -198,6 +201,46 @@ class TestVirtualIPStatusWatcher(unittest.TestCase):
             api.list_kwargs["label_selector"],
             f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
         )
+
+    def test_sync_current_retries_callback_failures(self):
+        obj = {"metadata": {"name": "vip-1"}}
+        api = FakeCustomObjectsApi(items=[obj])
+        watcher = self._watcher_with_thread(FakeThread(alive=False))
+        watcher._api = api
+        watcher._callback_retry_delays = [0]
+        calls = []
+
+        def callback(event_type, event_obj):
+            calls.append((event_type, event_obj))
+            if len(calls) == 1:
+                raise RuntimeError("transient callback failure")
+
+        watcher._sync_current(callback)
+
+        self.assertEqual(calls, [("SYNC", obj), ("SYNC", obj)])
+        self.assertEqual(watcher._callback_failures_total, 1)
+        self.assertEqual(watcher._callback_failure_streak, 0)
+
+    def test_sync_current_tracks_repeated_callback_failures(self):
+        obj = {"metadata": {"name": "vip-1"}}
+        api = FakeCustomObjectsApi(items=[obj])
+        watcher = self._watcher_with_thread(FakeThread(alive=False))
+        watcher._api = api
+        watcher._callback_retry_delays = [0, 0]
+        calls = []
+
+        def callback(event_type, event_obj):
+            calls.append((event_type, event_obj))
+            raise RuntimeError("persistent callback failure")
+
+        watcher._sync_current(callback)
+
+        self.assertEqual(
+            calls,
+            [("SYNC", obj), ("SYNC", obj), ("SYNC", obj)],
+        )
+        self.assertEqual(watcher._callback_failures_total, 3)
+        self.assertEqual(watcher._callback_failure_streak, 3)
 
     def test_watch_timeout_tracks_sync_interval(self):
         watcher = self._watcher_with_thread(FakeThread(alive=False))

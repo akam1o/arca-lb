@@ -16,6 +16,8 @@ from octavia_arca_driver import constants
 
 LOG = logging.getLogger(__name__)
 
+DEFAULT_CALLBACK_RETRY_DELAYS = (0.25, 1.0, 2.0)
+
 
 class VirtualIPClient:
     """Client for CRUD operations on VirtualIP custom resources."""
@@ -200,6 +202,9 @@ class VirtualIPStatusWatcher:
         self._thread = None
         self._watch = None
         self._watch_lock = threading.Lock()
+        self._callback_retry_delays = DEFAULT_CALLBACK_RETRY_DELAYS
+        self._callback_failures_total = 0
+        self._callback_failure_streak = 0
 
     def start(self, callback):
         """Start watching VirtualIP status changes in a background thread.
@@ -264,13 +269,7 @@ class VirtualIPStatusWatcher:
                         break
                     event_type = event.get("type", "")
                     obj = event.get("object", {})
-                    try:
-                        callback(event_type, obj)
-                    except Exception:
-                        LOG.exception(
-                            "Error in status watcher callback for %s",
-                            obj.get("metadata", {}).get("name", "unknown"),
-                        )
+                    self._invoke_callback(callback, event_type, obj, "watch")
             except Exception:
                 if not self._stop_event.is_set():
                     LOG.exception(
@@ -294,13 +293,57 @@ class VirtualIPStatusWatcher:
             label_selector=selector,
         )
         for obj in result.get("items", []):
+            self._invoke_callback(callback, "SYNC", obj, "sync")
+
+    def _invoke_callback(self, callback, event_type, obj, source):
+        name = obj.get("metadata", {}).get("name", "unknown")
+        delays = getattr(
+            self, "_callback_retry_delays", DEFAULT_CALLBACK_RETRY_DELAYS
+        )
+        for attempt in range(len(delays) + 1):
             try:
-                callback("SYNC", obj)
+                callback(event_type, obj)
+                self._callback_failure_streak = 0
+                return True
             except Exception:
-                LOG.exception(
-                    "Error in status sync callback for %s",
-                    obj.get("metadata", {}).get("name", "unknown"),
+                self._callback_failures_total = (
+                    getattr(self, "_callback_failures_total", 0) + 1
                 )
+                self._callback_failure_streak = (
+                    getattr(self, "_callback_failure_streak", 0) + 1
+                )
+                attempts = len(delays) + 1
+                if attempt >= len(delays) or self._stop_event.is_set():
+                    LOG.exception(
+                        "Status watcher %s callback for %s failed after "
+                        "%d/%d attempts; failures_total=%d "
+                        "failure_streak=%d",
+                        source,
+                        name,
+                        attempt + 1,
+                        attempts,
+                        self._callback_failures_total,
+                        self._callback_failure_streak,
+                    )
+                    return False
+
+                delay = delays[attempt]
+                LOG.exception(
+                    "Status watcher %s callback for %s failed on attempt "
+                    "%d/%d; retrying in %.2fs; failures_total=%d "
+                    "failure_streak=%d",
+                    source,
+                    name,
+                    attempt + 1,
+                    attempts,
+                    delay,
+                    self._callback_failures_total,
+                    self._callback_failure_streak,
+                )
+                if self._stop_event.wait(timeout=delay):
+                    return False
+
+        return False
 
     @staticmethod
     def _label_selector():

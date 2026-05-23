@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/akam1o/arca-lb/internal/common/models"
 )
 
 // Config represents the agent configuration
@@ -360,8 +362,8 @@ func applyDefaults(cfg *Config) {
 // validate validates the configuration
 func validate(cfg *Config) error {
 	// Validate agent ID
-	if strings.TrimSpace(cfg.Agent.ID) == "" {
-		return fmt.Errorf("agent.id is required")
+	if err := models.ValidateAgentID("agent.id", cfg.Agent.ID); err != nil {
+		return err
 	}
 
 	// Validate controller address

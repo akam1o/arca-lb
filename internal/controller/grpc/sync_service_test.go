@@ -64,6 +64,23 @@ func setupTestServer(t *testing.T, mockDS *testutil.MockDataStore) (*bufconn.Lis
 	return lis, client
 }
 
+func TestValidateAgentIDRejectsWhitespaceOrControl(t *testing.T) {
+	tests := []string{
+		"agent one",
+		"agent\tone",
+		"agent\none",
+	}
+
+	for _, agentID := range tests {
+		t.Run(agentID, func(t *testing.T) {
+			err := validateAgentID(agentID)
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("validateAgentID(%q) error = %v, want InvalidArgument", agentID, err)
+			}
+		})
+	}
+}
+
 func TestConfigSyncService_GetConfig(t *testing.T) {
 	tests := []struct {
 		name          string

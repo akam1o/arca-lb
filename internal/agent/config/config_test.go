@@ -199,6 +199,49 @@ vpp:
 	}
 }
 
+func TestLoadConfigRejectsInvalidAgentID(t *testing.T) {
+	tests := []struct {
+		name     string
+		agentID  string
+		envAgent string
+	}{
+		{
+			name:    "config whitespace",
+			agentID: "agent one",
+		},
+		{
+			name:     "env newline",
+			agentID:  "test-agent",
+			envAgent: "agent\none",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "agent.yaml")
+			configContent := `
+agent:
+  id: "` + tt.agentID + `"
+controller:
+  address: "localhost:50051"
+vpp:
+  socket_path: "/tmp/vpp.sock"
+`
+			if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if tt.envAgent != "" {
+				t.Setenv("ARCA_AGENT_ID", tt.envAgent)
+			}
+
+			_, err := LoadConfig(configPath)
+			if err == nil || !strings.Contains(err.Error(), "agent.id") {
+				t.Fatalf("LoadConfig error = %v, want agent.id validation error", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigRejectsInvalidControllerAPIKey(t *testing.T) {
 	tests := []struct {
 		name    string

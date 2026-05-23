@@ -230,26 +230,48 @@ dataplane:
 	}
 }
 
-func TestLoadV2Config_BlankAgentID(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "agent.yaml")
+func TestLoadV2Config_InvalidAgentID(t *testing.T) {
+	tests := []struct {
+		name    string
+		agentID string
+	}{
+		{
+			name:    "blank",
+			agentID: "  ",
+		},
+		{
+			name:    "whitespace",
+			agentID: "agent one",
+		},
+		{
+			name:    "control character",
+			agentID: "agent\none",
+		},
+	}
 
-	content := `
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+
+			content := `
 agent:
-  id: "  "
+  id: "` + tt.agentID + `"
 dataplane:
   type: noop
 `
-	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
 
-	_, err := LoadV2Config(cfgPath)
-	if err == nil {
-		t.Fatal("expected validation error for blank agent id")
-	}
-	if !strings.Contains(err.Error(), "agent.id") {
-		t.Fatalf("LoadV2Config error = %q, want it to contain agent.id", err)
+			_, err := LoadV2Config(cfgPath)
+			if err == nil {
+				t.Fatal("expected validation error for invalid agent id")
+			}
+			if !strings.Contains(err.Error(), "agent.id") {
+				t.Fatalf("LoadV2Config error = %q, want it to contain agent.id", err)
+			}
+		})
 	}
 }
 

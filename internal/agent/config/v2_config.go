@@ -9,6 +9,7 @@ import (
 	"time"
 
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
+	"github.com/akam1o/arca-lb/internal/common/models"
 )
 
 // V2Config is the top-level configuration for the v2 agent.
@@ -224,8 +225,8 @@ func validateV2(cfg *V2Config) error {
 		}
 		cfg.Agent.ID = hostname
 	}
-	if strings.TrimSpace(cfg.Agent.ID) == "" {
-		return fmt.Errorf("agent.id is required")
+	if err := models.ValidateAgentID("agent.id", cfg.Agent.ID); err != nil {
+		return err
 	}
 	if cfg.Agent.ReconcileInterval <= 0 {
 		return fmt.Errorf("agent.reconcileInterval must be positive")

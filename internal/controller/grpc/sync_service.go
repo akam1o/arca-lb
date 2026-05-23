@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/common/models"
@@ -276,8 +275,8 @@ func (s *ConfigSyncService) Heartbeat(ctx context.Context, req *pb.HeartbeatRequ
 }
 
 func validateAgentID(agentID string) error {
-	if strings.TrimSpace(agentID) == "" {
-		return status.Error(codes.InvalidArgument, "agent_id is required")
+	if err := models.ValidateAgentID("agent_id", agentID); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	return nil
 }

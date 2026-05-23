@@ -119,9 +119,17 @@ jobs:
         working-directory: octavia-driver
         run: uv sync --locked --group dev
 
+      - name: Run Octavia driver lint
+        working-directory: octavia-driver
+        run: uv run --locked --group dev ruff check octavia_arca_driver tests
+
+      - name: Run Octavia driver type check
+        working-directory: octavia-driver
+        run: uv run --locked --group dev mypy
+
       - name: Run Octavia driver tests
         working-directory: octavia-driver
-        run: uv run --locked --group dev python -m pytest -q
+        run: uv run --locked --group dev python -m pytest --cov=octavia_arca_driver --cov-report=term-missing -q
 
   build:
     name: Build

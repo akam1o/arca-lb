@@ -2572,16 +2572,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         """
         if codes_str is None or str(codes_str).strip() == "":
             return [200]
-        codes = []
+        codes: list[int] = []
         for part in str(codes_str).split(","):
             part = part.strip()
             if not part:
                 raise ArcaLBDriver._expected_codes_error(codes_str)
             if "-" in part:
                 try:
-                    start, end = part.split("-", 1)
-                    start = int(start)
-                    end = int(end)
+                    start_text, end_text = part.split("-", 1)
+                    start = int(start_text)
+                    end = int(end_text)
                 except (ValueError, TypeError):
                     raise ArcaLBDriver._expected_codes_error(codes_str)
                 if start > end:

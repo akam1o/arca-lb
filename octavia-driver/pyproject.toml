@@ -26,7 +26,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy>=1.18.0,<2.0.0",
     "pytest>=8.0.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.0",
 ]
 
 [project.entry-points."octavia.api.drivers"]
@@ -34,3 +37,16 @@ arca = "octavia_arca_driver.driver:ArcaLBDriver"
 
 [tool.setuptools.packages.find]
 include = ["octavia_arca_driver*"]
+
+[tool.mypy]
+python_version = "3.9"
+files = ["octavia_arca_driver"]
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[tool.coverage.run]
+source = ["octavia_arca_driver"]
+
+[tool.coverage.report]
+fail_under = 70
+skip_empty = true

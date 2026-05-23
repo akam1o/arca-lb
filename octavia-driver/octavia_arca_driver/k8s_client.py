@@ -334,7 +334,7 @@ class VirtualIPStatusWatcher:
 
     def _watch_loop(self, callback):
         selector = self._label_selector()
-        last_sync = 0
+        last_sync = 0.0
         while not self._stop_event.is_set():
             w = None
             try:

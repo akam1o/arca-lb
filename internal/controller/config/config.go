@@ -336,6 +336,9 @@ func validateMySQLConfig(cfg MySQLConfig) error {
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return fmt.Errorf("datastore.mysql.port must be between 1 and 65535")
 	}
+	if cfg.User == "" {
+		return fmt.Errorf("datastore.mysql.user is required")
+	}
 	if cfg.Database == "" {
 		return fmt.Errorf("datastore.mysql.database is required")
 	}

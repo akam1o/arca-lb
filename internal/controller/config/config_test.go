@@ -500,9 +500,21 @@ func TestLoadConfigRejectsInvalidDataStoreSettings(t *testing.T) {
   mysql:
     host: 127.0.0.1
     port: 70000
+    user: arcalb
     database: arcalb
 `,
 			wantErr: "datastore.mysql.port",
+		},
+		{
+			name: "mysql missing user",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    database: arcalb
+`,
+			wantErr: "datastore.mysql.user",
 		},
 		{
 			name: "mysql missing database",
@@ -511,6 +523,7 @@ func TestLoadConfigRejectsInvalidDataStoreSettings(t *testing.T) {
   mysql:
     host: 127.0.0.1
     port: 3306
+    user: arcalb
 `,
 			wantErr: "datastore.mysql.database",
 		},

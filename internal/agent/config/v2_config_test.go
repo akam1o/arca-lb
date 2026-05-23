@@ -432,6 +432,11 @@ func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 		wantErr string
 	}{
 		{
+			name:    "unknown setting",
+			vppYAML: "socketPath: /run/vpp/api.sock\n",
+			wantErr: "dataplane.vpp.socketPath",
+		},
+		{
 			name:    "invalid encap type",
 			vppYAML: "encap_type: L3dsr\n",
 			wantErr: "dataplane.vpp.encap_type",
@@ -460,6 +465,11 @@ func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 			name:    "flow table length is not power of two",
 			vppYAML: "new_flows_table_length: 65537\n",
 			wantErr: "dataplane.vpp.new_flows_table_length",
+		},
+		{
+			name:    "invalid fail on all backends down",
+			vppYAML: "fail_on_all_backends_down: eventually\n",
+			wantErr: "dataplane.vpp.fail_on_all_backends_down",
 		},
 		{
 			name:    "invalid connect timeout",

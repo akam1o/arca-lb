@@ -290,6 +290,12 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 		return nil
 	}
 
+	for key := range vpp {
+		if !knownV2VPPSetting(key) {
+			return fmt.Errorf("dataplane.vpp.%s is not supported", key)
+		}
+	}
+
 	if value, ok := vpp["socket_path"]; ok {
 		socketPath, ok := value.(string)
 		if !ok || socketPath == "" {
@@ -322,6 +328,12 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 		tableLength, ok := v2IntegerSetting(value)
 		if !ok || tableLength < 1 || tableLength > int64(^uint32(0)) || !isPowerOfTwo(tableLength) {
 			return fmt.Errorf("dataplane.vpp.new_flows_table_length must be a power-of-two integer between 1 and %d", uint64(^uint32(0)))
+		}
+	}
+
+	if value, ok := vpp["fail_on_all_backends_down"]; ok {
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("dataplane.vpp.fail_on_all_backends_down must be a boolean")
 		}
 	}
 
@@ -358,6 +370,26 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 	}
 
 	return nil
+}
+
+func knownV2VPPSetting(key string) bool {
+	switch key {
+	case "socket_path",
+		"connect_timeout",
+		"reconnect_interval",
+		"encap_type",
+		"dscp",
+		"service_type",
+		"new_flows_table_length",
+		"fail_on_all_backends_down",
+		"state_verification_interval",
+		"retained_vip_tuning_drift_policy",
+		"retained_vip_tuning_drift_drain",
+		"rolling_recreate_drain":
+		return true
+	default:
+		return false
+	}
 }
 
 func validV2VPPEncapType(value string) bool {

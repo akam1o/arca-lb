@@ -97,6 +97,12 @@ spec:
               port: metrics
             initialDelaySeconds: 10
             periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 10
+            failureThreshold: 3
           startupProbe:
             httpGet:
               path: /health

@@ -29,7 +29,7 @@ func TestAgentHTTPMuxServesHealthWhenMetricsDisabled(t *testing.T) {
 	handler := newAgentHTTPMux(agentconfig.MetricsSettings{
 		Enabled: false,
 		Path:    "/metrics",
-	}, logger)
+	}, logger, newAgentHTTPHealthState())
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -51,12 +51,56 @@ func TestAgentHTTPMuxServesHealthWhenMetricsDisabled(t *testing.T) {
 	}
 }
 
+func TestAgentHTTPMuxReportsReadinessAfterInitialSync(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	healthState := newAgentHTTPHealthState()
+	handler := newAgentHTTPMux(agentconfig.MetricsSettings{
+		Enabled: false,
+		Path:    "/metrics",
+	}, logger, healthState)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz status before sync = %d, want %d", resp.Code, http.StatusServiceUnavailable)
+	}
+	if body := resp.Body.String(); body != "not ready" {
+		t.Fatalf("/readyz body before sync = %q, want not ready", body)
+	}
+
+	healthState.SetReady(true)
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("/readyz status after sync = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if body := resp.Body.String(); body != "ok" {
+		t.Fatalf("/readyz body after sync = %q, want ok", body)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/livez", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("/livez status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if body := resp.Body.String(); body != "ok" {
+		t.Fatalf("/livez body = %q, want ok", body)
+	}
+}
+
 func TestAgentHTTPMuxServesMetricsWhenEnabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := newAgentHTTPMux(agentconfig.MetricsSettings{
 		Enabled: true,
 		Path:    "/metrics",
-	}, logger)
+	}, logger, newAgentHTTPHealthState())
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -80,7 +124,7 @@ func TestStartAgentHTTPServerReportsListenError(t *testing.T) {
 		Address: ln.Addr().String(),
 		Path:    "/metrics",
 	}
-	server := newAgentHTTPServer(cfg, logger)
+	server := newAgentHTTPServer(cfg, logger, newAgentHTTPHealthState())
 	errCh := startAgentHTTPServer(server, cfg, logger)
 
 	select {
@@ -98,7 +142,7 @@ func TestNewAgentHTTPServerSetsDefensiveTimeouts(t *testing.T) {
 	server := newAgentHTTPServer(agentconfig.MetricsSettings{
 		Address: "127.0.0.1:0",
 		Path:    "/metrics",
-	}, logger)
+	}, logger, newAgentHTTPHealthState())
 
 	if server.ReadTimeout != agentHTTPReadTimeout {
 		t.Fatalf("ReadTimeout = %s, want %s", server.ReadTimeout, agentHTTPReadTimeout)

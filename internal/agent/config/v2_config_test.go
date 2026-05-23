@@ -384,6 +384,16 @@ func TestLoadV2Config_InvalidMetricsPath(t *testing.T) {
 			metricsYAML: "enabled: true\npath: /health\n",
 			wantErr:     "metrics.path",
 		},
+		{
+			name:        "liveness path conflict",
+			metricsYAML: "enabled: true\npath: /livez\n",
+			wantErr:     "metrics.path",
+		},
+		{
+			name:        "readiness path conflict",
+			metricsYAML: "enabled: true\npath: /readyz\n",
+			wantErr:     "metrics.path",
+		},
 	}
 
 	for _, tt := range tests {

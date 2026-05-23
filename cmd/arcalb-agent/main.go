@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -240,9 +241,11 @@ func run() int {
 		return 1
 	}
 
+	healthState := newAgentHTTPHealthState()
+
 	// Start HTTP server for the container healthcheck and optional metrics before
 	// initial sync so liveness does not depend on stale dataplane cleanup time.
-	metricsServer := newAgentHTTPServer(cfg.Metrics, logger)
+	metricsServer := newAgentHTTPServer(cfg.Metrics, logger, healthState)
 	metricsErrCh := startAgentHTTPServer(metricsServer, cfg.Metrics, logger)
 
 	watcherErrCh := make(chan error, 1)
@@ -252,6 +255,7 @@ func run() int {
 			if err := cleanupStaleLastConfigs(syncCtx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
 				return fmt.Errorf("stale dataplane cleanup failed: %w", err)
 			}
+			healthState.SetReady(true)
 			close(watcherSyncedCh)
 			return nil
 		})
@@ -305,10 +309,10 @@ func startAgentHTTPServer(server *http.Server, cfg agentconfig.MetricsSettings, 
 	return errCh
 }
 
-func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {
+func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger, healthState *agentHTTPHealthState) *http.Server {
 	return &http.Server{
 		Addr:              cfg.Address,
-		Handler:           newAgentHTTPMux(cfg, logger),
+		Handler:           newAgentHTTPMux(cfg, logger, healthState),
 		ReadTimeout:       agentHTTPReadTimeout,
 		ReadHeaderTimeout: agentHTTPReadHeaderTimeout,
 		WriteTimeout:      agentHTTPWriteTimeout,
@@ -316,15 +320,46 @@ func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *h
 	}
 }
 
-func newAgentHTTPMux(cfg agentconfig.MetricsSettings, logger *slog.Logger) http.Handler {
+type agentHTTPHealthState struct {
+	ready atomic.Bool
+}
+
+func newAgentHTTPHealthState() *agentHTTPHealthState {
+	return &agentHTTPHealthState{}
+}
+
+func (s *agentHTTPHealthState) SetReady(ready bool) {
+	s.ready.Store(ready)
+}
+
+func (s *agentHTTPHealthState) Ready() bool {
+	return s != nil && s.ready.Load()
+}
+
+func newAgentHTTPMux(cfg agentconfig.MetricsSettings, logger *slog.Logger, healthState *agentHTTPHealthState) http.Handler {
 	mux := http.NewServeMux()
 	if cfg.Enabled {
 		mux.Handle(cfg.Path, promhttp.Handler())
 	}
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+	livenessHandler := func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("ok")); err != nil {
 			logger.Error("failed to write health response", "error", err)
+		}
+	}
+	mux.HandleFunc("/health", livenessHandler)
+	mux.HandleFunc("/livez", livenessHandler)
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !healthState.Ready() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			if _, err := w.Write([]byte("not ready")); err != nil {
+				logger.Error("failed to write readiness response", "error", err)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("ok")); err != nil {
+			logger.Error("failed to write readiness response", "error", err)
 		}
 	})
 	return mux

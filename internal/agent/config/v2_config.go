@@ -280,8 +280,9 @@ func validateV2(cfg *V2Config) error {
 		if !strings.HasPrefix(cfg.Metrics.Path, "/") {
 			return fmt.Errorf("metrics.path must be an absolute HTTP path")
 		}
-		if cfg.Metrics.Path == "/health" {
-			return fmt.Errorf("metrics.path must not be /health")
+		switch cfg.Metrics.Path {
+		case "/health", "/livez", "/readyz":
+			return fmt.Errorf("metrics.path must not be %s", cfg.Metrics.Path)
 		}
 	}
 

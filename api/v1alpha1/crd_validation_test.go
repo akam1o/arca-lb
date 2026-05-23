@@ -105,6 +105,26 @@ func TestVirtualIPCRDConstrainsAgentStatusTTL(t *testing.T) {
 	}
 }
 
+func TestVirtualIPCRDConstrainsStatusDetailArrays(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	status := crdSchemaProperty(t, crd, "status")
+
+	backends := nestedMap(t, status, "properties", "backends")
+	if got := backends["maxItems"]; got != MaxVirtualIPStatusBackends {
+		t.Fatalf("status.backends maxItems = %v, want %d", got, MaxVirtualIPStatusBackends)
+	}
+
+	agentStatuses := nestedMap(t, status, "properties", "agentStatuses")
+	if got := agentStatuses["maxItems"]; got != MaxVirtualIPStatusAgentStatuses {
+		t.Fatalf("status.agentStatuses maxItems = %v, want %d", got, MaxVirtualIPStatusAgentStatuses)
+	}
+
+	agentBackends := nestedMap(t, agentStatuses, "items", "properties", "backends")
+	if got := agentBackends["maxItems"]; got != MaxVirtualIPStatusBackends {
+		t.Fatalf("status.agentStatuses[].backends maxItems = %v, want %d", got, MaxVirtualIPStatusBackends)
+	}
+}
+
 func TestVirtualIPCRDDefinesBackendMonitorAddress(t *testing.T) {
 	crd := loadVirtualIPCRD(t)
 	backends := crdSchemaProperty(t, crd, "spec", "backends")

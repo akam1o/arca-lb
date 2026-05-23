@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -95,6 +96,52 @@ func TestUpdateVIPStatusWritesHealthAndPreservesConditions(t *testing.T) {
 	}
 	if got.Status.AgentStatuses[0].AgentID != "node-a" {
 		t.Fatalf("AgentStatus agentID = %q, want node-a", got.Status.AgentStatuses[0].AgentID)
+	}
+}
+
+func TestBuildBackendStatusesCapsStatusDetails(t *testing.T) {
+	backends := make([]v1alpha1.BackendSpec, 0, v1alpha1.MaxVirtualIPStatusBackends+1)
+	healthySet := make(map[string]struct{}, v1alpha1.MaxVirtualIPStatusBackends+1)
+	for i := 0; i <= v1alpha1.MaxVirtualIPStatusBackends; i++ {
+		address := fmt.Sprintf("10.0.%d.%d", i/256, i%256)
+		backends = append(backends, v1alpha1.BackendSpec{Address: address, Weight: 100})
+		healthySet[address] = struct{}{}
+	}
+
+	statuses := buildBackendStatuses(backends, healthySet)
+
+	if len(statuses) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("backend status count = %d, want %d", len(statuses), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+	if statuses[len(statuses)-1].Address != "10.0.3.255" {
+		t.Fatalf("last retained backend = %q, want 10.0.3.255", statuses[len(statuses)-1].Address)
+	}
+}
+
+func TestSanitizeAgentStatusesCapsNewestObservations(t *testing.T) {
+	base := time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC)
+	statuses := make([]v1alpha1.AgentStatus, 0, v1alpha1.MaxVirtualIPStatusAgentStatuses+2)
+	for i := 0; i < v1alpha1.MaxVirtualIPStatusAgentStatuses+2; i++ {
+		updated := metav1.NewTime(base.Add(time.Duration(i) * time.Second))
+		statuses = append(statuses, v1alpha1.AgentStatus{
+			AgentID:        fmt.Sprintf("node-%03d", i),
+			LastUpdateTime: &updated,
+			TTLSeconds:     int64(DefaultAgentStatusTTL / time.Second),
+		})
+	}
+
+	got := SanitizeAgentStatuses(statuses)
+
+	if len(got) != v1alpha1.MaxVirtualIPStatusAgentStatuses {
+		t.Fatalf("agent status count = %d, want %d", len(got), v1alpha1.MaxVirtualIPStatusAgentStatuses)
+	}
+	if got[0].AgentID != "node-257" {
+		t.Fatalf("first retained agent = %q, want newest node-257", got[0].AgentID)
+	}
+	for _, status := range got {
+		if status.AgentID == "node-000" || status.AgentID == "node-001" {
+			t.Fatalf("retained old agent status %q, want oldest observations pruned", status.AgentID)
+		}
 	}
 }
 

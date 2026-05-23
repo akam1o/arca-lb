@@ -292,6 +292,7 @@ spec:
                         - address
                         - healthy
                         type: object
+                      maxItems: 1024
                       type: array
                     conditions:
                       description: Conditions represent this agent's latest observations.
@@ -381,6 +382,7 @@ spec:
                   - healthyBackends
                   - totalBackends
                   type: object
+                maxItems: 256
                 type: array
                 x-kubernetes-list-map-keys:
                 - agentID
@@ -410,6 +412,7 @@ spec:
                   - address
                   - healthy
                   type: object
+                maxItems: 1024
                 type: array
               conditions:
                 description: Conditions represent the latest available observations.

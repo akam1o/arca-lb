@@ -40,6 +40,17 @@ const (
 // DefaultBackendWeight is the appliance-compatible default backend weight.
 const DefaultBackendWeight = 1
 
+const (
+	// MaxVirtualIPStatusBackends caps per-backend status details retained on a
+	// VirtualIP status object. Aggregate backend counts continue to report the
+	// full configured backend set.
+	MaxVirtualIPStatusBackends = 1024
+
+	// MaxVirtualIPStatusAgentStatuses caps per-agent observations retained on a
+	// VirtualIP status object.
+	MaxVirtualIPStatusAgentStatuses = 256
+)
+
 // BackendSpec defines a real server backing a VIP.
 type BackendSpec struct {
 	// Address is the IP address of the backend server.
@@ -230,6 +241,7 @@ type AgentStatus struct {
 
 	// Backends reports per-backend health status observed by this agent.
 	// +optional
+	// +kubebuilder:validation:MaxItems=1024
 	Backends []BackendStatus `json:"backends,omitempty"`
 
 	// Conditions represent this agent's latest observations.
@@ -261,10 +273,12 @@ type VirtualIPStatus struct {
 
 	// Backends reports per-backend health status.
 	// +optional
+	// +kubebuilder:validation:MaxItems=1024
 	Backends []BackendStatus `json:"backends,omitempty"`
 
 	// AgentStatuses contains per-agent observations used to build the aggregate status.
 	// +optional
+	// +kubebuilder:validation:MaxItems=256
 	// +listType=map
 	// +listMapKey=agentID
 	AgentStatuses []AgentStatus `json:"agentStatuses,omitempty"`

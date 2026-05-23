@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
@@ -216,8 +217,15 @@ func countConfiguredHealthyBackends(backends []v1alpha1.BackendSpec, healthySet 
 }
 
 func buildBackendStatuses(backends []v1alpha1.BackendSpec, healthySet map[string]struct{}) []v1alpha1.BackendStatus {
-	statuses := make([]v1alpha1.BackendStatus, 0, len(backends))
+	limit := len(backends)
+	if limit > v1alpha1.MaxVirtualIPStatusBackends {
+		limit = v1alpha1.MaxVirtualIPStatusBackends
+	}
+	statuses := make([]v1alpha1.BackendStatus, 0, limit)
 	for _, be := range backends {
+		if len(statuses) == limit {
+			break
+		}
 		_, healthy := healthySet[be.Address]
 		message := "unhealthy"
 		if healthy {
@@ -290,9 +298,33 @@ func SanitizeAgentStatuses(statuses []v1alpha1.AgentStatus) []v1alpha1.AgentStat
 		out = append(out, status)
 	}
 	if out == nil {
+		out = statuses
+	}
+	return capAgentStatuses(out)
+}
+
+func capAgentStatuses(statuses []v1alpha1.AgentStatus) []v1alpha1.AgentStatus {
+	if len(statuses) <= v1alpha1.MaxVirtualIPStatusAgentStatuses {
 		return statuses
 	}
-	return out
+
+	out := append([]v1alpha1.AgentStatus(nil), statuses...)
+	sort.SliceStable(out, func(i, j int) bool {
+		left := agentStatusUpdateTime(out[i])
+		right := agentStatusUpdateTime(out[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return out[i].AgentID < out[j].AgentID
+	})
+	return out[:v1alpha1.MaxVirtualIPStatusAgentStatuses]
+}
+
+func agentStatusUpdateTime(status v1alpha1.AgentStatus) time.Time {
+	if status.LastUpdateTime == nil {
+		return time.Time{}
+	}
+	return status.LastUpdateTime.Time
 }
 
 func (u *Updater) effectiveAgentStatusTTL() time.Duration {

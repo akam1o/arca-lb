@@ -233,6 +233,16 @@ func TestCreateVIP(t *testing.T) {
 			expectedStatus: http.StatusCreated,
 		},
 		{
+			name: "unknown field",
+			requestBody: map[string]interface{}{
+				"vip":       "192.168.1.100",
+				"port":      80,
+				"protocol":  "TCP",
+				"encapType": "NAT4",
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "with health check",
 			requestBody: map[string]interface{}{
 				"vip":      "192.168.1.101",
@@ -252,6 +262,24 @@ func TestCreateVIP(t *testing.T) {
 				},
 			},
 			expectedStatus: http.StatusCreated,
+		},
+		{
+			name: "unknown health check field",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":     "HTTP",
+					"interval": "10s",
+					"timeout":  "5s",
+					"probe":    "healthz",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name: "with tls hello health check",
@@ -835,6 +863,14 @@ func TestUpdateVIP(t *testing.T) {
 			vipID: "vip-1",
 			requestBody: map[string]interface{}{
 				"port": 70000,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "unknown field",
+			vipID: "vip-1",
+			requestBody: map[string]interface{}{
+				"encapType": "NAT4",
 			},
 			expectedStatus: http.StatusBadRequest,
 		},

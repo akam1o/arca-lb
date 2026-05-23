@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,6 +132,48 @@ func validateNonNullJSONFields(fields map[string]json.RawMessage, names ...strin
 	return nil
 }
 
+func validateKnownJSONFields(fields map[string]json.RawMessage, names ...string) error {
+	return validateKnownJSONFieldsWithPrefix(fields, "", names...)
+}
+
+func validateKnownNestedJSONFields(fields map[string]json.RawMessage, field string, names ...string) error {
+	raw, ok := fields[field]
+	if !ok || rawJSONIsNull(raw) {
+		return nil
+	}
+
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &nested); err != nil || nested == nil {
+		return badRequestError(field + " must be a JSON object")
+	}
+
+	return validateKnownJSONFieldsWithPrefix(nested, field, names...)
+}
+
+func validateKnownJSONFieldsWithPrefix(fields map[string]json.RawMessage, prefix string, names ...string) error {
+	if fields == nil {
+		return badRequestError("request body must be a JSON object")
+	}
+
+	allowed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		allowed[name] = struct{}{}
+	}
+
+	for name := range fields {
+		if _, ok := allowed[name]; ok {
+			continue
+		}
+		fieldName := name
+		if prefix != "" {
+			fieldName = prefix + "." + name
+		}
+		return badRequestError("unknown field " + strconv.Quote(fieldName))
+	}
+
+	return nil
+}
+
 func validateEncapAddressFamily(vip string, encapType models.EncapType) error {
 	ip := net.ParseIP(vip)
 	if ip == nil {
@@ -165,8 +208,22 @@ func validateExistingBackendAddressFamilies(backends []models.Backend, vip *mode
 
 // createVIP handles POST /api/v1/vips
 func (s *Server) createVIP(c *gin.Context) {
+	var requestFields map[string]json.RawMessage
+	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+	if err := validateKnownJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type", "dscp", "health_check"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownNestedJSONFields(requestFields, "health_check", "type", "interval", "timeout", "rise_count", "fall_count", "config"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	var req CreateVIPRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		handleBindError(c, err)
 		return
 	}
@@ -311,6 +368,10 @@ func (s *Server) updateVIP(c *gin.Context) {
 		return
 	}
 	if err := validateNonNullJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type", "dscp"); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

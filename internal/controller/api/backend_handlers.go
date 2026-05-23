@@ -53,8 +53,18 @@ func validateBackendAddressFamily(vip *models.VIP, backendIP string) error {
 
 // createBackend handles POST /api/v1/backends
 func (s *Server) createBackend(c *gin.Context) {
+	var requestFields map[string]json.RawMessage
+	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+	if err := validateKnownJSONFields(requestFields, "vip_id", "ip", "weight"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	var req CreateBackendRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		handleBindError(c, err)
 		return
 	}
@@ -160,6 +170,10 @@ func (s *Server) updateBackend(c *gin.Context) {
 		return
 	}
 	if err := validateNonNullJSONFields(requestFields, "ip", "weight"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownJSONFields(requestFields, "ip", "weight"); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

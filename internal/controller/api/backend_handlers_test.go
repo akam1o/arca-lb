@@ -59,6 +59,16 @@ func TestCreateBackend(t *testing.T) {
 			expectedStatus: http.StatusCreated,
 		},
 		{
+			name: "unknown field",
+			requestBody: map[string]interface{}{
+				"vip_id":      "vip-1",
+				"ip":          "10.0.0.2",
+				"monitor_ip":  "10.0.0.3",
+				"monitorPort": 8080,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "VIP not found",
 			requestBody: map[string]interface{}{
 				"vip_id": "vip-nonexistent",
@@ -350,6 +360,14 @@ func TestUpdateBackend(t *testing.T) {
 			backendID: backend.ID,
 			requestBody: map[string]interface{}{
 				"weight": 200,
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:      "unknown field",
+			backendID: backend.ID,
+			requestBody: map[string]interface{}{
+				"monitor_ip": "10.0.0.2",
 			},
 			expectedStatus: http.StatusBadRequest,
 		},

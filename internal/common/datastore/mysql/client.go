@@ -116,7 +116,7 @@ func mysqlDSN(cfg *datastore.Config) (string, error) {
 	dsn.Params = map[string]string{
 		"charset":   "utf8mb4",
 		"parseTime": "True",
-		"loc":       "Local",
+		"loc":       "UTC",
 	}
 	return dsn.FormatDSN(), nil
 }

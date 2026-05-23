@@ -52,8 +52,8 @@ func TestMySQLDSNEscapesConnectionFields(t *testing.T) {
 	if !parsed.ParseTime {
 		t.Fatal("parseTime = false, want true")
 	}
-	if parsed.Loc == nil || parsed.Loc.String() != "Local" {
-		t.Fatalf("loc = %v, want Local", parsed.Loc)
+	if parsed.Loc == nil || parsed.Loc.String() != "UTC" {
+		t.Fatalf("loc = %v, want UTC", parsed.Loc)
 	}
 	if parsed.Timeout != DefaultConnectTimeout {
 		t.Fatalf("timeout = %s, want %s", parsed.Timeout, DefaultConnectTimeout)

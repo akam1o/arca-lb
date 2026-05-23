@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
+	controllerauth "github.com/akam1o/arca-lb/internal/controller/auth"
 	"github.com/akam1o/arca-lb/internal/controller/config"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -247,7 +246,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		if !apiKeyMatches(extractAPIKey(c.Request), expectedKey) {
+		if !controllerauth.APIKeyMatches(extractAPIKey(c.Request), expectedKey) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
@@ -260,30 +259,10 @@ func extractAPIKey(req *http.Request) string {
 	if req == nil {
 		return ""
 	}
-	if values := req.Header.Values("Authorization"); len(values) > 0 {
-		if len(values) != 1 {
-			return ""
-		}
-		fields := strings.Fields(values[0])
-		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
-			return fields[1]
-		}
-		return ""
-	}
-	values := req.Header.Values("X-API-Key")
-	if len(values) != 1 {
-		return ""
-	}
-	return strings.TrimSpace(values[0])
-}
-
-func apiKeyMatches(got, want string) bool {
-	if got == "" || want == "" {
-		return false
-	}
-	gotHash := sha256.Sum256([]byte(got))
-	wantHash := sha256.Sum256([]byte(want))
-	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+	return controllerauth.ExtractAPIKey(
+		req.Header.Values("Authorization"),
+		req.Header.Values("X-API-Key"),
+	)
 }
 
 // healthCheck handles health check requests

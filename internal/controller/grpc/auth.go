@@ -2,11 +2,9 @@ package grpc
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/x509"
-	"strings"
 
+	controllerauth "github.com/akam1o/arca-lb/internal/controller/auth"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -42,7 +40,7 @@ func authenticateIncomingContext(ctx context.Context, expectedKey string) error 
 	if expectedKey == "" {
 		return nil
 	}
-	if !apiKeyMatches(extractIncomingAPIKey(ctx), expectedKey) {
+	if !controllerauth.APIKeyMatches(extractIncomingAPIKey(ctx), expectedKey) {
 		return status.Error(codes.Unauthenticated, "unauthenticated")
 	}
 	return nil
@@ -53,31 +51,10 @@ func extractIncomingAPIKey(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
-	authValues := md.Get(authorizationMetadataKey)
-	if len(authValues) > 0 {
-		if len(authValues) != 1 {
-			return ""
-		}
-		fields := strings.Fields(authValues[0])
-		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
-			return fields[1]
-		}
-		return ""
-	}
-	apiKeyValues := md.Get(apiKeyMetadataKey)
-	if len(apiKeyValues) != 1 {
-		return ""
-	}
-	return strings.TrimSpace(apiKeyValues[0])
-}
-
-func apiKeyMatches(got, want string) bool {
-	if got == "" || want == "" {
-		return false
-	}
-	gotHash := sha256.Sum256([]byte(got))
-	wantHash := sha256.Sum256([]byte(want))
-	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+	return controllerauth.ExtractAPIKey(
+		md.Get(authorizationMetadataKey),
+		md.Get(apiKeyMetadataKey),
+	)
 }
 
 func authorizeAgentIDWithClientCert(ctx context.Context, agentID string) error {

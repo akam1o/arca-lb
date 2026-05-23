@@ -132,6 +132,71 @@ func validateNonNullJSONFields(fields map[string]json.RawMessage, names ...strin
 	return nil
 }
 
+func validateNoDuplicateJSONFields(c *gin.Context) error {
+	raw, ok := c.Get(gin.BodyBytesKey)
+	if !ok {
+		return nil
+	}
+	body, ok := raw.([]byte)
+	if !ok {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	return validateNoDuplicateJSONValue(decoder, "")
+}
+
+func validateNoDuplicateJSONValue(decoder *json.Decoder, path string) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return badRequestError("invalid JSON object key")
+			}
+
+			fieldPath := key
+			if path != "" {
+				fieldPath = path + "." + key
+			}
+			if _, exists := seen[key]; exists {
+				return badRequestError("duplicate field " + strconv.Quote(fieldPath))
+			}
+			seen[key] = struct{}{}
+
+			if err := validateNoDuplicateJSONValue(decoder, fieldPath); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			if err := validateNoDuplicateJSONValue(decoder, path); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	default:
+		return nil
+	}
+}
+
 func validateKnownJSONFields(fields map[string]json.RawMessage, names ...string) error {
 	return validateKnownJSONFieldsWithPrefix(fields, "", names...)
 }
@@ -211,6 +276,10 @@ func (s *Server) createVIP(c *gin.Context) {
 	var requestFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
 		handleBindError(c, err)
+		return
+	}
+	if err := validateNoDuplicateJSONFields(c); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateKnownJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type", "dscp", "health_check"); err != nil {
@@ -365,6 +434,10 @@ func (s *Server) updateVIP(c *gin.Context) {
 	var requestFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
 		handleBindError(c, err)
+		return
+	}
+	if err := validateNoDuplicateJSONFields(c); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateNonNullJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type"); err != nil {

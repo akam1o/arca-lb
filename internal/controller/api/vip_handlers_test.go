@@ -694,6 +694,36 @@ func TestCreateVIP(t *testing.T) {
 	}
 }
 
+func TestCreateVIPRejectsDuplicateJSONFields(t *testing.T) {
+	server, _ := setupTestServer()
+	body := `{"vip":"192.168.1.100","port":80,"protocol":"TCP","encap_type":"NAT4","encap_type":"GRE4"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/vips", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	var response map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, `duplicate field "encap_type"`, response["error"])
+}
+
+func TestCreateVIPRejectsDuplicateNestedJSONFields(t *testing.T) {
+	server, _ := setupTestServer()
+	body := `{"vip":"192.168.1.100","port":80,"protocol":"TCP","encap_type":"NAT4","health_check":{"type":"HTTP","interval":"10s","timeout":"5s","config":{"port":8080,"port":8081}}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/vips", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	var response map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, `duplicate field "health_check.config.port"`, response["error"])
+}
+
 func TestListVIPs(t *testing.T) {
 	server, mockDS := setupTestServer()
 	ctx := context.TODO()
@@ -978,6 +1008,30 @@ func TestUpdateVIP(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateVIPRejectsDuplicateJSONFields(t *testing.T) {
+	server, mockDS := setupTestServer()
+	ctx := context.TODO()
+
+	require.NoError(t, mockDS.CreateVIP(ctx, &models.VIP{
+		ID:       "vip-1",
+		VIP:      "192.168.1.100",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+	}))
+
+	body := `{"port":8080,"port":8081}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/vips/vip-1", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	var response map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, `duplicate field "port"`, response["error"])
 }
 
 func TestUpdateVIPClearsDSCP(t *testing.T) {

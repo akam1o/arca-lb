@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
@@ -156,6 +157,30 @@ func TestCreateBackend(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCreateBackendRejectsDuplicateJSONFields(t *testing.T) {
+	server, mockDS := setupTestServer()
+	ctx := context.TODO()
+
+	require.NoError(t, mockDS.CreateVIP(ctx, &models.VIP{
+		ID:       "vip-1",
+		VIP:      "192.168.1.100",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+	}))
+
+	body := `{"vip_id":"vip-1","ip":"10.0.0.1","ip":"10.0.0.2"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/backends", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	var response map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, `duplicate field "ip"`, response["error"])
 }
 
 func TestListBackends(t *testing.T) {
@@ -431,6 +456,36 @@ func TestUpdateBackend(t *testing.T) {
 			assert.Equal(t, tt.expectedStatus, w.Code)
 		})
 	}
+}
+
+func TestUpdateBackendRejectsDuplicateJSONFields(t *testing.T) {
+	server, mockDS := setupTestServer()
+	ctx := context.TODO()
+
+	require.NoError(t, mockDS.CreateVIP(ctx, &models.VIP{
+		ID:       "vip-1",
+		VIP:      "192.168.1.100",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+	}))
+	backend := &models.Backend{
+		VIPID:  "vip-1",
+		IP:     "10.0.0.1",
+		Weight: 10,
+	}
+	require.NoError(t, mockDS.AddBackend(ctx, backend))
+
+	body := `{"weight":10,"weight":20}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/backends/"+backend.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	var response map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, `duplicate field "weight"`, response["error"])
 }
 
 func TestDeleteBackend(t *testing.T) {

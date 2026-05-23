@@ -58,6 +58,10 @@ func (s *Server) createBackend(c *gin.Context) {
 		handleBindError(c, err)
 		return
 	}
+	if err := validateNoDuplicateJSONFields(c); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := validateKnownJSONFields(requestFields, "vip_id", "ip", "weight"); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -167,6 +171,10 @@ func (s *Server) updateBackend(c *gin.Context) {
 	var requestFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
 		handleBindError(c, err)
+		return
+	}
+	if err := validateNoDuplicateJSONFields(c); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateNonNullJSONFields(requestFields, "ip", "weight"); err != nil {

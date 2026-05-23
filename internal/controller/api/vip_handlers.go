@@ -599,5 +599,5 @@ func (s *Server) deleteVIP(c *gin.Context) {
 	}
 
 	s.logger.WithField("vip_id", id).Info("VIP deleted successfully")
-	c.JSON(http.StatusOK, gin.H{"message": "VIP deleted successfully"})
+	c.Status(http.StatusNoContent)
 }

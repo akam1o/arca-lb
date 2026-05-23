@@ -516,7 +516,7 @@ func TestDeleteBackend(t *testing.T) {
 		{
 			name:           "success",
 			backendID:      backend.ID,
-			expectedStatus: http.StatusOK,
+			expectedStatus: http.StatusNoContent,
 		},
 		{
 			name:           "not found",
@@ -533,6 +533,9 @@ func TestDeleteBackend(t *testing.T) {
 			server.router.ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
+			if tt.expectedStatus == http.StatusNoContent {
+				assert.Empty(t, w.Body.String())
+			}
 		})
 	}
 }

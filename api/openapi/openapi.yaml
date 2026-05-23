@@ -182,16 +182,8 @@ paths:
       summary: Delete VIP
       operationId: deleteVIP
       responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                required: [message]
+        "204":
+          description: Deleted
         "404":
           description: Not found
           content:
@@ -345,16 +337,8 @@ paths:
       summary: Delete backend
       operationId: deleteBackend
       responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                required: [message]
+        "204":
+          description: Deleted
         "404":
           description: Not found
           content:

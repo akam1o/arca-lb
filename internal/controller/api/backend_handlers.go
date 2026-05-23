@@ -251,5 +251,5 @@ func (s *Server) deleteBackend(c *gin.Context) {
 	}
 
 	s.logger.WithField("backend_id", id).Info("Backend deleted successfully")
-	c.JSON(http.StatusOK, gin.H{"message": "backend deleted successfully"})
+	c.Status(http.StatusNoContent)
 }

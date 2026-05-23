@@ -1329,7 +1329,7 @@ func TestDeleteVIP(t *testing.T) {
 		{
 			name:                 "success",
 			vipID:                "vip-1",
-			expectedStatus:       http.StatusOK,
+			expectedStatus:       http.StatusNoContent,
 			verifyBackendDeleted: true,
 		},
 		{
@@ -1363,8 +1363,11 @@ func TestDeleteVIP(t *testing.T) {
 			server.router.ServeHTTP(w, req)
 
 			assert.Equal(t, tt.expectedStatus, w.Code)
+			if tt.expectedStatus == http.StatusNoContent {
+				assert.Empty(t, w.Body.String())
+			}
 
-			if tt.verifyBackendDeleted && tt.expectedStatus == http.StatusOK {
+			if tt.verifyBackendDeleted && tt.expectedStatus == http.StatusNoContent {
 				// Verify backend is also deleted
 				_, err := mockDS.GetBackend(ctx, backend.ID)
 				assert.Error(t, err)

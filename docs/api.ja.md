@@ -14,6 +14,15 @@
 | Short Name | `vip` |
 | Scope | Namespaced |
 
+### 用語
+
+`VirtualIP` は Kubernetes リソース名としての正規名称です。この API では
+`spec.address` が仮想 IP アドレス、backend の `address` が実サーバーの
+アドレスを表します。`vip` kubectl short name、REST/legacy surface、
+Octavia の `vip_address` は、同じ仮想 IP アドレスの概念を指します。
+`monitorAddress` は別フィールドで、backend のヘルスチェック先としてのみ
+使います。
+
 ### kubectl 使用例
 
 ```bash

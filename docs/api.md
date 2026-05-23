@@ -14,6 +14,15 @@ This document is the API reference for arca-lb.
 | Short Name | `vip` |
 | Scope | Namespaced |
 
+### Terminology
+
+`VirtualIP` is the canonical Kubernetes resource name. In this API,
+`spec.address` is the virtual IP address, while backend `address` fields are
+real server addresses. The `vip` kubectl short name, REST/legacy surfaces, and
+Octavia `vip_address` all refer to the same virtual IP address concept.
+`monitorAddress` is separate and is used only as the backend health-check
+target.
+
 ### kubectl Examples
 
 ```bash

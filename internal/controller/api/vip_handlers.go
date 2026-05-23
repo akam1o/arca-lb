@@ -169,15 +169,8 @@ func healthCheckFromRequest(req *HealthCheckRequest) (*models.HealthCheck, error
 	}, nil
 }
 
-func effectiveEncapType(encapType models.EncapType) models.EncapType {
-	if encapType == "" {
-		return models.EncapTypeL3DSR
-	}
-	return encapType
-}
-
 func validateDSCPForEncap(encapType models.EncapType, dscp *uint8) error {
-	if effectiveEncapType(encapType) == models.EncapTypeL3DSR && dscp != nil && *dscp == 0 {
+	if models.EffectiveEncapType(encapType) == models.EncapTypeL3DSR && dscp != nil && *dscp == 0 {
 		return badRequestError("dscp must be 1-63 when encap_type is L3DSR (DSCP mode)")
 	}
 	return nil
@@ -312,14 +305,14 @@ func validateEncapAddressFamily(vip string, encapType models.EncapType) error {
 		return nil
 	}
 
-	effectiveEncap := effectiveEncapType(encapType)
+	effectiveEncap := models.EffectiveEncapType(encapType)
 	isIPv4 := ip.To4() != nil
-	switch effectiveEncap {
-	case models.EncapTypeL3DSR, models.EncapTypeNAT4:
+	switch {
+	case models.EncapRequiresIPv4VIP(effectiveEncap):
 		if !isIPv4 {
 			return badRequestError("encap_type " + string(effectiveEncap) + " requires an IPv4 vip")
 		}
-	case models.EncapTypeNAT6:
+	case models.EncapRequiresIPv6VIP(effectiveEncap):
 		if isIPv4 {
 			return badRequestError("encap_type NAT6 requires an IPv6 vip")
 		}

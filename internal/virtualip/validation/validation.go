@@ -91,11 +91,7 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 		return fmt.Errorf("spec is nil")
 	}
 
-	switch spec.EncapType {
-	case v1alpha1.EncapTypeGRE4, v1alpha1.EncapTypeGRE6,
-		v1alpha1.EncapTypeL3DSR, v1alpha1.EncapTypeNAT4, v1alpha1.EncapTypeNAT6,
-		"": // empty is allowed before defaults are applied
-	default:
+	if spec.EncapType != "" && !models.IsValidEncapType(models.EncapType(spec.EncapType)) {
 		return fmt.Errorf("spec.encapType %q is not valid", spec.EncapType)
 	}
 
@@ -142,12 +138,13 @@ func validateBackendAddressFamily(index int, address string, ip netip.Addr, enca
 	}
 
 	isIPv4 := ip.Is4()
-	switch encapType {
-	case v1alpha1.EncapTypeGRE4, v1alpha1.EncapTypeL3DSR, v1alpha1.EncapTypeNAT4:
+	modelEncapType := models.EncapType(encapType)
+	switch {
+	case models.EncapRequiresIPv4Backend(modelEncapType):
 		if !isIPv4 {
 			return fmt.Errorf("spec.backends[%d].address %q must be IPv4 for encapType %q", index, address, encapType)
 		}
-	case v1alpha1.EncapTypeGRE6, v1alpha1.EncapTypeNAT6:
+	case models.EncapRequiresIPv6Backend(modelEncapType):
 		if isIPv4 {
 			return fmt.Errorf("spec.backends[%d].address %q must be IPv6 for encapType %q", index, address, encapType)
 		}
@@ -167,12 +164,13 @@ func validateEncapAddressFamily(address string, encapType v1alpha1.EncapType) er
 	}
 
 	isIPv4 := ip.Is4()
-	switch encapType {
-	case v1alpha1.EncapTypeL3DSR, v1alpha1.EncapTypeNAT4:
+	modelEncapType := models.EncapType(encapType)
+	switch {
+	case models.EncapRequiresIPv4VIP(modelEncapType):
 		if !isIPv4 {
 			return fmt.Errorf("spec.encapType %q requires an IPv4 spec.address", encapType)
 		}
-	case v1alpha1.EncapTypeNAT6:
+	case models.EncapRequiresIPv6VIP(modelEncapType):
 		if isIPv4 {
 			return fmt.Errorf("spec.encapType %q requires an IPv6 spec.address", encapType)
 		}

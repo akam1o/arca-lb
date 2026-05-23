@@ -33,14 +33,14 @@ func validateBackendAddressFamily(vip *models.VIP, backendIP string) error {
 		return nil
 	}
 
-	encapType := effectiveEncapType(vip.EncapType)
+	encapType := models.EffectiveEncapType(vip.EncapType)
 	isIPv4 := ip.To4() != nil
-	switch encapType {
-	case models.EncapTypeGRE4, models.EncapTypeL3DSR, models.EncapTypeNAT4:
+	switch {
+	case models.EncapRequiresIPv4Backend(encapType):
 		if !isIPv4 {
 			return badRequestError("backend ip must be IPv4 when encap_type is " + string(encapType))
 		}
-	case models.EncapTypeGRE6, models.EncapTypeNAT6:
+	case models.EncapRequiresIPv6Backend(encapType):
 		if isIPv4 {
 			return badRequestError("backend ip must be IPv6 when encap_type is " + string(encapType))
 		}

@@ -801,7 +801,7 @@ func validateVIPConfigDataPlane(vipIndex int, vipConfig *models.VIPConfig) error
 		return fmt.Errorf("vip config at index %d port must be between 1 and 65535, got %d", vipIndex, vipConfig.VIP.Port)
 	}
 
-	encapType := effectiveProtoEncapType(vipConfig.VIP.EncapType)
+	encapType := models.EffectiveEncapType(vipConfig.VIP.EncapType)
 	switch vipConfig.VIP.Protocol {
 	case models.ProtocolTCP, models.ProtocolUDP:
 	default:
@@ -812,9 +812,7 @@ func validateVIPConfigDataPlane(vipIndex int, vipConfig *models.VIPConfig) error
 	default:
 		return fmt.Errorf("vip config at index %d lb_method must be maglev", vipIndex)
 	}
-	switch vipConfig.VIP.EncapType {
-	case "", models.EncapTypeGRE4, models.EncapTypeGRE6, models.EncapTypeL3DSR, models.EncapTypeNAT4, models.EncapTypeNAT6:
-	default:
+	if vipConfig.VIP.EncapType != "" && !models.IsValidEncapType(vipConfig.VIP.EncapType) {
 		return fmt.Errorf("vip config at index %d encap_type %q is not valid", vipIndex, vipConfig.VIP.EncapType)
 	}
 	if err := validateVIPAddressFamily(vipIndex, vipIP, encapType); err != nil {
@@ -914,12 +912,12 @@ func vipTupleKey(vip models.VIP) string {
 
 func validateVIPAddressFamily(vipIndex int, vipIP net.IP, encapType models.EncapType) error {
 	isIPv4 := vipIP.To4() != nil
-	switch encapType {
-	case models.EncapTypeL3DSR, models.EncapTypeNAT4:
+	switch {
+	case models.EncapRequiresIPv4VIP(encapType):
 		if !isIPv4 {
 			return fmt.Errorf("vip config at index %d encap_type %s requires an IPv4 vip", vipIndex, encapType)
 		}
-	case models.EncapTypeNAT6:
+	case models.EncapRequiresIPv6VIP(encapType):
 		if isIPv4 {
 			return fmt.Errorf("vip config at index %d encap_type NAT6 requires an IPv6 vip", vipIndex)
 		}
@@ -930,12 +928,12 @@ func validateVIPAddressFamily(vipIndex int, vipIP net.IP, encapType models.Encap
 
 func validateBackendAddressFamily(vipIndex, backendIndex int, address string, backendIP net.IP, encapType models.EncapType) error {
 	isIPv4 := backendIP.To4() != nil
-	switch encapType {
-	case models.EncapTypeGRE4, models.EncapTypeL3DSR, models.EncapTypeNAT4:
+	switch {
+	case models.EncapRequiresIPv4Backend(encapType):
 		if !isIPv4 {
 			return fmt.Errorf("backend at vip index %d backend index %d ip %q must be IPv4 for encap_type %s", vipIndex, backendIndex, address, encapType)
 		}
-	case models.EncapTypeGRE6, models.EncapTypeNAT6:
+	case models.EncapRequiresIPv6Backend(encapType):
 		if isIPv4 {
 			return fmt.Errorf("backend at vip index %d backend index %d ip %q must be IPv6 for encap_type %s", vipIndex, backendIndex, address, encapType)
 		}
@@ -951,19 +949,12 @@ func convertProtoDSCP(vipIndex int, encapType models.EncapType, dscp *wrapperspb
 	if dscp.Value > 63 {
 		return nil, fmt.Errorf("vip config at index %d dscp must be between 0 and 63, got %d", vipIndex, dscp.Value)
 	}
-	if effectiveProtoEncapType(encapType) == models.EncapTypeL3DSR && dscp.Value == 0 {
+	if models.EffectiveEncapType(encapType) == models.EncapTypeL3DSR && dscp.Value == 0 {
 		return nil, fmt.Errorf("vip config at index %d dscp must be 1-63 when encap_type is L3DSR", vipIndex)
 	}
 
 	value := uint8(dscp.Value)
 	return &value, nil
-}
-
-func effectiveProtoEncapType(encapType models.EncapType) models.EncapType {
-	if encapType == "" {
-		return models.EncapTypeL3DSR
-	}
-	return encapType
 }
 
 // convertProtoProtocol converts protobuf protocol to internal model

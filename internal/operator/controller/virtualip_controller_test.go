@@ -158,6 +158,7 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 					ObservedGeneration: 6,
 					HealthyBackends:    1,
 					TotalBackends:      1,
+					TTLSeconds:         int64((24 * time.Hour) / time.Second),
 					Backends: []v1alpha1.BackendStatus{
 						{Address: "10.0.1.1", Healthy: true},
 					},
@@ -197,6 +198,9 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 	}
 	if len(got.Status.AgentStatuses) != 1 || got.Status.AgentStatuses[0].AgentID != "node-a" {
 		t.Fatalf("AgentStatuses = %#v, want preserved per-agent status", got.Status.AgentStatuses)
+	}
+	if gotTTL, want := got.Status.AgentStatuses[0].TTLSeconds, int64(agentstatus.MaxAgentStatusTTL/time.Second); gotTTL != want {
+		t.Fatalf("AgentStatuses[0].TTLSeconds = %d, want sanitized %d", gotTTL, want)
 	}
 	if got.Status.TotalBackends != 2 {
 		t.Fatalf("TotalBackends = %d, want current spec count 2", got.Status.TotalBackends)

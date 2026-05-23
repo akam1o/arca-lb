@@ -390,6 +390,8 @@ spec:
                       description: TTLSeconds is how long this observation should remain
                         valid.
                       format: int64
+                      maximum: 3600
+                      minimum: 1
                       type: integer
                     observedGeneration:
                       description: ObservedGeneration is the VirtualIP generation

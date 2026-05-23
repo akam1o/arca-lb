@@ -598,6 +598,9 @@ func TestRefreshAggregateStatusCapsAgentReportedTTL(t *testing.T) {
 	if len(vip.Status.AgentStatuses) != 1 {
 		t.Fatalf("AgentStatuses = %#v, want capped expired status retained for diagnostics", vip.Status.AgentStatuses)
 	}
+	if got, want := vip.Status.AgentStatuses[0].TTLSeconds, int64(MaxAgentStatusTTL/time.Second); got != want {
+		t.Fatalf("TTLSeconds = %d, want sanitized %d", got, want)
+	}
 	if vip.Status.HealthyBackends != 0 {
 		t.Fatalf("HealthyBackends = %d, want capped stale status excluded", vip.Status.HealthyBackends)
 	}

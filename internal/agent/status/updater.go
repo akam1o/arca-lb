@@ -192,6 +192,8 @@ func (u *Updater) UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.
 		meta.SetStatusCondition(&current.Status.Conditions, condition)
 		if condition.Status == metav1.ConditionFalse {
 			RefreshAggregateStatus(&current, vip.Generation, time.Now(), u.effectiveAgentStatusTTL())
+		} else {
+			current.Status.AgentStatuses = SanitizeAgentStatuses(current.Status.AgentStatuses)
 		}
 
 		return u.client.Status().Update(ctx, &current)
@@ -258,6 +260,41 @@ func durationSeconds(ttl time.Duration) int64 {
 	return int64(ttl/time.Second) + 1
 }
 
+func sanitizeAgentStatusTTLSeconds(ttlSeconds int64) int64 {
+	if ttlSeconds <= 0 {
+		return 0
+	}
+	if ttlSeconds > int64(MaxAgentStatusTTL/time.Second) {
+		return int64(MaxAgentStatusTTL / time.Second)
+	}
+	return ttlSeconds
+}
+
+// SanitizeAgentStatuses clamps retained per-agent observations so existing
+// status values remain accepted by the CRD schema on future status updates.
+func SanitizeAgentStatuses(statuses []v1alpha1.AgentStatus) []v1alpha1.AgentStatus {
+	var out []v1alpha1.AgentStatus
+	for i, status := range statuses {
+		nextTTL := sanitizeAgentStatusTTLSeconds(status.TTLSeconds)
+		if nextTTL == status.TTLSeconds {
+			if out != nil {
+				out = append(out, status)
+			}
+			continue
+		}
+		if out == nil {
+			out = make([]v1alpha1.AgentStatus, 0, len(statuses))
+			out = append(out, statuses[:i]...)
+		}
+		status.TTLSeconds = nextTTL
+		out = append(out, status)
+	}
+	if out == nil {
+		return statuses
+	}
+	return out
+}
+
 func (u *Updater) effectiveAgentStatusTTL() time.Duration {
 	if u == nil {
 		return DefaultAgentStatusTTL
@@ -291,7 +328,7 @@ func RefreshAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, now time.
 		return
 	}
 	freshStatuses, expiredStatuses := splitAgentStatuses(vip.Status.AgentStatuses, generation, now, ttl)
-	vip.Status.AgentStatuses = append(append([]v1alpha1.AgentStatus{}, freshStatuses...), expiredStatuses...)
+	vip.Status.AgentStatuses = SanitizeAgentStatuses(append(append([]v1alpha1.AgentStatus{}, freshStatuses...), expiredStatuses...))
 	applyAggregateStatus(vip, generation, freshStatuses, expiredStatuses)
 }
 

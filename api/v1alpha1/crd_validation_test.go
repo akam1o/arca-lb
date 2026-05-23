@@ -63,6 +63,19 @@ func TestVirtualIPCRDRequiresSpec(t *testing.T) {
 	}
 }
 
+func TestVirtualIPCRDConstrainsAgentStatusTTL(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	agentStatuses := crdSchemaProperty(t, crd, "status", "agentStatuses")
+	ttlSeconds := nestedMap(t, agentStatuses, "items", "properties", "ttlSeconds")
+
+	if got := ttlSeconds["minimum"]; got != 1 {
+		t.Fatalf("status.agentStatuses[].ttlSeconds minimum = %v, want 1", got)
+	}
+	if got := ttlSeconds["maximum"]; got != 3600 {
+		t.Fatalf("status.agentStatuses[].ttlSeconds maximum = %v, want 3600", got)
+	}
+}
+
 func TestVirtualIPCRDDefinesBackendMonitorAddress(t *testing.T) {
 	crd := loadVirtualIPCRD(t)
 	backends := crdSchemaProperty(t, crd, "spec", "backends")

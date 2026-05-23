@@ -242,6 +242,8 @@ type AgentStatus struct {
 
 	// TTLSeconds is how long this observation should remain valid.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
 	TTLSeconds int64 `json:"ttlSeconds,omitempty"`
 }
 

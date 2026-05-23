@@ -85,6 +85,29 @@ dataplane:
 	}
 }
 
+func TestLoadV2ConfigRejectsDuplicateYAMLKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: vpp
+  vpp:
+    encap_type: L3DSR
+    encap_type: GRE4
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadV2Config(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), `duplicate yaml key "dataplane.vpp.encap_type"`) {
+		t.Fatalf("LoadV2Config error = %v, want duplicate yaml key error", err)
+	}
+}
+
 func TestLoadV2Config_EnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")

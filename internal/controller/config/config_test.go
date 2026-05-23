@@ -89,6 +89,19 @@ server:
 	}
 }
 
+func TestLoadConfigRejectsDuplicateYAMLKeys(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+server:
+  api_key: first-controller-secret
+  api_key: second-controller-secret
+`)
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `duplicate yaml key "server.api_key"`) {
+		t.Fatalf("LoadConfig error = %v, want duplicate yaml key error", err)
+	}
+}
+
 func TestLoadConfigRejectsGRPCClientCertWithoutTLS(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:

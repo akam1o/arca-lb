@@ -93,6 +93,29 @@ controller:
 	}
 }
 
+func TestLoadConfigRejectsDuplicateYAMLKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "agent.yaml")
+
+	configContent := `
+agent:
+  id: "test-agent"
+controller:
+  address: "localhost:50051"
+  api_key: "first-controller-secret"
+  api_key: "second-controller-secret"
+`
+
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	_, err := LoadConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), `duplicate yaml key "controller.api_key"`) {
+		t.Fatalf("LoadConfig error = %v, want duplicate yaml key error", err)
+	}
+}
+
 func TestApplyDefaults(t *testing.T) {
 	cfg := &Config{}
 	applyDefaults(cfg)

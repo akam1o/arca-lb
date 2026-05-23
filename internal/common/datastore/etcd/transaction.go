@@ -61,28 +61,22 @@ func (tx *EtcdTransaction) checkVIPTupleAvailable(ctx context.Context, vip *mode
 		return false, datastore.ErrConflict
 	}
 
-	vips, err := tx.ds.ListVIPs(ctx)
+	owner, exists, err := tx.ds.getIndexOwner(ctx, indexKey, "VIP tuple index")
 	if err != nil {
 		return false, err
 	}
-
-	for i := range vips {
-		existing := &vips[i]
-		if existing.ID == vip.ID || !sameVIPTuple(existing, vip) {
-			continue
-		}
-		if _, deleted := tx.deletedVIPIDs[existing.ID]; deleted {
-			needsEmptyIndexCheck = false
-			continue
-		}
-		if currentIndexKey, touched := tx.vipTupleIndexKeys[existing.ID]; touched && currentIndexKey != indexKey {
-			needsEmptyIndexCheck = false
-			continue
-		}
-		return false, datastore.ErrConflict
+	if !exists || owner == vip.ID {
+		return needsEmptyIndexCheck, nil
 	}
 
-	return needsEmptyIndexCheck, nil
+	if _, deleted := tx.deletedVIPIDs[owner]; deleted {
+		return false, nil
+	}
+	if currentIndexKey, touched := tx.vipTupleIndexKeys[owner]; touched && currentIndexKey != indexKey {
+		return false, nil
+	}
+
+	return false, datastore.ErrConflict
 }
 
 func (tx *EtcdTransaction) releaseVIPTuple(ownerID, indexKey string) {

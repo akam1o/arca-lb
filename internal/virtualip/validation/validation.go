@@ -4,8 +4,8 @@ package validation
 
 import (
 	"fmt"
-	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 
@@ -69,7 +69,7 @@ func validateCoreSpec(spec *v1alpha1.VirtualIPSpec) error {
 		return fmt.Errorf("spec is nil")
 	}
 
-	if ip := net.ParseIP(spec.Address); ip == nil {
+	if _, err := netip.ParseAddr(spec.Address); err != nil {
 		return fmt.Errorf("spec.address %q is not a valid IP address", spec.Address)
 	}
 
@@ -111,15 +111,15 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 
 	seen := make(map[string]bool)
 	for i, be := range spec.Backends {
-		ip := net.ParseIP(be.Address)
-		if ip == nil {
+		ip, err := netip.ParseAddr(be.Address)
+		if err != nil {
 			return fmt.Errorf("spec.backends[%d].address %q is not a valid IP", i, be.Address)
 		}
 		if err := validateBackendAddressFamily(i, be.Address, ip, spec.EncapType); err != nil {
 			return err
 		}
 		if be.MonitorAddress != "" {
-			if ip := net.ParseIP(be.MonitorAddress); ip == nil {
+			if _, err := netip.ParseAddr(be.MonitorAddress); err != nil {
 				return fmt.Errorf("spec.backends[%d].monitorAddress %q is not a valid IP", i, be.MonitorAddress)
 			}
 		}
@@ -136,12 +136,12 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 	return nil
 }
 
-func validateBackendAddressFamily(index int, address string, ip net.IP, encapType v1alpha1.EncapType) error {
+func validateBackendAddressFamily(index int, address string, ip netip.Addr, encapType v1alpha1.EncapType) error {
 	if encapType == "" {
 		return nil
 	}
 
-	isIPv4 := ip.To4() != nil
+	isIPv4 := ip.Is4()
 	switch encapType {
 	case v1alpha1.EncapTypeGRE4, v1alpha1.EncapTypeL3DSR, v1alpha1.EncapTypeNAT4:
 		if !isIPv4 {
@@ -161,12 +161,12 @@ func validateEncapAddressFamily(address string, encapType v1alpha1.EncapType) er
 		return nil
 	}
 
-	ip := net.ParseIP(address)
-	if ip == nil {
+	ip, err := netip.ParseAddr(address)
+	if err != nil {
 		return nil
 	}
 
-	isIPv4 := ip.To4() != nil
+	isIPv4 := ip.Is4()
 	switch encapType {
 	case v1alpha1.EncapTypeL3DSR, v1alpha1.EncapTypeNAT4:
 		if !isIPv4 {

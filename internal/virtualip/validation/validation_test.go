@@ -218,6 +218,12 @@ func TestValidateSpecRejectsUnsupportedEncapAddressFamilies(t *testing.T) {
 			encapType: v1alpha1.EncapTypeNAT6,
 			wantErr:   `spec.encapType "NAT6" requires an IPv6 spec.address`,
 		},
+		{
+			name:      "L3DSR with IPv4-mapped IPv6 VIP",
+			address:   "::ffff:203.0.113.10",
+			encapType: v1alpha1.EncapTypeL3DSR,
+			wantErr:   `spec.encapType "L3DSR" requires an IPv4 spec.address`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -323,6 +329,13 @@ func TestValidateSpecRejectsUnsupportedBackendAddressFamilies(t *testing.T) {
 			encapType:      v1alpha1.EncapTypeNAT6,
 			backendAddress: "10.0.1.1",
 			wantErr:        `spec.backends[0].address "10.0.1.1" must be IPv6 for encapType "NAT6"`,
+		},
+		{
+			name:           "GRE4 with IPv4-mapped IPv6 backend",
+			vipAddress:     "2001:db8::10",
+			encapType:      v1alpha1.EncapTypeGRE4,
+			backendAddress: "::ffff:10.0.1.1",
+			wantErr:        `spec.backends[0].address "::ffff:10.0.1.1" must be IPv4 for encapType "GRE4"`,
 		},
 	}
 

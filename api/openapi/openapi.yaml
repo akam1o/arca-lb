@@ -480,17 +480,29 @@ components:
       required: [id, vip_id, type, interval_sec, timeout_sec, rise_count, fall_count, created_at, updated_at]
     HealthCheckCreate:
       type: object
-      description: Health check settings for VIP creation. Duration strings are accepted, but the current API/model stores whole seconds only; millisecond granularity is planned for a future revision.
+      description: Health check settings for VIP creation. Use interval_seconds and timeout_seconds for CRD-compatible whole-second timing. Legacy duration strings are still accepted through interval and timeout, but each timing value must be specified in exactly one representation.
       properties:
         type:
           type: string
           enum: [http, https, tcp, ping, tls-hello]
+        interval_seconds:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: Preferred interval in whole seconds.
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: Preferred timeout in whole seconds. Must be less than the interval.
         interval:
           type: string
-          description: Go duration string that must resolve to positive whole seconds, at most 2147483647 seconds (e.g. "10s", "1m").
+          deprecated: true
+          description: Legacy Go duration string that must resolve to positive whole seconds, at most 2147483647 seconds (e.g. "10s", "1m"). Do not set together with interval_seconds.
         timeout:
           type: string
-          description: Go duration string that must resolve to positive whole seconds, at most 2147483647 seconds (e.g. "3s", "1m").
+          deprecated: true
+          description: Legacy Go duration string that must resolve to positive whole seconds, at most 2147483647 seconds (e.g. "3s", "1m"). Do not set together with timeout_seconds.
         rise_count:
           type: integer
           minimum: 1
@@ -505,7 +517,9 @@ components:
           type: object
           description: Prober-specific configuration; required for http/https/tcp/tls-hello.
           additionalProperties: true
-      required: [type, interval, timeout]
+      oneOf:
+        - required: [type, interval_seconds, timeout_seconds]
+        - required: [type, interval, timeout]
     VIPCreateRequest:
       type: object
       properties:

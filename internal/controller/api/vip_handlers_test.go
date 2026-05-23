@@ -264,6 +264,24 @@ func TestCreateVIP(t *testing.T) {
 			expectedStatus: http.StatusCreated,
 		},
 		{
+			name: "with health check seconds fields",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.103",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":             "HTTP",
+					"interval_seconds": 12,
+					"timeout_seconds":  4,
+					"config": map[string]interface{}{
+						"port": 8080,
+						"path": "/healthz",
+					},
+				},
+			},
+			expectedStatus: http.StatusCreated,
+		},
+		{
 			name: "unknown health check field",
 			requestBody: map[string]interface{}{
 				"vip":      "192.168.1.101",
@@ -274,6 +292,73 @@ func TestCreateVIP(t *testing.T) {
 					"interval": "10s",
 					"timeout":  "5s",
 					"probe":    "healthz",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check interval duration and seconds conflict",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":             "http",
+					"interval":         "10s",
+					"interval_seconds": 10,
+					"timeout_seconds":  1,
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check missing timing fields",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type": "http",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check timeout_seconds equals interval_seconds",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":             "http",
+					"interval_seconds": 10,
+					"timeout_seconds":  10,
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "health check interval_seconds exceeds int32",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":             "http",
+					"interval_seconds": math.MaxInt32 + 1,
+					"timeout_seconds":  1,
 					"config": map[string]interface{}{
 						"port": 8080,
 					},
@@ -680,6 +765,14 @@ func TestCreateVIP(t *testing.T) {
 					assert.Equal(t, 5, vip.HealthCheck.TimeoutSec)
 					assert.Equal(t, 2, vip.HealthCheck.RiseCount)
 					assert.Equal(t, 4, vip.HealthCheck.FallCount)
+				}
+				if tt.name == "with health check seconds fields" {
+					require.NotNil(t, vip.HealthCheck)
+					assert.Equal(t, models.HCTypeHTTP, vip.HealthCheck.Type)
+					assert.Equal(t, 12, vip.HealthCheck.IntervalSec)
+					assert.Equal(t, 4, vip.HealthCheck.TimeoutSec)
+					assert.Equal(t, 3, vip.HealthCheck.RiseCount)
+					assert.Equal(t, 2, vip.HealthCheck.FallCount)
 				}
 				if tt.name == "with tls hello health check" {
 					require.NotNil(t, vip.HealthCheck)
@@ -1093,12 +1186,12 @@ func TestUpdateVIPUpdatesHealthCheck(t *testing.T) {
 
 	body, err := json.Marshal(map[string]interface{}{
 		"health_check": map[string]interface{}{
-			"type":       "HTTP",
-			"interval":   "15s",
-			"timeout":    "3s",
-			"rise_count": 4,
-			"fall_count": 5,
-			"config":     map[string]interface{}{"port": 8081, "path": "/readyz"},
+			"type":             "HTTP",
+			"interval_seconds": 15,
+			"timeout_seconds":  3,
+			"rise_count":       4,
+			"fall_count":       5,
+			"config":           map[string]interface{}{"port": 8081, "path": "/readyz"},
 		},
 	})
 	require.NoError(t, err)

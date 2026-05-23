@@ -22,12 +22,14 @@ func (e badRequestError) Error() string { return string(e) }
 
 // HealthCheckRequest represents the request body for an optional health check when creating a VIP.
 type HealthCheckRequest struct {
-	Type      string          `json:"type" binding:"required"`
-	Interval  string          `json:"interval" binding:"required"`
-	Timeout   string          `json:"timeout" binding:"required"`
-	RiseCount int             `json:"rise_count" binding:"omitempty,min=1,max=2147483647"`
-	FallCount int             `json:"fall_count" binding:"omitempty,min=1,max=2147483647"`
-	Config    models.HCConfig `json:"config,omitempty"`
+	Type            string          `json:"type" binding:"required"`
+	Interval        string          `json:"interval" binding:"omitempty"`
+	Timeout         string          `json:"timeout" binding:"omitempty"`
+	IntervalSeconds *int            `json:"interval_seconds" binding:"omitempty,min=1,max=2147483647"`
+	TimeoutSeconds  *int            `json:"timeout_seconds" binding:"omitempty,min=1,max=2147483647"`
+	RiseCount       int             `json:"rise_count" binding:"omitempty,min=1,max=2147483647"`
+	FallCount       int             `json:"fall_count" binding:"omitempty,min=1,max=2147483647"`
+	Config          models.HCConfig `json:"config,omitempty"`
 }
 
 // CreateVIPRequest represents the request body for creating a VIP
@@ -103,6 +105,32 @@ func parseHealthCheckDuration(value, field string) (time.Duration, error) {
 	return duration, nil
 }
 
+func healthCheckSecondsFromRequest(durationValue string, secondsValue *int, durationField, secondsField string) (int, error) {
+	if durationValue != "" && secondsValue != nil {
+		return 0, badRequestError("health_check." + durationField + " and health_check." + secondsField + " must not both be set")
+	}
+
+	if secondsValue != nil {
+		if *secondsValue <= 0 {
+			return 0, badRequestError("health check " + secondsField + " must be positive")
+		}
+		if *secondsValue > models.MaxHealthCheckSeconds {
+			return 0, badRequestError("health check " + secondsField + " must be at most 2147483647 seconds")
+		}
+		return *secondsValue, nil
+	}
+
+	if durationValue == "" {
+		return 0, badRequestError("health_check." + secondsField + " or health_check." + durationField + " is required")
+	}
+
+	duration, err := parseHealthCheckDuration(durationValue, durationField)
+	if err != nil {
+		return 0, err
+	}
+	return int(duration / time.Second), nil
+}
+
 func healthCheckFromRequest(req *HealthCheckRequest) (*models.HealthCheck, error) {
 	if req == nil {
 		return nil, nil
@@ -110,16 +138,16 @@ func healthCheckFromRequest(req *HealthCheckRequest) (*models.HealthCheck, error
 
 	hcType := models.HCType(strings.ToLower(req.Type))
 
-	interval, err := parseHealthCheckDuration(req.Interval, "interval")
+	intervalSec, err := healthCheckSecondsFromRequest(req.Interval, req.IntervalSeconds, "interval", "interval_seconds")
 	if err != nil {
 		return nil, err
 	}
 
-	timeout, err := parseHealthCheckDuration(req.Timeout, "timeout")
+	timeoutSec, err := healthCheckSecondsFromRequest(req.Timeout, req.TimeoutSeconds, "timeout", "timeout_seconds")
 	if err != nil {
 		return nil, err
 	}
-	if timeout >= interval {
+	if timeoutSec >= intervalSec {
 		return nil, badRequestError("health check timeout must be less than interval")
 	}
 
@@ -134,8 +162,8 @@ func healthCheckFromRequest(req *HealthCheckRequest) (*models.HealthCheck, error
 
 	return &models.HealthCheck{
 		Type:        hcType,
-		IntervalSec: int(interval / time.Second),
-		TimeoutSec:  int(timeout / time.Second),
+		IntervalSec: intervalSec,
+		TimeoutSec:  timeoutSec,
 		RiseCount:   riseCount,
 		FallCount:   fallCount,
 		Config:      req.Config,
@@ -326,7 +354,7 @@ func (s *Server) createVIP(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := validateKnownNestedJSONFields(requestFields, "health_check", "type", "interval", "timeout", "rise_count", "fall_count", "config"); err != nil {
+	if err := validateKnownNestedJSONFields(requestFields, "health_check", "type", "interval", "timeout", "interval_seconds", "timeout_seconds", "rise_count", "fall_count", "config"); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -459,7 +487,7 @@ func (s *Server) updateVIP(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := validateKnownNestedJSONFields(requestFields, "health_check", "type", "interval", "timeout", "rise_count", "fall_count", "config"); err != nil {
+	if err := validateKnownNestedJSONFields(requestFields, "health_check", "type", "interval", "timeout", "interval_seconds", "timeout_seconds", "rise_count", "fall_count", "config"); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

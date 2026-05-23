@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -13,8 +14,20 @@ import (
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
+	controllerconfig "github.com/akam1o/arca-lb/internal/controller/config"
 	"github.com/sirupsen/logrus"
 )
+
+func TestDefaultControllerConfigPathLoads(t *testing.T) {
+	path := filepath.Join("..", "..", *configPath)
+	cfg, err := controllerconfig.LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig(%q): %v", *configPath, err)
+	}
+	if cfg.DataStore.Type == "" {
+		t.Fatal("default controller config did not set datastore.type")
+	}
+}
 
 func TestMySQLDatastoreRegistered(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

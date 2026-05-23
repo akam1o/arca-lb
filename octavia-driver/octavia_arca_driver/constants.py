@@ -16,6 +16,9 @@ VIRTUALIP_GROUP = "arca.io"
 # Labels and annotations applied to VirtualIP resources created by this driver.
 LABEL_MANAGED_BY = "app.kubernetes.io/managed-by"
 LABEL_MANAGED_BY_VALUE = "octavia-arca-driver"
+LABEL_OCTAVIA_LB_ID_HASH = "arca.io/octavia-loadbalancer-id-hash"
+LABEL_OCTAVIA_LISTENER_ID_HASH = "arca.io/octavia-listener-id-hash"
+LABEL_OCTAVIA_POOL_ID_HASH = "arca.io/octavia-pool-id-hash"
 ANNOTATION_LB_ID = "arca.io/octavia-loadbalancer-id"
 ANNOTATION_LISTENER_ID = "arca.io/octavia-listener-id"
 ANNOTATION_POOL_ID = "arca.io/octavia-pool-id"
@@ -36,6 +39,12 @@ MANAGED_ANNOTATIONS = {
     ANNOTATION_DRAINING_MEMBER_IDS,
     ANNOTATION_LB_ADMIN_STATE_UP,
     ANNOTATION_LISTENER_ADMIN_STATE_UP,
+}
+
+MANAGED_LABELS = {
+    LABEL_OCTAVIA_LB_ID_HASH,
+    LABEL_OCTAVIA_LISTENER_ID_HASH,
+    LABEL_OCTAVIA_POOL_ID_HASH,
 }
 
 # Mapping from Octavia protocol strings to VirtualIP protocol values.

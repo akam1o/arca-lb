@@ -39,8 +39,52 @@ class VirtualIPClient:
         raw_name = f"{lb_id}:{listener_id}".encode("utf-8")
         return f"octavia-{hashlib.sha256(raw_name).hexdigest()[:40]}"
 
+    def _identity_labels(self, annotations):
+        labels = {}
+        identity_annotations = (
+            (constants.ANNOTATION_LB_ID, constants.LABEL_OCTAVIA_LB_ID_HASH),
+            (
+                constants.ANNOTATION_LISTENER_ID,
+                constants.LABEL_OCTAVIA_LISTENER_ID_HASH,
+            ),
+            (
+                constants.ANNOTATION_POOL_ID,
+                constants.LABEL_OCTAVIA_POOL_ID_HASH,
+            ),
+        )
+        for annotation_key, label_key in identity_annotations:
+            value = (annotations or {}).get(annotation_key)
+            if value:
+                labels[label_key] = self._identity_label_value(value)
+        return labels
+
+    @staticmethod
+    def _identity_label_value(value):
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:40]
+
+    def _managed_label_patch(self, current, annotations, labels=None):
+        patch = {
+            constants.LABEL_MANAGED_BY: constants.LABEL_MANAGED_BY_VALUE,
+            **(labels or {}),
+            **self._identity_labels(annotations),
+        }
+        current_labels = (
+            (current or {}).get("metadata", {}).get("labels") or {}
+        )
+        for key in constants.MANAGED_LABELS:
+            if key in current_labels and key not in patch:
+                patch[key] = None
+        return patch
+
+    def _selector_for_identity(self, label_key, value):
+        return ",".join((
+            f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
+            f"{label_key}={self._identity_label_value(value)}",
+        ))
+
     def create_virtualip(self, name, spec, annotations=None, labels=None):
         """Create a VirtualIP custom resource."""
+        annotations = annotations or {}
         body = {
             "apiVersion": constants.VIRTUALIP_API_VERSION,
             "kind": constants.VIRTUALIP_KIND,
@@ -48,10 +92,13 @@ class VirtualIPClient:
                 "name": name,
                 "namespace": self._namespace,
                 "labels": {
-                    constants.LABEL_MANAGED_BY: constants.LABEL_MANAGED_BY_VALUE,
+                    constants.LABEL_MANAGED_BY: (
+                        constants.LABEL_MANAGED_BY_VALUE
+                    ),
                     **(labels or {}),
+                    **self._identity_labels(annotations),
                 },
-                "annotations": annotations or {},
+                "annotations": annotations,
             },
             "spec": spec,
         }
@@ -79,7 +126,10 @@ class VirtualIPClient:
             patch.setdefault("metadata", {})["annotations"] = (
                 self._merge_patch_annotations(current, annotations)
             )
-        if labels is not None:
+            patch.setdefault("metadata", {})["labels"] = (
+                self._managed_label_patch(current, annotations, labels)
+            )
+        elif labels is not None:
             patch.setdefault("metadata", {})["labels"] = labels
 
         LOG.info("Patching VirtualIP %s/%s", self._namespace, name)
@@ -156,9 +206,20 @@ class VirtualIPClient:
 
     def find_by_loadbalancer(self, lb_id):
         """Find all VirtualIP resources associated with a loadbalancer ID."""
-        selector = f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}"
-        result = self.list_virtualips(label_selector=selector)
+        result = self.list_virtualips(
+            label_selector=self._selector_for_identity(
+                constants.LABEL_OCTAVIA_LB_ID_HASH, lb_id
+            )
+        )
         vips = []
+        for item in result.get("items", []):
+            annotations = item.get("metadata", {}).get("annotations", {})
+            if annotations.get(constants.ANNOTATION_LB_ID) == lb_id:
+                vips.append(item)
+        if vips:
+            return vips
+
+        result = self.list_virtualips(label_selector=self._managed_selector())
         for item in result.get("items", []):
             annotations = item.get("metadata", {}).get("annotations", {})
             if annotations.get(constants.ANNOTATION_LB_ID) == lb_id:
@@ -167,23 +228,54 @@ class VirtualIPClient:
 
     def find_by_listener(self, listener_id):
         """Find a VirtualIP resource associated with a listener ID."""
-        selector = f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}"
-        result = self.list_virtualips(label_selector=selector)
+        result = self.list_virtualips(
+            label_selector=self._selector_for_identity(
+                constants.LABEL_OCTAVIA_LISTENER_ID_HASH, listener_id
+            )
+        )
         for item in result.get("items", []):
             annotations = item.get("metadata", {}).get("annotations", {})
-            if annotations.get(constants.ANNOTATION_LISTENER_ID) == listener_id:
+            if (
+                annotations.get(constants.ANNOTATION_LISTENER_ID) ==
+                listener_id
+            ):
+                return item
+
+        result = self.list_virtualips(label_selector=self._managed_selector())
+        for item in result.get("items", []):
+            annotations = item.get("metadata", {}).get("annotations", {})
+            if (
+                annotations.get(constants.ANNOTATION_LISTENER_ID) ==
+                listener_id
+            ):
                 return item
         return None
 
     def find_by_pool(self, pool_id):
         """Find a VirtualIP resource associated with a pool ID."""
-        selector = f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}"
-        result = self.list_virtualips(label_selector=selector)
+        result = self.list_virtualips(
+            label_selector=self._selector_for_identity(
+                constants.LABEL_OCTAVIA_POOL_ID_HASH, pool_id
+            )
+        )
+        for item in result.get("items", []):
+            annotations = item.get("metadata", {}).get("annotations", {})
+            if annotations.get(constants.ANNOTATION_POOL_ID) == pool_id:
+                return item
+
+        result = self.list_virtualips(label_selector=self._managed_selector())
         for item in result.get("items", []):
             annotations = item.get("metadata", {}).get("annotations", {})
             if annotations.get(constants.ANNOTATION_POOL_ID) == pool_id:
                 return item
         return None
+
+    @staticmethod
+    def _managed_selector():
+        return (
+            f"{constants.LABEL_MANAGED_BY}="
+            f"{constants.LABEL_MANAGED_BY_VALUE}"
+        )
 
 
 class VirtualIPStatusWatcher:

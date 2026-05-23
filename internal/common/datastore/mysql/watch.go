@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -117,6 +118,9 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 		if change.VIPID != nil {
 			vip, err := ds.GetVIP(ctx, *change.VIPID)
 			if err != nil {
+				if errors.Is(err, datastore.ErrNotFound) {
+					return nil, nil
+				}
 				return nil, fmt.Errorf("failed to get VIP: %w", err)
 			}
 			event.VIP = vip
@@ -127,6 +131,9 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 		if change.VIPID != nil {
 			vip, err := ds.GetVIP(ctx, *change.VIPID)
 			if err != nil {
+				if errors.Is(err, datastore.ErrNotFound) {
+					return nil, nil
+				}
 				return nil, fmt.Errorf("failed to get VIP: %w", err)
 			}
 			event.VIP = vip
@@ -143,6 +150,9 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 		if change.BackendID != nil {
 			backend, err := ds.GetBackend(ctx, *change.BackendID)
 			if err != nil {
+				if errors.Is(err, datastore.ErrNotFound) {
+					return nil, nil
+				}
 				return nil, fmt.Errorf("failed to get backend: %w", err)
 			}
 			event.Backend = backend
@@ -153,6 +163,9 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 		if change.BackendID != nil {
 			backend, err := ds.GetBackend(ctx, *change.BackendID)
 			if err != nil {
+				if errors.Is(err, datastore.ErrNotFound) {
+					return nil, nil
+				}
 				return nil, fmt.Errorf("failed to get backend: %w", err)
 			}
 			event.Backend = backend

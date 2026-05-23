@@ -50,6 +50,9 @@ func Register(name string, factory DataStoreFactory) {
 
 // NewDataStore is the datastore factory function.
 func NewDataStore(ctx context.Context, cfg *Config) (DataStore, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("datastore config is required")
+	}
 	factory, ok := registry[cfg.Type]
 	if !ok {
 		return nil, fmt.Errorf("unsupported datastore type: %s", cfg.Type)

@@ -36,9 +36,12 @@ type V2StateChangeCallback func(vipKey, backendAddr string, oldState, newState V
 
 // EngineConfig configures the health check engine.
 type EngineConfig struct {
-	WorkerCount         int
+	// WorkerCount is the number of worker goroutines allowed to process queued probe jobs.
+	WorkerCount int
+	// MaxConcurrentChecks limits active probe executions and sizes the internal job/result queues.
 	MaxConcurrentChecks int
-	DefaultTimeout      time.Duration
+	// DefaultTimeout is the fallback timeout for health checks that do not set one.
+	DefaultTimeout time.Duration
 }
 
 // Engine manages health checks for all VIPs.
@@ -62,6 +65,7 @@ type Engine struct {
 	// Worker pool
 	jobCh       chan *probeJob
 	resultCh    chan *probeResult
+	probeSlots  chan struct{}
 	schedulerWG sync.WaitGroup
 	workerWG    sync.WaitGroup
 	resultWG    sync.WaitGroup
@@ -164,6 +168,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.ctx, e.cancel = context.WithCancel(ctx)
 	e.jobCh = make(chan *probeJob, e.config.MaxConcurrentChecks)
 	e.resultCh = make(chan *probeResult, e.config.MaxConcurrentChecks)
+	e.probeSlots = make(chan struct{}, e.config.MaxConcurrentChecks)
 
 	// Start workers
 	for i := 0; i < e.config.WorkerCount; i++ {
@@ -464,6 +469,9 @@ func (e *Engine) worker(id int) {
 	defer e.workerWG.Done()
 
 	for job := range e.jobCh {
+		if !e.acquireProbeSlot() {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(e.ctx, job.timeout)
 		start := time.Now()
 		targetAddr := job.targetAddr
@@ -473,6 +481,7 @@ func (e *Engine) worker(id int) {
 		result := job.prober.Probe(ctx, targetAddr)
 		latency := time.Since(start)
 		cancel()
+		e.releaseProbeSlot()
 
 		pr := &probeResult{
 			vipKey:      job.vipKey,
@@ -501,6 +510,25 @@ func (e *Engine) worker(id int) {
 			e.logger.Warn("result channel full", "vip", job.vipKey, "backend", job.backendAddr)
 		}
 	}
+}
+
+func (e *Engine) acquireProbeSlot() bool {
+	if e.probeSlots == nil {
+		return true
+	}
+	select {
+	case e.probeSlots <- struct{}{}:
+		return true
+	case <-e.ctx.Done():
+		return false
+	}
+}
+
+func (e *Engine) releaseProbeSlot() {
+	if e.probeSlots == nil {
+		return
+	}
+	<-e.probeSlots
 }
 
 func (e *Engine) processResults() {

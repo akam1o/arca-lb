@@ -65,9 +65,12 @@ type RolloutSettings struct {
 
 // HCSettings configures the health check engine.
 type HCSettings struct {
-	WorkerCount         int           `yaml:"workerCount"`
-	MaxConcurrentChecks int           `yaml:"maxConcurrentChecks"`
-	DefaultTimeout      time.Duration `yaml:"defaultTimeout"`
+	// WorkerCount is the number of worker goroutines allowed to process queued probe jobs.
+	WorkerCount int `yaml:"workerCount"`
+	// MaxConcurrentChecks limits active probe executions and sizes the internal job/result queues.
+	MaxConcurrentChecks int `yaml:"maxConcurrentChecks"`
+	// DefaultTimeout is the fallback timeout for health checks that do not set one.
+	DefaultTimeout time.Duration `yaml:"defaultTimeout"`
 }
 
 // MetricsSettings configures the Prometheus metrics endpoint.

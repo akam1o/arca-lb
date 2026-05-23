@@ -145,6 +145,22 @@ grpc:
 	}
 }
 
+func TestLoadConfigRejectsGRPCClientCertWithoutAgentIDAuthorization(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+grpc:
+  tls: true
+  cert_file: /tmp/server.crt
+  key_file: /tmp/server.key
+  require_client_cert: true
+  client_ca_file: /tmp/ca.crt
+`)
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "grpc.authorize_agent_id_with_client_cert must be enabled when grpc.require_client_cert is enabled") {
+		t.Fatalf("LoadConfig error = %v, want grpc.authorize_agent_id_with_client_cert validation error", err)
+	}
+}
+
 func TestLoadConfigAcceptsGRPCAgentIDClientCertAuthorization(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:
@@ -531,6 +547,7 @@ grpc:
   key_file: /tmp/grpc.key
   require_client_cert: true
   client_ca_file: /tmp/ca.crt
+  authorize_agent_id_with_client_cert: true
 `)
 
 	cfg, err := LoadConfig(path)

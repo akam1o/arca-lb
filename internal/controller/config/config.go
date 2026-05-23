@@ -302,6 +302,9 @@ func (c *Config) validate() error {
 	if c.GRPC.RequireClientCert && c.GRPC.ClientCAFile == "" {
 		return fmt.Errorf("grpc.client_ca_file is required when grpc.require_client_cert is enabled")
 	}
+	if c.GRPC.RequireClientCert && !c.GRPC.AuthorizeAgentIDWithClientCert {
+		return fmt.Errorf("grpc.authorize_agent_id_with_client_cert must be enabled when grpc.require_client_cert is enabled")
+	}
 	if !isLoopbackBindHost(c.GRPC.Host) {
 		if !c.GRPC.TLS {
 			return fmt.Errorf("grpc.tls must be enabled when grpc.host is non-loopback")

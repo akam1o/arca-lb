@@ -2,8 +2,6 @@ package mysql
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/akam1o/arca-lb/internal/common/models"
@@ -37,65 +35,33 @@ func (ds *MySQLDataStore) GetConfig(ctx context.Context) (*models.Config, error)
 			VIPs:     make([]models.VIPConfig, 0, len(vipRecords)),
 		}
 
+		vipIDs := make([]string, 0, len(vipRecords))
+		for _, vipRecord := range vipRecords {
+			vipIDs = append(vipIDs, vipRecord.ID)
+		}
+
+		healthChecks, err := loadHealthChecksByVIPID(tx, vipIDs)
+		if err != nil {
+			return fmt.Errorf("failed to list health checks: %w", err)
+		}
+		backendsByVIPID, err := loadBackendsByVIPID(tx, vipIDs)
+		if err != nil {
+			return fmt.Errorf("failed to list backends: %w", err)
+		}
+
 		// Build VIP configs with health checks and backends
 		for _, vipRecord := range vipRecords {
-			vip := models.VIP{
-				ID:        vipRecord.ID,
-				VIP:       vipRecord.VIP,
-				Port:      vipRecord.Port,
-				Protocol:  models.Protocol(vipRecord.Protocol),
-				LBMethod:  models.LBMethod(vipRecord.LBMethod),
-				CreatedAt: vipRecord.CreatedAt,
-				UpdatedAt: vipRecord.UpdatedAt,
-			}
-			if vipRecord.EncapType != nil {
-				vip.EncapType = models.EncapType(*vipRecord.EncapType)
-			}
-			vip.DSCP = vipRecord.DSCP
-
-			// Load health check
-			var hcRecord HealthCheckRecord
-			if err := tx.Where("vip_id = ?", vipRecord.ID).First(&hcRecord).Error; err == nil {
-				var hcConfig models.HCConfig
-				if len(hcRecord.Config) > 0 {
-					if err := json.Unmarshal(hcRecord.Config, &hcConfig); err != nil {
-						return fmt.Errorf("failed to unmarshal health check config for VIP %s: %w", vipRecord.ID, err)
-					}
+			vip := vipModelFromRecord(vipRecord)
+			if hcRecord, ok := healthChecks[vipRecord.ID]; ok {
+				healthCheck, err := healthCheckModelFromRecord(hcRecord)
+				if err != nil {
+					return fmt.Errorf("failed to unmarshal health check config for VIP %s: %w", vipRecord.ID, err)
 				}
-
-				vip.HealthCheck = &models.HealthCheck{
-					ID:          hcRecord.ID,
-					VIPID:       hcRecord.VIPID,
-					Type:        models.HCType(hcRecord.Type),
-					IntervalSec: hcRecord.IntervalSec,
-					TimeoutSec:  hcRecord.TimeoutSec,
-					RiseCount:   hcRecord.RiseCount,
-					FallCount:   hcRecord.FallCount,
-					Config:      hcConfig,
-					CreatedAt:   hcRecord.CreatedAt,
-					UpdatedAt:   hcRecord.UpdatedAt,
-				}
-			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-				// HealthCheck 取得エラー（not found 以外）はエラーとして返す
-				return fmt.Errorf("failed to get health check for VIP %s: %w", vipRecord.ID, err)
+				vip.HealthCheck = healthCheck
 			}
-
-			// Load backends
-			var backendRecords []BackendRecord
-			if err := tx.Where("vip_id = ?", vipRecord.ID).Find(&backendRecords).Error; err != nil {
-				return fmt.Errorf("failed to list backends for VIP %s: %w", vipRecord.ID, err)
-			}
-
-			backends := make([]models.Backend, 0, len(backendRecords))
-			for _, backendRecord := range backendRecords {
-				backends = append(backends, models.Backend{
-					ID:        backendRecord.ID,
-					VIPID:     backendRecord.VIPID,
-					IP:        backendRecord.IP,
-					Weight:    backendRecord.Weight,
-					CreatedAt: backendRecord.CreatedAt,
-					UpdatedAt: backendRecord.UpdatedAt,
-				})
+			backends := backendsByVIPID[vipRecord.ID]
+			if backends == nil {
+				backends = []models.Backend{}
 			}
 
 			vipConfig := models.VIPConfig{

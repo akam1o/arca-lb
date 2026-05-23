@@ -17,7 +17,7 @@ import (
 // VIPRecord represents a VIP record in the database
 type VIPRecord struct {
 	ID        string    `gorm:"primaryKey;type:char(36)"`
-	VIP       string    `gorm:"type:varchar(45);not null"`
+	VIP       string    `gorm:"column:vip;type:varchar(45);not null"`
 	Port      int       `gorm:"not null"`
 	Protocol  string    `gorm:"type:enum('TCP','UDP');not null"`
 	LBMethod  string    `gorm:"type:enum('maglev');not null;default:'maglev'"`
@@ -35,7 +35,7 @@ func (VIPRecord) TableName() string {
 // HealthCheckRecord represents a health check record in the database
 type HealthCheckRecord struct {
 	ID          string          `gorm:"primaryKey;type:char(36)"`
-	VIPID       string          `gorm:"type:char(36);not null;uniqueIndex"`
+	VIPID       string          `gorm:"column:vip_id;type:char(36);not null;uniqueIndex"`
 	Type        string          `gorm:"type:enum('http','https','tcp','ping','tls-hello');not null"`
 	IntervalSec int             `gorm:"not null;default:5"`
 	TimeoutSec  int             `gorm:"not null;default:3"`
@@ -49,6 +49,61 @@ type HealthCheckRecord struct {
 // TableName returns the table name for HealthCheckRecord
 func (HealthCheckRecord) TableName() string {
 	return "health_checks"
+}
+
+func vipModelFromRecord(vipRecord VIPRecord) models.VIP {
+	vip := models.VIP{
+		ID:        vipRecord.ID,
+		VIP:       vipRecord.VIP,
+		Port:      vipRecord.Port,
+		Protocol:  models.Protocol(vipRecord.Protocol),
+		LBMethod:  models.LBMethod(vipRecord.LBMethod),
+		CreatedAt: vipRecord.CreatedAt,
+		UpdatedAt: vipRecord.UpdatedAt,
+	}
+	if vipRecord.EncapType != nil {
+		vip.EncapType = models.EncapType(*vipRecord.EncapType)
+	}
+	vip.DSCP = vipRecord.DSCP
+	return vip
+}
+
+func healthCheckModelFromRecord(hcRecord HealthCheckRecord) (*models.HealthCheck, error) {
+	var hcConfig models.HCConfig
+	if len(hcRecord.Config) > 0 {
+		if err := json.Unmarshal(hcRecord.Config, &hcConfig); err != nil {
+			return nil, err
+		}
+	}
+
+	return &models.HealthCheck{
+		ID:          hcRecord.ID,
+		VIPID:       hcRecord.VIPID,
+		Type:        models.HCType(hcRecord.Type),
+		IntervalSec: hcRecord.IntervalSec,
+		TimeoutSec:  hcRecord.TimeoutSec,
+		RiseCount:   hcRecord.RiseCount,
+		FallCount:   hcRecord.FallCount,
+		Config:      hcConfig,
+		CreatedAt:   hcRecord.CreatedAt,
+		UpdatedAt:   hcRecord.UpdatedAt,
+	}, nil
+}
+
+func loadHealthChecksByVIPID(db *gorm.DB, vipIDs []string) (map[string]HealthCheckRecord, error) {
+	healthChecks := make(map[string]HealthCheckRecord, len(vipIDs))
+	if len(vipIDs) == 0 {
+		return healthChecks, nil
+	}
+
+	var hcRecords []HealthCheckRecord
+	if err := db.Where("vip_id IN ?", vipIDs).Find(&hcRecords).Error; err != nil {
+		return nil, err
+	}
+	for _, hcRecord := range hcRecords {
+		healthChecks[hcRecord.VIPID] = hcRecord
+	}
+	return healthChecks, nil
 }
 
 // CreateVIP creates a new VIP in MySQL
@@ -229,47 +284,24 @@ func (ds *MySQLDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
 	}
 
 	vips := make([]models.VIP, 0, len(vipRecords))
+	vipIDs := make([]string, 0, len(vipRecords))
 	for _, vipRecord := range vipRecords {
-		vip := models.VIP{
-			ID:        vipRecord.ID,
-			VIP:       vipRecord.VIP,
-			Port:      vipRecord.Port,
-			Protocol:  models.Protocol(vipRecord.Protocol),
-			LBMethod:  models.LBMethod(vipRecord.LBMethod),
-			CreatedAt: vipRecord.CreatedAt,
-			UpdatedAt: vipRecord.UpdatedAt,
-		}
-		if vipRecord.EncapType != nil {
-			vip.EncapType = models.EncapType(*vipRecord.EncapType)
-		}
-		vip.DSCP = vipRecord.DSCP
+		vipIDs = append(vipIDs, vipRecord.ID)
+	}
 
-		// Load health check
-		var hcRecord HealthCheckRecord
-		if err := db.Where("vip_id = ?", vipRecord.ID).First(&hcRecord).Error; err == nil {
-			var hcConfig models.HCConfig
-			if len(hcRecord.Config) > 0 {
-				if err := json.Unmarshal(hcRecord.Config, &hcConfig); err != nil {
-					// JSON 解析エラーは明示的に返す
-					return nil, fmt.Errorf("failed to unmarshal health check config for VIP %s: %w", vipRecord.ID, err)
-				}
-			}
+	healthChecks, err := loadHealthChecksByVIPID(db, vipIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list health checks: %w", err)
+	}
 
-			vip.HealthCheck = &models.HealthCheck{
-				ID:          hcRecord.ID,
-				VIPID:       hcRecord.VIPID,
-				Type:        models.HCType(hcRecord.Type),
-				IntervalSec: hcRecord.IntervalSec,
-				TimeoutSec:  hcRecord.TimeoutSec,
-				RiseCount:   hcRecord.RiseCount,
-				FallCount:   hcRecord.FallCount,
-				Config:      hcConfig,
-				CreatedAt:   hcRecord.CreatedAt,
-				UpdatedAt:   hcRecord.UpdatedAt,
+	for _, vipRecord := range vipRecords {
+		vip := vipModelFromRecord(vipRecord)
+		if hcRecord, ok := healthChecks[vipRecord.ID]; ok {
+			healthCheck, err := healthCheckModelFromRecord(hcRecord)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unmarshal health check config for VIP %s: %w", vipRecord.ID, err)
 			}
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			// HealthCheck 取得エラー（not found 以外）はエラーとして返す
-			return nil, fmt.Errorf("failed to get health check for VIP %s: %w", vipRecord.ID, err)
+			vip.HealthCheck = healthCheck
 		}
 
 		vips = append(vips, vip)

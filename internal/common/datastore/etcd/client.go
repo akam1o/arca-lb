@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -161,10 +162,23 @@ func (ds *EtcdDataStore) GetConfig(ctx context.Context) (*models.Config, error) 
 		VIPs:     make([]models.VIPConfig, 0, len(vips)),
 	}
 
+	backendsByVIPID := make(map[string][]models.Backend, len(vips))
+	backendsResp, err := ds.client.Get(ctx, fmt.Sprintf("%s/backends/", ds.keyPrefix), clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("failed to list backends from etcd: %w", err)
+	}
+	for _, kv := range backendsResp.Kvs {
+		var backend models.Backend
+		if err := json.Unmarshal(kv.Value, &backend); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal backend: %w", err)
+		}
+		backendsByVIPID[backend.VIPID] = append(backendsByVIPID[backend.VIPID], backend)
+	}
+
 	for _, vip := range vips {
-		backends, err := ds.ListBackends(ctx, vip.ID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list backends for VIP %s: %w", vip.ID, err)
+		backends := backendsByVIPID[vip.ID]
+		if backends == nil {
+			backends = []models.Backend{}
 		}
 
 		vipConfig := models.VIPConfig{

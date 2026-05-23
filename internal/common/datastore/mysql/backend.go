@@ -16,7 +16,7 @@ import (
 // BackendRecord represents a backend record in the database
 type BackendRecord struct {
 	ID        string    `gorm:"primaryKey;type:char(36)"`
-	VIPID     string    `gorm:"type:char(36);not null;index"`
+	VIPID     string    `gorm:"column:vip_id;type:char(36);not null;index"`
 	IP        string    `gorm:"type:varchar(45);not null"`
 	Weight    int       `gorm:"not null;default:1"`
 	CreatedAt time.Time `gorm:"not null"`
@@ -26,6 +26,34 @@ type BackendRecord struct {
 // TableName returns the table name for BackendRecord
 func (BackendRecord) TableName() string {
 	return "backends"
+}
+
+func backendModelFromRecord(backendRecord BackendRecord) models.Backend {
+	return models.Backend{
+		ID:        backendRecord.ID,
+		VIPID:     backendRecord.VIPID,
+		IP:        backendRecord.IP,
+		Weight:    backendRecord.Weight,
+		CreatedAt: backendRecord.CreatedAt,
+		UpdatedAt: backendRecord.UpdatedAt,
+	}
+}
+
+func loadBackendsByVIPID(db *gorm.DB, vipIDs []string) (map[string][]models.Backend, error) {
+	backends := make(map[string][]models.Backend, len(vipIDs))
+	if len(vipIDs) == 0 {
+		return backends, nil
+	}
+
+	var backendRecords []BackendRecord
+	if err := db.Where("vip_id IN ?", vipIDs).Find(&backendRecords).Error; err != nil {
+		return nil, err
+	}
+	for _, backendRecord := range backendRecords {
+		backend := backendModelFromRecord(backendRecord)
+		backends[backend.VIPID] = append(backends[backend.VIPID], backend)
+	}
+	return backends, nil
 }
 
 // AddBackend adds a new backend to MySQL

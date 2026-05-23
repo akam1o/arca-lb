@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/common/models"
@@ -15,6 +16,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+const watchConfigCoalesceWindow = 25 * time.Millisecond
 
 // ConfigSyncService implements the ConfigSync gRPC service
 type ConfigSyncService struct {
@@ -161,14 +164,15 @@ func (s *ConfigSyncService) WatchConfig(req *pb.WatchConfigRequest, stream pb.Co
 				return nil
 			}
 
-			s.logger.WithField("event_type", event.Type).Debug("Received watch event")
-			if event.Type == datastore.EventTypeError {
-				if event.Error == nil {
-					s.logger.Error("Datastore watch failed")
-					return status.Error(codes.Internal, "datastore watch error")
-				}
-				s.logger.WithError(event.Error).Error("Datastore watch failed")
-				return status.Errorf(codes.Internal, "datastore watch error: %v", event.Error)
+			if err := s.validateWatchEvent(event); err != nil {
+				return err
+			}
+			closed, err := s.coalesceWatchEvents(stream.Context(), events)
+			if err != nil {
+				return err
+			}
+			if closed {
+				return nil
 			}
 
 			// Get updated config
@@ -193,6 +197,53 @@ func (s *ConfigSyncService) WatchConfig(req *pb.WatchConfigRequest, stream pb.Co
 			}
 		}
 	}
+}
+
+func (s *ConfigSyncService) coalesceWatchEvents(ctx context.Context, events <-chan datastore.WatchEvent) (bool, error) {
+	timer := time.NewTimer(watchConfigCoalesceWindow)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("WatchConfig stream closed by client")
+			return true, nil
+		case event, ok := <-events:
+			if !ok {
+				s.logger.Info("WatchConfig event channel closed")
+				return false, nil
+			}
+			if err := s.validateWatchEvent(event); err != nil {
+				return false, err
+			}
+			resetTimer(timer, watchConfigCoalesceWindow)
+		case <-timer.C:
+			return false, nil
+		}
+	}
+}
+
+func (s *ConfigSyncService) validateWatchEvent(event datastore.WatchEvent) error {
+	s.logger.WithField("event_type", event.Type).Debug("Received watch event")
+	if event.Type != datastore.EventTypeError {
+		return nil
+	}
+	if event.Error == nil {
+		s.logger.Error("Datastore watch failed")
+		return status.Error(codes.Internal, "datastore watch error")
+	}
+	s.logger.WithError(event.Error).Error("Datastore watch failed")
+	return status.Errorf(codes.Internal, "datastore watch error: %v", event.Error)
+}
+
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
 }
 
 // RegisterAgent registers an agent with the controller

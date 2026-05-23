@@ -809,6 +809,55 @@ func TestConfigSyncService_WatchConfig(t *testing.T) {
 	}
 }
 
+func TestConfigSyncServiceWatchConfigCoalescesBurstEvents(t *testing.T) {
+	mockDS := testutil.NewMockDataStore()
+	mockDS.SetConfig(&models.Config{
+		Revision: 5,
+		VIPs:     []models.VIPConfig{},
+	})
+	watchCh := make(chan datastore.WatchEvent, 2)
+	watchCh <- datastore.WatchEvent{Type: datastore.EventTypeVIPUpdated}
+	watchCh <- datastore.WatchEvent{Type: datastore.EventTypeBackendUpdated}
+	mockDS.SetWatchChannel(watchCh)
+
+	_, client := setupTestServer(t, mockDS)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	stream, err := client.WatchConfig(ctx, &pb.WatchConfigRequest{
+		AgentId:         "agent-1",
+		CurrentRevision: 5,
+	})
+	require.NoError(t, err)
+
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, resp.Config)
+
+	time.Sleep(2 * watchConfigCoalesceWindow)
+	require.Equal(t, 2, mockDS.GetConfigCallCount(), "initial config read plus one coalesced update read")
+
+	secondRespCh := make(chan *pb.WatchConfigResponse, 1)
+	secondErrCh := make(chan error, 1)
+	go func() {
+		resp, err := stream.Recv()
+		if err != nil {
+			secondErrCh <- err
+			return
+		}
+		secondRespCh <- resp
+	}()
+
+	select {
+	case resp := <-secondRespCh:
+		t.Fatalf("received unexpected second coalesced response: %#v", resp)
+	case err := <-secondErrCh:
+		t.Fatalf("received unexpected stream error: %v", err)
+	case <-time.After(2 * watchConfigCoalesceWindow):
+	}
+}
+
 func TestConfigSyncService_Heartbeat(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -28,8 +28,9 @@ type MockDataStore struct {
 	revision uint64
 
 	// Config and revision for testing
-	config       *models.Config
-	watchChannel chan datastore.WatchEvent
+	config         *models.Config
+	getConfigCalls int
+	watchChannel   chan datastore.WatchEvent
 
 	// Error injection
 	createVIPError         error
@@ -384,8 +385,10 @@ func (m *MockDataStore) IncrementRevision(ctx context.Context) (int64, error) {
 
 // GetConfig implements datastore.DataStore
 func (m *MockDataStore) GetConfig(ctx context.Context) (*models.Config, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.getConfigCalls++
 
 	if m.getConfigError != nil {
 		return nil, m.getConfigError
@@ -427,6 +430,13 @@ func (m *MockDataStore) GetConfig(ctx context.Context) (*models.Config, error) {
 		Revision: int64(m.revision),
 		VIPs:     vipConfigs,
 	}, nil
+}
+
+// GetConfigCallCount returns the number of GetConfig calls observed by the mock.
+func (m *MockDataStore) GetConfigCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.getConfigCalls
 }
 
 // Watch implements datastore.DataStore

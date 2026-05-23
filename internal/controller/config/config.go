@@ -23,6 +23,7 @@ type ServerConfig struct {
 	Host              string        `yaml:"host"`
 	Port              int           `yaml:"port"`
 	APIKey            string        `yaml:"api_key"`
+	APIKeyFile        string        `yaml:"api_key_file"`
 	TLS               bool          `yaml:"tls"`
 	CertFile          string        `yaml:"cert_file"`
 	KeyFile           string        `yaml:"key_file"`
@@ -64,6 +65,7 @@ type MySQLConfig struct {
 	Port              int           `yaml:"port"`
 	User              string        `yaml:"user"`
 	Password          string        `yaml:"password"`
+	PasswordFile      string        `yaml:"password_file"`
 	Database          string        `yaml:"database"`
 	TLSMode           string        `yaml:"tls_mode"`
 	TLSCAFile         string        `yaml:"tls_ca_file"`
@@ -81,6 +83,7 @@ type GRPCConfig struct {
 	Host                           string `yaml:"host"`
 	Port                           int    `yaml:"port"`
 	APIKey                         string `yaml:"api_key"`
+	APIKeyFile                     string `yaml:"api_key_file"`
 	TLS                            bool   `yaml:"tls"`
 	CertFile                       string `yaml:"cert_file"`
 	KeyFile                        string `yaml:"key_file"`
@@ -109,6 +112,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Set defaults
 	cfg.setDefaults()
+
+	if err := cfg.loadSecrets(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -160,6 +167,43 @@ func (c *Config) setDefaults() {
 	if c.Log.Format == "" {
 		c.Log.Format = "json"
 	}
+}
+
+func (c *Config) loadSecrets() error {
+	value, err := loadSecretValue("server.api_key", c.Server.APIKey, c.Server.APIKeyFile)
+	if err != nil {
+		return err
+	}
+	c.Server.APIKey = value
+
+	value, err = loadSecretValue("grpc.api_key", c.GRPC.APIKey, c.GRPC.APIKeyFile)
+	if err != nil {
+		return err
+	}
+	c.GRPC.APIKey = value
+
+	value, err = loadSecretValue("datastore.mysql.password", c.DataStore.MySQL.Password, c.DataStore.MySQL.PasswordFile)
+	if err != nil {
+		return err
+	}
+	c.DataStore.MySQL.Password = value
+
+	return nil
+}
+
+func loadSecretValue(field, value, filePath string) (string, error) {
+	if value != "" && filePath != "" {
+		return "", fmt.Errorf("%s and %s_file must not both be set", field, field)
+	}
+	if filePath == "" {
+		return value, nil
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read %s_file: %w", field, err)
+	}
+	return strings.TrimRight(string(data), "\r\n"), nil
 }
 
 func (c *Config) validate() error {

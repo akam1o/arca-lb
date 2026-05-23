@@ -301,6 +301,102 @@ server:
 	}
 }
 
+func TestLoadConfigLoadsSecretFileValues(t *testing.T) {
+	dir := t.TempDir()
+	restKeyFile := writeFile(t, dir, "rest-api-key", "controller-rest-secret\n")
+	grpcKeyFile := writeFile(t, dir, "grpc-api-key", "controller-grpc-secret\r\n")
+	mysqlPasswordFile := writeFile(t, dir, "mysql-password", "db-secret\n")
+
+	path := writeConfigFile(t, `
+server:
+  tls: true
+  cert_file: /tmp/server.crt
+  key_file: /tmp/server.key
+  api_key_file: `+quoteYAMLString(restKeyFile)+`
+datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    password_file: `+quoteYAMLString(mysqlPasswordFile)+`
+    database: arcalb
+grpc:
+  tls: true
+  cert_file: /tmp/grpc.crt
+  key_file: /tmp/grpc.key
+  api_key_file: `+quoteYAMLString(grpcKeyFile)+`
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Server.APIKey != "controller-rest-secret" {
+		t.Fatalf("Server.APIKey = %q", cfg.Server.APIKey)
+	}
+	if cfg.GRPC.APIKey != "controller-grpc-secret" {
+		t.Fatalf("GRPC.APIKey = %q", cfg.GRPC.APIKey)
+	}
+	if cfg.ToDataStoreConfig().MySQLPassword != "db-secret" {
+		t.Fatalf("MySQLPassword = %q", cfg.ToDataStoreConfig().MySQLPassword)
+	}
+}
+
+func TestLoadConfigRejectsConflictingSecretValues(t *testing.T) {
+	secretFile := writeFile(t, t.TempDir(), "secret", "secret-value")
+
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "server api key",
+			yaml: minimalEtcdConfig() + `
+server:
+  api_key: controller-rest-secret
+  api_key_file: ` + quoteYAMLString(secretFile) + `
+`,
+			wantErr: "server.api_key and server.api_key_file must not both be set",
+		},
+		{
+			name: "grpc api key",
+			yaml: minimalEtcdConfig() + `
+grpc:
+  api_key: controller-grpc-secret
+  api_key_file: ` + quoteYAMLString(secretFile) + `
+`,
+			wantErr: "grpc.api_key and grpc.api_key_file must not both be set",
+		},
+		{
+			name: "mysql password",
+			yaml: `
+datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    password: direct-secret
+    password_file: ` + quoteYAMLString(secretFile) + `
+    database: arcalb
+`,
+			wantErr: "datastore.mysql.password and datastore.mysql.password_file must not both be set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, tt.yaml)
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadConfig error = %v, want %s", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadConfigRejectsGRPCAPIKeyWithoutTLS(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:
@@ -822,8 +918,15 @@ func writeConfigFile(t *testing.T, contents string) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "controller.yaml")
+	return writeFile(t, filepath.Dir(path), filepath.Base(path), contents)
+}
+
+func writeFile(t *testing.T, dir, name, contents string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
-		t.Fatalf("write config: %v", err)
+		t.Fatalf("write %s: %v", name, err)
 	}
 	return path
 }

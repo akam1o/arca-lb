@@ -158,6 +158,18 @@ The Operator is configured via command-line flags:
 | `--enable-webhooks` | Enable admission webhooks | `true` |
 | `--leader-elect` | Enable leader election | `false` |
 
+## Controller Secret Files
+
+The controller can read sensitive values from files so Kubernetes Secrets can be
+mounted without putting secret material directly in the YAML config. Do not set
+the direct value and the matching file field at the same time.
+
+| Parameter | Description |
+|-----------|-------------|
+| `server.api_key_file` | File containing the REST API key |
+| `grpc.api_key_file` | File containing the gRPC API key |
+| `datastore.mysql.password_file` | File containing the MySQL password |
+
 ## VirtualIP CRD Configuration
 
 VIPs are configured as Kubernetes Custom Resources:

@@ -149,6 +149,18 @@ Operator はコマンドラインフラグで設定します：
 | `--enable-webhooks` | Admission Webhook を有効化 | `true` |
 | `--leader-elect` | Leader Election を有効化 | `false` |
 
+## Controller Secret ファイル
+
+Controller は機密値をファイルから読み込めます。これにより、Kubernetes
+Secret をマウントし、YAML 設定ファイルに secret material を直接書かずに
+運用できます。直接値と対応する file フィールドは同時に指定しないでください。
+
+| パラメータ | 説明 |
+|-----------|------|
+| `server.api_key_file` | REST API key を含むファイル |
+| `grpc.api_key_file` | gRPC API key を含むファイル |
+| `datastore.mysql.password_file` | MySQL password を含むファイル |
+
 ## VirtualIP CRD 設定
 
 VIP は Kubernetes Custom Resource として設定します：

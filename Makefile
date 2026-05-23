@@ -4,6 +4,7 @@ SHELL := /bin/bash
 
 BIN_DIR := bin
 AGENT_BIN := $(BIN_DIR)/arcalb-agent
+CONTROLLER_BIN := $(BIN_DIR)/arcalb-controller
 OPERATOR_BIN := $(BIN_DIR)/arcalb-operator
 
 GOCACHE_DIR := $(CURDIR)/.gocache
@@ -39,10 +40,11 @@ goenv: ## Prepare local Go cache directories
 	@mkdir -p $(GOCACHE_DIR) $(GOMODCACHE_DIR) $(GOTMP_DIR)
 
 .PHONY: build
-build: goenv ## Build operator and agent binaries
+build: goenv ## Build operator, agent, and controller binaries
 	@mkdir -p $(BIN_DIR)
 	$(GO_ENV) go build -o $(OPERATOR_BIN) ./cmd/operator
 	$(GO_ENV) go build -o $(AGENT_BIN) ./cmd/arcalb-agent
+	$(GO_ENV) go build -o $(CONTROLLER_BIN) ./cmd/arcalb-controller
 
 .PHONY: test
 test: goenv ## Run unit tests with race detector and coverage

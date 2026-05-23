@@ -155,7 +155,7 @@ The Operator is configured via command-line flags:
 |------|-------------|---------|
 | `--metrics-bind-address` | Address for the metrics endpoint | `:8080` |
 | `--health-probe-bind-address` | Address for the health probe endpoint | `:8081` |
-| `--enable-webhooks` | Enable admission webhooks | `false` |
+| `--enable-webhooks` | Enable admission webhooks | `true` |
 | `--leader-elect` | Enable leader election | `false` |
 
 ## VirtualIP CRD Configuration

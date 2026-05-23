@@ -152,6 +152,14 @@ func TestAPIKeyAuthMiddleware(t *testing.T) {
 			},
 			expectedStatus: http.StatusOK,
 		},
+		{
+			name: "malformed authorization does not fall back to x api key",
+			setHeader: func(req *http.Request) {
+				req.Header.Set("Authorization", "Basic controller-secret")
+				req.Header.Set("X-API-Key", "controller-secret")
+			},
+			expectedStatus: http.StatusUnauthorized,
+		},
 	}
 
 	for _, tt := range tests {

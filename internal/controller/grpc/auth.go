@@ -53,11 +53,15 @@ func extractIncomingAPIKey(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
-	for _, value := range md.Get(authorizationMetadataKey) {
-		fields := strings.Fields(value)
-		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
-			return fields[1]
+	authValues := md.Get(authorizationMetadataKey)
+	if len(authValues) > 0 {
+		for _, value := range authValues {
+			fields := strings.Fields(value)
+			if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+				return fields[1]
+			}
 		}
+		return ""
 	}
 	for _, value := range md.Get(apiKeyMetadataKey) {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {

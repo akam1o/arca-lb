@@ -250,11 +250,14 @@ func extractAPIKey(req *http.Request) string {
 	if req == nil {
 		return ""
 	}
-	if value := req.Header.Get("Authorization"); value != "" {
-		fields := strings.Fields(value)
-		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
-			return fields[1]
+	if values := req.Header.Values("Authorization"); len(values) > 0 {
+		for _, value := range values {
+			fields := strings.Fields(value)
+			if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+				return fields[1]
+			}
 		}
+		return ""
 	}
 	return strings.TrimSpace(req.Header.Get("X-API-Key"))
 }

@@ -108,6 +108,29 @@ dataplane:
 	}
 }
 
+func TestLoadV2ConfigRejectsMultipleYAMLDocuments(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: noop
+---
+dataplane:
+  type: vpp
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadV2Config(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), "multiple yaml documents are not supported") {
+		t.Fatalf("LoadV2Config error = %v, want multiple yaml document error", err)
+	}
+}
+
 func TestLoadV2Config_EnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")

@@ -3,6 +3,7 @@ package yamlutil
 import (
 	"bytes"
 	"fmt"
+	"io"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +16,12 @@ func DecodeStrict(data []byte, out interface{}) error {
 		return err
 	}
 	if err := rejectDuplicateMappingKeys(&node, ""); err != nil {
+		return err
+	}
+	var extra yaml.Node
+	if err := nodeDecoder.Decode(&extra); err == nil {
+		return fmt.Errorf("multiple yaml documents are not supported")
+	} else if err != io.EOF {
 		return err
 	}
 

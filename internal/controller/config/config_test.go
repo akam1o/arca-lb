@@ -102,6 +102,19 @@ server:
 	}
 }
 
+func TestLoadConfigRejectsMultipleYAMLDocuments(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+---
+server:
+  api_key: controller-rest-secret
+`)
+
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "multiple yaml documents are not supported") {
+		t.Fatalf("LoadConfig error = %v, want multiple yaml document error", err)
+	}
+}
+
 func TestLoadConfigRejectsGRPCClientCertWithoutTLS(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig()+`
 grpc:

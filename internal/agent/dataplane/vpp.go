@@ -651,6 +651,9 @@ func (v *VPP) GetState(_ context.Context) (*State, error) {
 }
 
 func (v *VPP) Close() error {
+	if v == nil || v.conn == nil {
+		return nil
+	}
 	v.conn.Disconnect()
 	return nil
 }

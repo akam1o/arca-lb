@@ -139,6 +139,13 @@ func TestVPPAPIConversionsRejectUnsupportedValues(t *testing.T) {
 	}
 }
 
+func TestVPPCloseAllowsNilConnection(t *testing.T) {
+	vpp := &VPP{}
+	if err := vpp.Close(); err != nil {
+		t.Fatalf("Close returned error for nil connection: %v", err)
+	}
+}
+
 func TestNoopApplyAndRemoveVIP(t *testing.T) {
 	dp, err := New("noop", Config{})
 	if err != nil {

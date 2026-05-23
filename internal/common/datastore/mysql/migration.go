@@ -2,23 +2,76 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"fmt"
 	"io/fs"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+const (
+	mysqlMigrationLockName           = "arca_lb_schema_migrations"
+	mysqlMigrationLockTimeoutSeconds = 60
+)
+
 // applyMigrations applies all migration files in order
 func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
-	db := ds.db.WithContext(ctx)
+	return ds.db.WithContext(ctx).Connection(func(db *gorm.DB) (err error) {
+		if err := acquireMigrationLock(db); err != nil {
+			return err
+		}
+		defer func() {
+			if releaseErr := releaseMigrationLock(db); releaseErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%w; failed to release migration lock: %v", err, releaseErr)
+					return
+				}
+				err = releaseErr
+			}
+		}()
 
+		return applyMigrationsLocked(db)
+	})
+}
+
+func acquireMigrationLock(db *gorm.DB) error {
+	var locked sql.NullInt64
+	if err := migrationSession(db).Raw("SELECT GET_LOCK(?, ?)", mysqlMigrationLockName, mysqlMigrationLockTimeoutSeconds).Scan(&locked).Error; err != nil {
+		return fmt.Errorf("failed to acquire migration lock: %w", err)
+	}
+	if !locked.Valid {
+		return fmt.Errorf("failed to acquire migration lock %q: result was NULL", mysqlMigrationLockName)
+	}
+	if locked.Int64 != 1 {
+		return fmt.Errorf("timed out acquiring migration lock %q", mysqlMigrationLockName)
+	}
+	return nil
+}
+
+func releaseMigrationLock(db *gorm.DB) error {
+	var released sql.NullInt64
+	if err := migrationSession(db).Raw("SELECT RELEASE_LOCK(?)", mysqlMigrationLockName).Scan(&released).Error; err != nil {
+		return fmt.Errorf("failed to release migration lock: %w", err)
+	}
+	if !released.Valid {
+		return fmt.Errorf("failed to release migration lock %q: result was NULL", mysqlMigrationLockName)
+	}
+	if released.Int64 != 1 {
+		return fmt.Errorf("migration lock %q was not held by this connection", mysqlMigrationLockName)
+	}
+	return nil
+}
+
+func applyMigrationsLocked(db *gorm.DB) error {
 	// Create schema_migrations table if not exists
-	if err := db.Exec(`
+	if err := migrationSession(db).Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version VARCHAR(255) NOT NULL PRIMARY KEY,
 			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -44,7 +97,7 @@ func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
 
 		// Check if migration already applied
 		var count int64
-		if err := db.Table("schema_migrations").Where("version = ?", version).Count(&count).Error; err != nil {
+		if err := migrationSession(db).Table("schema_migrations").Where("version = ?", version).Count(&count).Error; err != nil {
 			return fmt.Errorf("failed to check migration status: %w", err)
 		}
 
@@ -61,13 +114,13 @@ func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
 		// Execute migration statements individually so the runtime DSN does not
 		// need multiStatements enabled.
 		for _, statement := range migrationStatements(string(content)) {
-			if err := db.Exec(statement).Error; err != nil {
+			if err := migrationSession(db).Exec(statement).Error; err != nil {
 				return fmt.Errorf("failed to apply migration %s: %w", version, err)
 			}
 		}
 
 		// Record migration
-		if err := db.Table("schema_migrations").Create(map[string]interface{}{
+		if err := migrationSession(db).Table("schema_migrations").Create(map[string]interface{}{
 			"version": version,
 		}).Error; err != nil {
 			return fmt.Errorf("failed to record migration %s: %w", version, err)
@@ -75,6 +128,10 @@ func (ds *MySQLDataStore) applyMigrations(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func migrationSession(db *gorm.DB) *gorm.DB {
+	return db.Session(&gorm.Session{NewDB: true})
 }
 
 func migrationStatements(sql string) []string {

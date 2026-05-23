@@ -32,6 +32,7 @@ type ServerConfig struct {
 	WriteTimeout      time.Duration `yaml:"write_timeout"`
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`
+	DataStoreTimeout  time.Duration `yaml:"datastore_timeout"`
 	MaxHeaderBytes    int           `yaml:"max_header_bytes"`
 	MaxBodyBytes      int64         `yaml:"max_body_bytes"`
 	AllowedOrigins    []string      `yaml:"allowed_origins"` // CORS allowed origins
@@ -145,6 +146,9 @@ func (c *Config) setDefaults() {
 	if c.Server.IdleTimeout == 0 {
 		c.Server.IdleTimeout = 60 * time.Second
 	}
+	if c.Server.DataStoreTimeout == 0 {
+		c.Server.DataStoreTimeout = 5 * time.Second
+	}
 	if c.Server.MaxHeaderBytes == 0 {
 		c.Server.MaxHeaderBytes = 1 << 20 // 1 MB
 	}
@@ -252,6 +256,9 @@ func (c *Config) validate() error {
 	}
 	if c.Server.IdleTimeout <= 0 {
 		return fmt.Errorf("server.idle_timeout must be positive")
+	}
+	if c.Server.DataStoreTimeout <= 0 {
+		return fmt.Errorf("server.datastore_timeout must be positive")
 	}
 	if c.Server.MaxHeaderBytes <= 0 {
 		return fmt.Errorf("server.max_header_bytes must be positive")

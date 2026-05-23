@@ -460,6 +460,33 @@ func TestLoadConfigDefaultsMaxBodyBytes(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDefaultsDataStoreTimeout(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig())
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Server.DataStoreTimeout != 5*time.Second {
+		t.Fatalf("Server.DataStoreTimeout = %s, want 5s", cfg.Server.DataStoreTimeout)
+	}
+}
+
+func TestLoadConfigAcceptsDataStoreTimeout(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+server:
+  datastore_timeout: 15s
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Server.DataStoreTimeout != 15*time.Second {
+		t.Fatalf("Server.DataStoreTimeout = %s, want 15s", cfg.Server.DataStoreTimeout)
+	}
+}
+
 func TestLoadConfigDefaultsControllerListenersToLoopback(t *testing.T) {
 	path := writeConfigFile(t, minimalEtcdConfig())
 
@@ -1002,6 +1029,11 @@ func TestLoadConfigRejectsInvalidServerLimits(t *testing.T) {
 			name:    "zero read timeout",
 			yaml:    "server:\n  read_timeout: -1s\n",
 			wantErr: "server.read_timeout",
+		},
+		{
+			name:    "negative datastore timeout",
+			yaml:    "server:\n  datastore_timeout: -1s\n",
+			wantErr: "server.datastore_timeout",
 		},
 	}
 

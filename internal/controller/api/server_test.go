@@ -115,6 +115,26 @@ func TestLoggingMiddlewareGeneratesRequestID(t *testing.T) {
 	}
 }
 
+func TestDatastoreContextUsesConfiguredTimeout(t *testing.T) {
+	server, _ := setupTestServer()
+	server.config.Server.DataStoreTimeout = 2 * time.Second
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/revision", nil)
+
+	ctx, cancel := server.datastoreContext(c)
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("datastoreContext deadline missing")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= time.Second || remaining > 2*time.Second {
+		t.Fatalf("datastoreContext timeout remaining = %s, want within (1s, 2s]", remaining)
+	}
+}
+
 func TestStartRejectsAPIKeyWithoutTLS(t *testing.T) {
 	server, _ := setupTestServer()
 	server.config.Server.Host = "127.0.0.1"

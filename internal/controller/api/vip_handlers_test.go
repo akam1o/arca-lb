@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/common/models"
@@ -27,8 +28,9 @@ func setupTestServer() (*Server, *testutil.MockDataStore) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
-			Host: "localhost",
-			Port: 8080,
+			Host:             "localhost",
+			Port:             8080,
+			DataStoreTimeout: 5 * time.Second,
 		},
 		Log: config.LogConfig{
 			Level: "error",

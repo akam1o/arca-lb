@@ -6,6 +6,7 @@ server:
   host: 127.0.0.1
   port: 8080
   tls: false
+  datastore_timeout: 5s
   allowed_origins:
     - http://localhost:3000
 

@@ -265,6 +265,10 @@ func extractAPIKey(req *http.Request) string {
 	)
 }
 
+func (s *Server) datastoreContext(c *gin.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(c.Request.Context(), s.config.Server.DataStoreTimeout)
+}
+
 // healthCheck handles health check requests
 func (s *Server) healthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
@@ -298,7 +302,7 @@ func (s *Server) readinessCheck(c *gin.Context) {
 
 // getRevision handles GET /api/v1/revision
 func (s *Server) getRevision(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	revision, err := s.datastore.GetRevision(ctx)

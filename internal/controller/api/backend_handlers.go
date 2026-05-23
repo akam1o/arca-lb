@@ -1,11 +1,9 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/gin-gonic/gin"
@@ -77,7 +75,7 @@ func (s *Server) createBackend(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	// Verify VIP exists
@@ -123,7 +121,7 @@ func (s *Server) listBackends(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	backends, err := s.datastore.ListBackends(ctx, vipID)
@@ -147,7 +145,7 @@ func (s *Server) getBackend(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	backend, err := s.datastore.GetBackend(ctx, id)
@@ -192,7 +190,7 @@ func (s *Server) updateBackend(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	// Get existing backend
@@ -241,7 +239,7 @@ func (s *Server) deleteBackend(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	if err := s.datastore.DeleteBackend(ctx, id); err != nil {

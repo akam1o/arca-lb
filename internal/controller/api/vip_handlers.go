@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -404,8 +403,7 @@ func (s *Server) createVIP(c *gin.Context) {
 		vip.HealthCheck = healthCheck
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	// Create VIP in datastore
@@ -425,7 +423,7 @@ func (s *Server) createVIP(c *gin.Context) {
 
 // listVIPs handles GET /api/v1/vips
 func (s *Server) listVIPs(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	vips, err := s.datastore.ListVIPs(ctx)
@@ -449,7 +447,7 @@ func (s *Server) getVIP(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	vip, err := s.datastore.GetVIP(ctx, id)
@@ -498,7 +496,7 @@ func (s *Server) updateVIP(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	// Get existing VIP
@@ -589,7 +587,7 @@ func (s *Server) deleteVIP(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	if err := s.datastore.DeleteVIP(ctx, id); err != nil {

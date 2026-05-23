@@ -1,11 +1,15 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
+	"os"
 	"testing"
 	"time"
 
+	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
@@ -93,5 +97,78 @@ func TestBindOperatorFlagsAcceptsZapAndOperatorOptions(t *testing.T) {
 	}
 	if zapOpts.TimeEncoder == nil {
 		t.Fatal("expected zap time encoding option to be configured")
+	}
+}
+
+func TestRunOperatorReturnsErrorWhenConfigUnavailable(t *testing.T) {
+	restoreArgs := setOperatorArgs(t, "operator")
+	defer restoreArgs()
+
+	fs := flag.NewFlagSet("operator", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	code := runOperator(fs, operatorRuntime{
+		getConfig: func() (*rest.Config, error) {
+			return nil, errors.New("kubeconfig unavailable")
+		},
+		newManager: func(*rest.Config, ctrl.Options) (ctrl.Manager, error) {
+			t.Fatal("newManager should not be called when config lookup fails")
+			return nil, nil
+		},
+	})
+
+	if code != 1 {
+		t.Fatalf("runOperator exit code = %d, want 1", code)
+	}
+}
+
+func TestRunOperatorReturnsErrorWhenManagerCreationFails(t *testing.T) {
+	restoreArgs := setOperatorArgs(t,
+		"operator",
+		"--metrics-bind-address=:9090",
+		"--health-probe-bind-address=:9091",
+		"--enable-webhooks=false",
+		"--leader-elect=true",
+	)
+	defer restoreArgs()
+
+	fs := flag.NewFlagSet("operator", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	managerCreated := false
+	code := runOperator(fs, operatorRuntime{
+		getConfig: func() (*rest.Config, error) {
+			return &rest.Config{Host: "https://kubernetes.example.test"}, nil
+		},
+		newManager: func(cfg *rest.Config, opts ctrl.Options) (ctrl.Manager, error) {
+			managerCreated = true
+			if cfg.Host != "https://kubernetes.example.test" {
+				t.Fatalf("manager config host = %q, want test host", cfg.Host)
+			}
+			if opts.Metrics.BindAddress != ":9090" {
+				t.Fatalf("metrics bind address = %q, want :9090", opts.Metrics.BindAddress)
+			}
+			if opts.HealthProbeBindAddress != ":9091" {
+				t.Fatalf("health probe bind address = %q, want :9091", opts.HealthProbeBindAddress)
+			}
+			if !opts.LeaderElection {
+				t.Fatal("expected leader election option to be enabled")
+			}
+			return nil, errors.New("manager creation failed")
+		},
+	})
+
+	if code != 1 {
+		t.Fatalf("runOperator exit code = %d, want 1", code)
+	}
+	if !managerCreated {
+		t.Fatal("expected manager factory to be called")
+	}
+}
+
+func setOperatorArgs(t *testing.T, args ...string) func() {
+	t.Helper()
+	oldArgs := os.Args
+	os.Args = args
+	return func() {
+		os.Args = oldArgs
 	}
 }

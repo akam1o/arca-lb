@@ -69,6 +69,13 @@ func TestMySQLDatastoreRegistered(t *testing.T) {
 	}
 }
 
+func TestRunControllerReturnsErrorWhenConfigMissing(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing-controller.yaml")
+	if code := runController(missingPath); code != 1 {
+		t.Fatalf("runController exit code = %d, want 1", code)
+	}
+}
+
 type fakeControllerServer struct {
 	startErr   error
 	started    chan struct{}

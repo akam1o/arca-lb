@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +26,76 @@ import (
 	"github.com/akam1o/arca-lb/internal/agent/store"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestRunReturnsErrorWhenConfigMissing(t *testing.T) {
+	restore := setAgentArgs(t, "arcalb-agent", "-config", filepath.Join(t.TempDir(), "missing-agent.yaml"))
+	defer restore()
+
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stderr: %v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = stderrWriter
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = stderrReader.Close()
+		_ = stderrWriter.Close()
+	})
+
+	if code := run(); code != 1 {
+		t.Fatalf("run exit code = %d, want 1", code)
+	}
+	if err := stderrWriter.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	output, err := io.ReadAll(stderrReader)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if !strings.Contains(string(output), "failed to load config") {
+		t.Fatalf("stderr = %q, want failed config load message", output)
+	}
+}
+
+func TestRunReturnsErrorWhenStoreCannotOpen(t *testing.T) {
+	storePath := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "agent.yaml")
+	cfg := "agent:\n" +
+		"  id: test-agent\n" +
+		"  storePath: " + storePath + "\n" +
+		"dataplane:\n" +
+		"  type: noop\n" +
+		"routing:\n" +
+		"  type: noop\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	restore := setAgentArgs(t, "arcalb-agent", "-config", cfgPath)
+	defer restore()
+	defaultLogger := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(defaultLogger)
+	})
+
+	if code := run(); code != 1 {
+		t.Fatalf("run exit code = %d, want 1", code)
+	}
+}
+
+func setAgentArgs(t *testing.T, args ...string) func() {
+	t.Helper()
+	oldArgs := os.Args
+	oldCommandLine := flag.CommandLine
+	os.Args = args
+	flag.CommandLine = flag.NewFlagSet("arcalb-agent", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(io.Discard)
+	return func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCommandLine
+	}
+}
 
 func TestRetainedVIPTuningDriftConfigUsesTypedVPPSettings(t *testing.T) {
 	cfg := retainedVIPTuningDriftConfig(agentconfig.VPPDataPlaneConfig{

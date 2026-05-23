@@ -24,6 +24,11 @@ dependencies = [
     "oslo.log>=5.0.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
 [project.entry-points."octavia.api.drivers"]
 arca = "octavia_arca_driver.driver:ArcaLBDriver"
 

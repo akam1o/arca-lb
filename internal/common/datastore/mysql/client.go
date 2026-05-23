@@ -64,11 +64,21 @@ func NewMySQLDataStore(ctx context.Context, cfg *datastore.Config) (datastore.Da
 		return nil, fmt.Errorf("failed to connect to MySQL: %w", err)
 	}
 
+	return newMySQLDataStoreWithDB(ctx, db, connectionSettings)
+}
+
+func newMySQLDataStoreWithDB(ctx context.Context, db *gorm.DB, connectionSettings mysqlConnectionSettings) (*MySQLDataStore, error) {
 	// Get underlying sql.DB for connection pool configuration
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
+	initialized := false
+	defer func() {
+		if !initialized {
+			_ = sqlDB.Close()
+		}
+	}()
 
 	// Configure connection pool
 	sqlDB.SetMaxOpenConns(connectionSettings.maxOpenConns)
@@ -95,6 +105,7 @@ func NewMySQLDataStore(ctx context.Context, cfg *datastore.Config) (datastore.Da
 		return nil, fmt.Errorf("failed to initialize revision: %w", err)
 	}
 
+	initialized = true
 	return ds, nil
 }
 

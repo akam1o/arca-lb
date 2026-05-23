@@ -1,19 +1,25 @@
 package mysql
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/akam1o/arca-lb/internal/common/datastore"
 	drivermysql "github.com/go-sql-driver/mysql"
+	gormmysql "gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 func TestMySQLDSNEscapesConnectionFields(t *testing.T) {
@@ -63,6 +69,34 @@ func TestMySQLDSNEscapesConnectionFields(t *testing.T) {
 	}
 	if parsed.WriteTimeout != DefaultWriteTimeout {
 		t.Fatalf("writeTimeout = %s, want %s", parsed.WriteTimeout, DefaultWriteTimeout)
+	}
+}
+
+func TestNewMySQLDataStoreWithDBClosesDBOnPingFailure(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+
+	db, err := gorm.Open(gormmysql.New(gormmysql.Config{
+		Conn:                      sqlDB,
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{DisableAutomaticPing: true})
+	if err != nil {
+		t.Fatalf("gorm.Open: %v", err)
+	}
+
+	mock.ExpectClose()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = newMySQLDataStoreWithDB(ctx, db, mysqlConnectionSettings{})
+	if err == nil || !strings.Contains(err.Error(), "failed to ping MySQL") || !errors.Is(err, context.Canceled) {
+		t.Fatalf("newMySQLDataStoreWithDB error = %v, want context-canceled ping failure", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations: %v", err)
 	}
 }
 

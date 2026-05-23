@@ -176,6 +176,14 @@ type routeAddressState struct {
 	lastVerified time.Time
 }
 
+type routeOperation int
+
+const (
+	routeOperationNone routeOperation = iota
+	routeOperationAnnounce
+	routeOperationWithdraw
+)
+
 func newRouteCoordinator(router routing.Router, logger *slog.Logger, routeVerificationInterval time.Duration) *routeCoordinator {
 	if logger == nil {
 		logger = slog.Default()
@@ -204,21 +212,49 @@ func (c *routeCoordinator) shouldVerifyAdvertisedRoute(state *routeAddressState,
 		!now.Before(state.lastVerified.Add(c.routeVerificationInterval))
 }
 
-func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address string, serving bool) (bool, error) {
-	if c == nil || c.router == nil || address == "" {
-		return false, nil
+func (c *routeCoordinator) routeShouldAdvertiseLocked(state *routeAddressState) bool {
+	if state.drainOwner != "" {
+		return false
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if previousAddress := c.vipAddresses[vipKey]; previousAddress != "" && previousAddress != address {
-		if err := c.removeVIPLocked(ctx, vipKey, previousAddress); err != nil {
-			return false, fmt.Errorf("failed to withdraw previous VIP address %s for %s: %w", previousAddress, vipKey, err)
+	for _, serving := range state.serving {
+		if serving {
+			return true
 		}
 	}
+	return false
+}
 
-	c.vipAddresses[vipKey] = address
+func (c *routeCoordinator) nextRouteOperationLocked(state *routeAddressState) (routeOperation, bool, time.Time) {
+	now := c.currentTime()
+	shouldAdvertise := c.routeShouldAdvertiseLocked(state)
+
+	if shouldAdvertise {
+		if state.advertised && !c.shouldVerifyAdvertisedRoute(state, now) {
+			return routeOperationNone, true, now
+		}
+		return routeOperationAnnounce, state.advertised, now
+	}
+
+	if state.advertised || !state.reconciled {
+		return routeOperationWithdraw, state.advertised, now
+	}
+	return routeOperationNone, false, now
+}
+
+func applyRouteOperationLocked(state *routeAddressState, operation routeOperation, operationTime time.Time) {
+	switch operation {
+	case routeOperationAnnounce:
+		state.advertised = true
+		state.reconciled = true
+		state.lastVerified = operationTime
+	case routeOperationWithdraw:
+		state.advertised = false
+		state.reconciled = true
+		state.lastVerified = time.Time{}
+	}
+}
+
+func (c *routeCoordinator) ensureRouteAddressStateLocked(address string) *routeAddressState {
 	state := c.addresses[address]
 	if state == nil {
 		state = &routeAddressState{
@@ -226,9 +262,100 @@ func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address strin
 		}
 		c.addresses[address] = state
 	}
-	state.serving[vipKey] = serving
+	return state
+}
 
-	return c.reconcileLocked(ctx, address, state)
+func (c *routeCoordinator) cleanupRouteAddressLocked(address string) {
+	state := c.addresses[address]
+	if state != nil && len(state.serving) == 0 && !state.advertised {
+		delete(c.addresses, address)
+	}
+}
+
+func (c *routeCoordinator) reconcileRoute(ctx context.Context, address string) (bool, error) {
+	for {
+		c.mu.Lock()
+		state := c.addresses[address]
+		if state == nil {
+			c.mu.Unlock()
+			return false, nil
+		}
+		operation, advertised, operationTime := c.nextRouteOperationLocked(state)
+		c.mu.Unlock()
+
+		switch operation {
+		case routeOperationNone:
+			return advertised, nil
+		case routeOperationAnnounce:
+			if err := c.router.AnnounceVIP(ctx, address); err != nil {
+				return advertised, err
+			}
+		case routeOperationWithdraw:
+			if err := c.router.WithdrawVIP(ctx, address); err != nil {
+				return advertised, err
+			}
+		}
+
+		c.mu.Lock()
+		state = c.addresses[address]
+		if state == nil {
+			c.mu.Unlock()
+			return operation == routeOperationAnnounce, nil
+		}
+		applyRouteOperationLocked(state, operation, operationTime)
+		operation, advertised, _ = c.nextRouteOperationLocked(state)
+		c.mu.Unlock()
+		if operation == routeOperationNone {
+			return advertised, nil
+		}
+	}
+}
+
+func (c *routeCoordinator) removeVIPFromAddress(ctx context.Context, vipKey, address string) (bool, error) {
+	c.mu.Lock()
+	if trackedAddress := c.vipAddresses[vipKey]; trackedAddress != "" && trackedAddress != address {
+		c.mu.Unlock()
+		return false, nil
+	}
+	if state := c.addresses[address]; state != nil {
+		delete(state.serving, vipKey)
+	}
+	c.mu.Unlock()
+
+	advertised, err := c.reconcileRoute(ctx, address)
+	c.mu.Lock()
+	if err == nil {
+		if trackedAddress := c.vipAddresses[vipKey]; trackedAddress == "" || trackedAddress == address {
+			delete(c.vipAddresses, vipKey)
+		}
+	}
+	c.cleanupRouteAddressLocked(address)
+	c.mu.Unlock()
+	return advertised, err
+}
+
+func (c *routeCoordinator) SetServing(ctx context.Context, vipKey, address string, serving bool) (bool, error) {
+	if c == nil || c.router == nil || address == "" {
+		return false, nil
+	}
+
+	c.mu.Lock()
+	previousAddress := c.vipAddresses[vipKey]
+	c.mu.Unlock()
+
+	if previousAddress != "" && previousAddress != address {
+		if _, err := c.removeVIPFromAddress(ctx, vipKey, previousAddress); err != nil {
+			return false, fmt.Errorf("failed to withdraw previous VIP address %s for %s: %w", previousAddress, vipKey, err)
+		}
+	}
+
+	c.mu.Lock()
+	c.vipAddresses[vipKey] = address
+	state := c.ensureRouteAddressStateLocked(address)
+	state.serving[vipKey] = serving
+	c.mu.Unlock()
+
+	return c.reconcileRoute(ctx, address)
 }
 
 // BeginDrain withdraws an address route only when no sibling VIP on that
@@ -250,29 +377,25 @@ func (c *routeCoordinator) beginDrain(ctx context.Context, vipKey, address strin
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	previousAddress := c.vipAddresses[vipKey]
+	c.mu.Unlock()
 
-	if previousAddress := c.vipAddresses[vipKey]; previousAddress != "" && previousAddress != address {
-		if err := c.removeVIPLocked(ctx, vipKey, previousAddress); err != nil {
+	if previousAddress != "" && previousAddress != address {
+		if _, err := c.removeVIPFromAddress(ctx, vipKey, previousAddress); err != nil {
 			return false, fmt.Errorf("failed to withdraw previous VIP address %s for %s: %w", previousAddress, vipKey, err)
 		}
-		delete(c.vipAddresses, vipKey)
 	}
 
-	state := c.addresses[address]
-	if state == nil {
-		state = &routeAddressState{
-			serving: make(map[string]bool),
-		}
-		c.addresses[address] = state
-	}
-
+	c.mu.Lock()
+	state := c.ensureRouteAddressStateLocked(address)
 	if state.drainOwner != "" && state.drainOwner != vipKey {
+		c.mu.Unlock()
 		return false, nil
 	}
 	if !forceAddress {
 		for peerKey, serving := range state.serving {
 			if peerKey != vipKey && serving {
+				c.mu.Unlock()
 				return false, nil
 			}
 		}
@@ -281,9 +404,15 @@ func (c *routeCoordinator) beginDrain(ctx context.Context, vipKey, address strin
 	c.vipAddresses[vipKey] = address
 	state.drainOwner = vipKey
 	state.serving[vipKey] = false
-	advertised, err := c.reconcileLocked(ctx, address, state)
+	c.mu.Unlock()
+
+	advertised, err := c.reconcileRoute(ctx, address)
 	if err != nil {
-		state.drainOwner = ""
+		c.mu.Lock()
+		if state := c.addresses[address]; state != nil && state.drainOwner == vipKey {
+			state.drainOwner = ""
+		}
+		c.mu.Unlock()
 		return false, err
 	}
 	return !advertised, nil
@@ -296,18 +425,22 @@ func (c *routeCoordinator) FinishDrain(ctx context.Context, vipKey, address stri
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	state := c.addresses[address]
 	if state == nil {
+		c.mu.Unlock()
 		return false, nil
 	}
 	if state.drainOwner != vipKey {
-		return state.advertised, nil
+		advertised := state.advertised
+		c.mu.Unlock()
+		return advertised, nil
 	}
 
 	state.drainOwner = ""
-	return c.reconcileLocked(ctx, address, state)
+	c.mu.Unlock()
+
+	return c.reconcileRoute(ctx, address)
 }
 
 func (c *routeCoordinator) pendingAddressChange(vipKey, address string) (string, bool) {
@@ -328,24 +461,22 @@ func (c *routeCoordinator) prepareAddressChange(ctx context.Context, vipKey, add
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	previousAddress := c.vipAddresses[vipKey]
 	if previousAddress == "" || previousAddress == address {
 		if state := c.addresses[address]; state != nil {
-			return state.advertised, nil
+			advertised := state.advertised
+			c.mu.Unlock()
+			return advertised, nil
 		}
+		c.mu.Unlock()
 		return false, nil
 	}
+	c.mu.Unlock()
 
-	if err := c.removeVIPLocked(ctx, vipKey, previousAddress); err != nil {
-		advertised := false
-		if state := c.addresses[previousAddress]; state != nil {
-			advertised = state.advertised
-		}
+	advertised, err := c.removeVIPFromAddress(ctx, vipKey, previousAddress)
+	if err != nil {
 		return advertised, fmt.Errorf("failed to withdraw previous VIP address %s for %s: %w", previousAddress, vipKey, err)
 	}
-	delete(c.vipAddresses, vipKey)
 	return false, nil
 }
 
@@ -355,67 +486,17 @@ func (c *routeCoordinator) Delete(ctx context.Context, vipKey, address string) (
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if trackedAddress := c.vipAddresses[vipKey]; trackedAddress != "" {
 		address = trackedAddress
 	}
-	delete(c.vipAddresses, vipKey)
+	c.mu.Unlock()
 	if address == "" {
 		return false, nil
 	}
 
-	return false, c.removeVIPLocked(ctx, vipKey, address)
-}
-
-func (c *routeCoordinator) removeVIPLocked(ctx context.Context, vipKey, address string) error {
-	state := c.addresses[address]
-	if state == nil {
-		return nil
-	}
-
-	delete(state.serving, vipKey)
-	_, err := c.reconcileLocked(ctx, address, state)
-	if len(state.serving) == 0 && !state.advertised {
-		delete(c.addresses, address)
-	}
-	return err
-}
-
-func (c *routeCoordinator) reconcileLocked(ctx context.Context, address string, state *routeAddressState) (bool, error) {
-	now := c.currentTime()
-	shouldAdvertise := false
-	if state.drainOwner == "" {
-		for _, serving := range state.serving {
-			if serving {
-				shouldAdvertise = true
-				break
-			}
-		}
-	}
-
-	if shouldAdvertise {
-		if state.advertised && !c.shouldVerifyAdvertisedRoute(state, now) {
-			return true, nil
-		}
-		if err := c.router.AnnounceVIP(ctx, address); err != nil {
-			return state.advertised, err
-		}
-		state.advertised = true
-		state.reconciled = true
-		state.lastVerified = now
-		return true, nil
-	}
-
-	if state.advertised || !state.reconciled {
-		if err := c.router.WithdrawVIP(ctx, address); err != nil {
-			return state.advertised, err
-		}
-		state.advertised = false
-		state.reconciled = true
-		state.lastVerified = time.Time{}
-	}
-	return false, nil
+	_, err := c.removeVIPFromAddress(ctx, vipKey, address)
+	return false, err
 }
 
 // Start starts the manager.

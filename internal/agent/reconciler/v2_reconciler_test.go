@@ -929,6 +929,58 @@ func TestRouteCoordinatorReplaysAdvertisedRouteAfterVerificationInterval(t *test
 	}
 }
 
+func TestRouteCoordinatorDoesNotHoldMutexWhileAnnouncing(t *testing.T) {
+	router := newBlockingRouter()
+	router.blockAnnounce = true
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	routes := newRouteCoordinator(router, logger, time.Hour)
+	ctx := context.Background()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+		errCh <- err
+	}()
+
+	waitForTestSignal(t, router.announceStarted, "announce start")
+	assertRouteCoordinatorLockAvailable(t, routes)
+	close(router.releaseAnnounce)
+
+	if err := waitForTestError(t, errCh, "SetServing"); err != nil {
+		t.Fatalf("SetServing: %v", err)
+	}
+}
+
+func TestRouteCoordinatorDoesNotHoldMutexWhileWithdrawing(t *testing.T) {
+	router := newBlockingRouter()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	routes := newRouteCoordinator(router, logger, time.Hour)
+	ctx := context.Background()
+
+	advertised, err := routes.SetServing(ctx, "default/web-80", "203.0.113.10", true)
+	if err != nil {
+		t.Fatalf("SetServing: %v", err)
+	}
+	if !advertised {
+		t.Fatal("initial serving VIP should advertise the address route")
+	}
+
+	router.blockWithdraw = true
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := routes.BeginDrain(ctx, "default/web-80", "203.0.113.10")
+		errCh <- err
+	}()
+
+	waitForTestSignal(t, router.withdrawStarted, "withdraw start")
+	assertRouteCoordinatorLockAvailable(t, routes)
+	close(router.releaseWithdraw)
+
+	if err := waitForTestError(t, errCh, "BeginDrain"); err != nil {
+		t.Fatalf("BeginDrain: %v", err)
+	}
+}
+
 func TestV2ManagerKeepsSharedAddressAdvertisedForHealthySibling(t *testing.T) {
 	dp := newRecordingDataPlane()
 	router := newRecordingRouter(nil)
@@ -1681,6 +1733,108 @@ func (r *recordingRouter) setWithdrawErr(err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.withdrawErr = err
+}
+
+type blockingRouter struct {
+	mu                sync.Mutex
+	announced         map[string]bool
+	blockAnnounce     bool
+	blockWithdraw     bool
+	announceStarted   chan struct{}
+	withdrawStarted   chan struct{}
+	releaseAnnounce   chan struct{}
+	releaseWithdraw   chan struct{}
+	announceStartOnce sync.Once
+	withdrawStartOnce sync.Once
+}
+
+func newBlockingRouter() *blockingRouter {
+	return &blockingRouter{
+		announced:       make(map[string]bool),
+		announceStarted: make(chan struct{}),
+		withdrawStarted: make(chan struct{}),
+		releaseAnnounce: make(chan struct{}),
+		releaseWithdraw: make(chan struct{}),
+	}
+}
+
+func (r *blockingRouter) AnnounceVIP(ctx context.Context, vipAddress string) error {
+	if r.blockAnnounce {
+		r.announceStartOnce.Do(func() {
+			close(r.announceStarted)
+		})
+		select {
+		case <-r.releaseAnnounce:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.announced[vipAddress] = true
+	return nil
+}
+
+func (r *blockingRouter) WithdrawVIP(ctx context.Context, vipAddress string) error {
+	if r.blockWithdraw {
+		r.withdrawStartOnce.Do(func() {
+			close(r.withdrawStarted)
+		})
+		select {
+		case <-r.releaseWithdraw:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.announced, vipAddress)
+	return nil
+}
+
+func (r *blockingRouter) IsAnnounced(vipAddress string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.announced[vipAddress]
+}
+
+func (r *blockingRouter) Close() error {
+	return nil
+}
+
+func assertRouteCoordinatorLockAvailable(t *testing.T, routes *routeCoordinator) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		routes.pendingAddressChange("default/probe", "203.0.113.20")
+		close(done)
+	}()
+	waitForTestSignal(t, done, "route coordinator lock")
+}
+
+func waitForTestSignal(t *testing.T, ch <-chan struct{}, name string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitForTestError(t *testing.T, ch <-chan error, name string) error {
+	t.Helper()
+
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+		return nil
+	}
 }
 
 type recordingStatusUpdater struct {

@@ -81,9 +81,6 @@ func certificateMatchesAgentID(cert *x509.Certificate, agentID string) bool {
 	if cert == nil {
 		return false
 	}
-	if cert.Subject.CommonName == agentID {
-		return true
-	}
 	for _, name := range cert.DNSNames {
 		if name == agentID {
 			return true

@@ -2,7 +2,9 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -10,7 +12,6 @@ import (
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	"go.fd.io/govpp"
-	"go.fd.io/govpp/api"
 	"go.fd.io/govpp/binapi/ip_types"
 	"go.fd.io/govpp/binapi/lb"
 	"go.fd.io/govpp/binapi/lb_types"
@@ -766,42 +767,35 @@ func (v *VPP) Close() error {
 
 // --- internal VPP API helpers ---
 
-func (v *VPP) newChannel() (api.Channel, error) {
-	ch, err := v.conn.NewAPIChannel()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create API channel: %w", err)
-	}
-	return ch, nil
-}
-
 func (v *VPP) vipExistsLocked(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error) {
 	_, exists, err := v.lookupVIPLocked(ctx, vip)
 	return exists, err
 }
 
-func (v *VPP) lookupVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
-	ch, err := v.newChannel()
-	if err != nil {
-		return nil, false, err
-	}
-	defer ch.Close()
-
+func (v *VPP) lookupVIPLocked(ctx context.Context, vip *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
 	pfx, err := parseIPPrefix(vip.Spec.Address)
 	if err != nil {
 		return nil, false, err
 	}
-	protocol := protocolNumber(vip.Spec.Protocol)
+	protocol, err := protocolNumber(vip.Spec.Protocol)
+	if err != nil {
+		return nil, false, err
+	}
 	port := uint16(vip.Spec.Port)
 
-	reqCtx := ch.SendMultiRequest(&lb.LbVipDump{})
+	stream, err := lb.NewServiceClient(v.conn).LbVipDump(ctx, &lb.LbVipDump{})
+	if err != nil {
+		return nil, false, fmt.Errorf("LbVipDump failed: %w", err)
+	}
+	defer func() { _ = stream.Close() }()
+
 	for {
-		detail := &lb.LbVipDetails{}
-		stop, err := reqCtx.ReceiveReply(detail)
+		detail, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
 		if err != nil {
 			return nil, false, fmt.Errorf("LbVipDump failed: %w", err)
-		}
-		if stop {
-			break
 		}
 		if lbVIPMatches(detail.Vip, pfx, protocol, port) {
 			return detail, true, nil
@@ -810,18 +804,15 @@ func (v *VPP) lookupVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) (*lb.L
 	return nil, false, nil
 }
 
-func (v *VPP) dumpBackendsLocked(_ context.Context, vip *v1alpha1.VirtualIP, desiredBackends []v1alpha1.BackendSpec) (map[string]v1alpha1.BackendSpec, error) {
-	ch, err := v.newChannel()
-	if err != nil {
-		return nil, err
-	}
-	defer ch.Close()
-
+func (v *VPP) dumpBackendsLocked(ctx context.Context, vip *v1alpha1.VirtualIP, desiredBackends []v1alpha1.BackendSpec) (map[string]v1alpha1.BackendSpec, error) {
 	pfx, err := parseIPPrefix(vip.Spec.Address)
 	if err != nil {
 		return nil, err
 	}
-	protocol := protocolNumber(vip.Spec.Protocol)
+	protocol, err := protocolNumber(vip.Spec.Protocol)
+	if err != nil {
+		return nil, err
+	}
 	port := uint16(vip.Spec.Port)
 
 	desiredByAddress := make(map[string]v1alpha1.BackendSpec, len(desiredBackends))
@@ -835,15 +826,19 @@ func (v *VPP) dumpBackendsLocked(_ context.Context, vip *v1alpha1.VirtualIP, des
 		Protocol: protocol,
 		Port:     port,
 	}
-	reqCtx := ch.SendMultiRequest(req)
+	stream, err := lb.NewServiceClient(v.conn).LbAsDump(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("LbAsDump failed: %w", err)
+	}
+	defer func() { _ = stream.Close() }()
+
 	for {
-		detail := &lb.LbAsDetails{}
-		stop, err := reqCtx.ReceiveReply(detail)
+		detail, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
 		if err != nil {
 			return nil, fmt.Errorf("LbAsDump failed: %w", err)
-		}
-		if stop {
-			break
 		}
 		if !lbVIPMatches(detail.Vip, pfx, protocol, port) {
 			continue
@@ -915,14 +910,12 @@ func (v *VPP) effectiveDSCP(encapType string, vip *v1alpha1.VirtualIP) (uint8, e
 	return dscp, nil
 }
 
-func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
-	ch, err := v.newChannel()
+func (v *VPP) addVIPLocked(ctx context.Context, vip *v1alpha1.VirtualIP) error {
+	pfx, err := parseIPPrefix(vip.Spec.Address)
 	if err != nil {
 		return err
 	}
-	defer ch.Close()
-
-	pfx, err := parseIPPrefix(vip.Spec.Address)
+	protocol, err := protocolNumber(vip.Spec.Protocol)
 	if err != nil {
 		return err
 	}
@@ -930,6 +923,14 @@ func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
 	encapType := v.config.EncapType
 	if vip.Spec.EncapType != "" {
 		encapType = string(vip.Spec.EncapType)
+	}
+	encap, err := encapToAPI(encapType)
+	if err != nil {
+		return err
+	}
+	serviceType, err := serviceTypeToAPI(v.config.ServiceType)
+	if err != nil {
+		return err
 	}
 
 	dscp, err := v.effectiveDSCP(encapType, vip)
@@ -939,18 +940,18 @@ func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
 
 	req := &lb.LbAddDelVip{
 		Pfx:                 pfx,
-		Protocol:            protocolNumber(vip.Spec.Protocol),
+		Protocol:            protocol,
 		Port:                uint16(vip.Spec.Port),
-		Encap:               encapToAPI(encapType),
+		Encap:               encap,
 		Dscp:                dscp,
-		Type:                serviceTypeToAPI(v.config.ServiceType),
+		Type:                serviceType,
 		TargetPort:          uint16(vip.Spec.Port),
 		NewFlowsTableLength: v.config.NewFlowsTableLength,
 		IsDel:               false,
 	}
 
 	reply := &lb.LbAddDelVipReply{}
-	if err := ch.SendRequest(req).ReceiveReply(reply); err != nil {
+	if err := v.conn.Invoke(ctx, req, reply); err != nil {
 		return fmt.Errorf("LbAddDelVip failed: %w", err)
 	}
 	if reply.Retval != 0 {
@@ -959,14 +960,12 @@ func (v *VPP) addVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
 	return nil
 }
 
-func (v *VPP) deleteVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error {
-	ch, err := v.newChannel()
+func (v *VPP) deleteVIPLocked(ctx context.Context, vip *v1alpha1.VirtualIP) error {
+	pfx, err := parseIPPrefix(vip.Spec.Address)
 	if err != nil {
 		return err
 	}
-	defer ch.Close()
-
-	pfx, err := parseIPPrefix(vip.Spec.Address)
+	protocol, err := protocolNumber(vip.Spec.Protocol)
 	if err != nil {
 		return err
 	}
@@ -974,6 +973,14 @@ func (v *VPP) deleteVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error 
 	encapType := v.config.EncapType
 	if vip.Spec.EncapType != "" {
 		encapType = string(vip.Spec.EncapType)
+	}
+	encap, err := encapToAPI(encapType)
+	if err != nil {
+		return err
+	}
+	serviceType, err := serviceTypeToAPI(v.config.ServiceType)
+	if err != nil {
+		return err
 	}
 
 	dscp, err := v.effectiveDSCP(encapType, vip)
@@ -983,16 +990,16 @@ func (v *VPP) deleteVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error 
 
 	req := &lb.LbAddDelVip{
 		Pfx:      pfx,
-		Protocol: protocolNumber(vip.Spec.Protocol),
+		Protocol: protocol,
 		Port:     uint16(vip.Spec.Port),
-		Encap:    encapToAPI(encapType),
+		Encap:    encap,
 		Dscp:     dscp,
-		Type:     serviceTypeToAPI(v.config.ServiceType),
+		Type:     serviceType,
 		IsDel:    true,
 	}
 
 	reply := &lb.LbAddDelVipReply{}
-	if err := ch.SendRequest(req).ReceiveReply(reply); err != nil {
+	if err := v.conn.Invoke(ctx, req, reply); err != nil {
 		return fmt.Errorf("LbAddDelVip (delete) failed: %w", err)
 	}
 	if reply.Retval != 0 {
@@ -1001,14 +1008,12 @@ func (v *VPP) deleteVIPLocked(_ context.Context, vip *v1alpha1.VirtualIP) error 
 	return nil
 }
 
-func (v *VPP) addBackendLocked(_ context.Context, vip *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
-	ch, err := v.newChannel()
+func (v *VPP) addBackendLocked(ctx context.Context, vip *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
+	pfx, err := parseIPPrefix(vip.Spec.Address)
 	if err != nil {
 		return err
 	}
-	defer ch.Close()
-
-	pfx, err := parseIPPrefix(vip.Spec.Address)
+	protocol, err := protocolNumber(vip.Spec.Protocol)
 	if err != nil {
 		return err
 	}
@@ -1020,7 +1025,7 @@ func (v *VPP) addBackendLocked(_ context.Context, vip *v1alpha1.VirtualIP, be v1
 
 	req := &lb.LbAddDelAs{
 		Pfx:       pfx,
-		Protocol:  protocolNumber(vip.Spec.Protocol),
+		Protocol:  protocol,
 		Port:      uint16(vip.Spec.Port),
 		AsAddress: asAddr,
 		IsDel:     false,
@@ -1028,7 +1033,7 @@ func (v *VPP) addBackendLocked(_ context.Context, vip *v1alpha1.VirtualIP, be v1
 	}
 
 	reply := &lb.LbAddDelAsReply{}
-	if err := ch.SendRequest(req).ReceiveReply(reply); err != nil {
+	if err := v.conn.Invoke(ctx, req, reply); err != nil {
 		return fmt.Errorf("LbAddDelAs failed: %w", err)
 	}
 	if reply.Retval != 0 {
@@ -1037,14 +1042,12 @@ func (v *VPP) addBackendLocked(_ context.Context, vip *v1alpha1.VirtualIP, be v1
 	return nil
 }
 
-func (v *VPP) removeBackendLocked(_ context.Context, vip *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
-	ch, err := v.newChannel()
+func (v *VPP) removeBackendLocked(ctx context.Context, vip *v1alpha1.VirtualIP, be v1alpha1.BackendSpec) error {
+	pfx, err := parseIPPrefix(vip.Spec.Address)
 	if err != nil {
 		return err
 	}
-	defer ch.Close()
-
-	pfx, err := parseIPPrefix(vip.Spec.Address)
+	protocol, err := protocolNumber(vip.Spec.Protocol)
 	if err != nil {
 		return err
 	}
@@ -1056,14 +1059,14 @@ func (v *VPP) removeBackendLocked(_ context.Context, vip *v1alpha1.VirtualIP, be
 
 	req := &lb.LbAddDelAs{
 		Pfx:       pfx,
-		Protocol:  protocolNumber(vip.Spec.Protocol),
+		Protocol:  protocol,
 		Port:      uint16(vip.Spec.Port),
 		AsAddress: asAddr,
 		IsDel:     true,
 	}
 
 	reply := &lb.LbAddDelAsReply{}
-	if err := ch.SendRequest(req).ReceiveReply(reply); err != nil {
+	if err := v.conn.Invoke(ctx, req, reply); err != nil {
 		return fmt.Errorf("LbAddDelAs (delete) failed: %w", err)
 	}
 	if reply.Retval != 0 {
@@ -1096,13 +1099,21 @@ func (v *VPP) vipDetailsMatchDesired(vip *v1alpha1.VirtualIP, detail *lb.LbVipDe
 	if err != nil {
 		return false
 	}
+	encap, err := encapToAPI(attrs.encapType)
+	if err != nil {
+		return false
+	}
+	serviceType, err := serviceTypeToAPI(attrs.serviceType)
+	if err != nil {
+		return false
+	}
 	dscpMatches := attrs.encapType != "L3DSR" || uint8(detail.Dscp) == attrs.dscp
 	// Flow table length is intentionally excluded here. A retained VIP with
 	// matching forwarding attributes can be adopted first and recreated later
 	// through a drained rolling repair.
-	return detail.Encap == encapToAPI(attrs.encapType) &&
+	return detail.Encap == encap &&
 		dscpMatches &&
-		detail.SrvType == serviceTypeToAPI(attrs.serviceType) &&
+		detail.SrvType == serviceType &&
 		detail.TargetPort == uint16(attrs.port)
 }
 
@@ -1144,40 +1155,42 @@ func (v *VPP) clearTuningDriftsLocked(key string) {
 	delete(v.tuningDrifts, key)
 }
 
-func protocolNumber(p v1alpha1.Protocol) uint8 {
+func protocolNumber(p v1alpha1.Protocol) (uint8, error) {
 	switch p {
 	case v1alpha1.ProtocolTCP:
-		return 6
+		return 6, nil
 	case v1alpha1.ProtocolUDP:
-		return 17
+		return 17, nil
 	default:
-		return 6
+		return 0, fmt.Errorf("unsupported VPP protocol: %s", p)
 	}
 }
 
-func encapToAPI(t string) lb_types.LbEncapType {
+func encapToAPI(t string) (lb_types.LbEncapType, error) {
 	switch t {
 	case "GRE4":
-		return lb_types.LB_API_ENCAP_TYPE_GRE4
+		return lb_types.LB_API_ENCAP_TYPE_GRE4, nil
 	case "GRE6":
-		return lb_types.LB_API_ENCAP_TYPE_GRE6
+		return lb_types.LB_API_ENCAP_TYPE_GRE6, nil
 	case "L3DSR":
-		return lb_types.LB_API_ENCAP_TYPE_L3DSR
+		return lb_types.LB_API_ENCAP_TYPE_L3DSR, nil
 	case "NAT4":
-		return lb_types.LB_API_ENCAP_TYPE_NAT4
+		return lb_types.LB_API_ENCAP_TYPE_NAT4, nil
 	case "NAT6":
-		return lb_types.LB_API_ENCAP_TYPE_NAT6
+		return lb_types.LB_API_ENCAP_TYPE_NAT6, nil
 	default:
-		return lb_types.LB_API_ENCAP_TYPE_GRE4
+		return 0, fmt.Errorf("unsupported VPP encap type: %s", t)
 	}
 }
 
-func serviceTypeToAPI(t string) lb_types.LbSrvType {
+func serviceTypeToAPI(t string) (lb_types.LbSrvType, error) {
 	switch t {
+	case "CLUSTERIP":
+		return lb_types.LB_API_SRV_TYPE_CLUSTERIP, nil
 	case "NODEPORT":
-		return lb_types.LB_API_SRV_TYPE_NODEPORT
+		return lb_types.LB_API_SRV_TYPE_NODEPORT, nil
 	default:
-		return lb_types.LB_API_SRV_TYPE_CLUSTERIP
+		return 0, fmt.Errorf("unsupported VPP service type: %s", t)
 	}
 }
 

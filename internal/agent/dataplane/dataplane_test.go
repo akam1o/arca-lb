@@ -10,8 +10,10 @@ import (
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	govppmock "go.fd.io/govpp/adapter/mock"
 	"go.fd.io/govpp/binapi/ip_types"
 	"go.fd.io/govpp/binapi/lb"
+	"go.fd.io/govpp/core"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -78,18 +80,96 @@ func TestVPPConfigFromMapParsesConnectionSettings(t *testing.T) {
 	}
 }
 
+func newMockConnectedVPP(t *testing.T) *VPP {
+	t.Helper()
+
+	conn, err := core.Connect(govppmock.NewVppAdapter())
+	if err != nil {
+		t.Fatalf("connect mock VPP: %v", err)
+	}
+	t.Cleanup(conn.Disconnect)
+
+	return &VPP{
+		config: testVPPConfig(),
+		conn:   conn,
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+	}
+}
+
 func vppDetailForTest(t *testing.T, vpp *VPP, vip *v1alpha1.VirtualIP) *lb.LbVipDetails {
 	t.Helper()
 	attrs, err := vpp.effectiveVIPAttributes(vip)
 	if err != nil {
 		t.Fatalf("effectiveVIPAttributes: %v", err)
 	}
+	encap, err := encapToAPI(attrs.encapType)
+	if err != nil {
+		t.Fatalf("encapToAPI: %v", err)
+	}
+	serviceType, err := serviceTypeToAPI(attrs.serviceType)
+	if err != nil {
+		t.Fatalf("serviceTypeToAPI: %v", err)
+	}
 	return &lb.LbVipDetails{
-		Encap:           encapToAPI(attrs.encapType),
+		Encap:           encap,
 		Dscp:            ip_types.IPDscp(attrs.dscp),
-		SrvType:         serviceTypeToAPI(attrs.serviceType),
+		SrvType:         serviceType,
 		TargetPort:      uint16(attrs.port),
 		FlowTableLength: uint16(attrs.newFlowsTableLength),
+	}
+}
+
+func TestVPPAPIHelpersHonorCanceledContext(t *testing.T) {
+	vpp := newMockConnectedVPP(t)
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	backend := vip.Spec.Backends[0]
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "lookup VIP",
+			call: func() error {
+				_, _, err := vpp.lookupVIPLocked(ctx, vip)
+				return err
+			},
+		},
+		{
+			name: "dump backends",
+			call: func() error {
+				_, err := vpp.dumpBackendsLocked(ctx, vip, vip.Spec.Backends)
+				return err
+			},
+		},
+		{name: "add VIP", call: func() error { return vpp.addVIPLocked(ctx, vip) }},
+		{name: "delete VIP", call: func() error { return vpp.deleteVIPLocked(ctx, vip) }},
+		{name: "add backend", call: func() error { return vpp.addBackendLocked(ctx, vip, backend) }},
+		{name: "remove backend", call: func() error { return vpp.removeBackendLocked(ctx, vip, backend) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
+func TestVPPAPIConversionsRejectUnsupportedValues(t *testing.T) {
+	if _, err := protocolNumber(v1alpha1.Protocol("SCTP")); err == nil {
+		t.Fatal("protocolNumber accepted unsupported protocol")
+	}
+	if _, err := encapToAPI("VXLAN"); err == nil {
+		t.Fatal("encapToAPI accepted unsupported encap type")
+	}
+	if _, err := serviceTypeToAPI("EXTERNAL"); err == nil {
+		t.Fatal("serviceTypeToAPI accepted unsupported service type")
 	}
 }
 

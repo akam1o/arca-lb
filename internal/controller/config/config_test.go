@@ -321,6 +321,72 @@ func TestLoadConfigDefaultsMaxBodyBytes(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsInvalidAllowedOrigins(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin string
+	}{
+		{
+			name:   "wildcard",
+			origin: "*",
+		},
+		{
+			name:   "empty",
+			origin: "",
+		},
+		{
+			name:   "whitespace",
+			origin: "https://example .com",
+		},
+		{
+			name:   "unsupported scheme",
+			origin: "file://example.com",
+		},
+		{
+			name:   "path",
+			origin: "https://example.com/app",
+		},
+		{
+			name:   "userinfo",
+			origin: "https://user@example.com",
+		},
+		{
+			name:   "query",
+			origin: "https://example.com?debug=true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, minimalEtcdConfig()+`
+server:
+  allowed_origins:
+    - `+quoteYAMLString(tt.origin)+`
+`)
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), "server.allowed_origins") {
+				t.Fatalf("LoadConfig error = %v, want server.allowed_origins validation error", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsAllowedOriginWithPort(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+server:
+  allowed_origins:
+    - "https://example.com:8443"
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.Server.AllowedOrigins; len(got) != 1 || got[0] != "https://example.com:8443" {
+		t.Fatalf("Server.AllowedOrigins = %v, want [https://example.com:8443]", got)
+	}
+}
+
 func TestLoadConfigRejectsMissingDataStoreType(t *testing.T) {
 	path := writeConfigFile(t, `{}`)
 
@@ -537,6 +603,10 @@ datastore:
   etcd:
     endpoints: ["127.0.0.1:2379"]
 `
+}
+
+func quoteYAMLString(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
 func writeConfigFile(t *testing.T, contents string) string {

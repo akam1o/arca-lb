@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -196,6 +197,9 @@ func (c *Config) validate() error {
 	if c.Server.MaxBodyBytes <= 0 {
 		return fmt.Errorf("server.max_body_bytes must be positive")
 	}
+	if err := validateAllowedOrigins(c.Server.AllowedOrigins); err != nil {
+		return err
+	}
 	if err := c.validateDataStore(); err != nil {
 		return err
 	}
@@ -248,6 +252,29 @@ func validateAPIKey(field, value string) error {
 	}
 	if len(value) < 16 {
 		return fmt.Errorf("%s must be at least 16 characters when set", field)
+	}
+	return nil
+}
+
+func validateAllowedOrigins(origins []string) error {
+	for _, origin := range origins {
+		if origin == "" || strings.ContainsAny(origin, " \t\r\n") {
+			return fmt.Errorf("server.allowed_origins must not contain empty or whitespace values")
+		}
+		if origin == "*" {
+			return fmt.Errorf("server.allowed_origins must not contain wildcard origins when credentials are enabled")
+		}
+
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Hostname() == "" {
+			return fmt.Errorf("server.allowed_origins contains invalid origin %q", origin)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("server.allowed_origins origin %q must use http or https", origin)
+		}
+		if parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("server.allowed_origins contains invalid origin %q", origin)
+		}
 	}
 	return nil
 }

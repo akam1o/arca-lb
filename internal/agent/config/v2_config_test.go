@@ -18,6 +18,8 @@ agent:
   id: test-agent
 dataplane:
   type: noop
+routing:
+  type: noop
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -140,6 +142,8 @@ agent:
   id: original-id
 dataplane:
   type: noop
+routing:
+  type: noop
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -240,6 +244,8 @@ dataplane:
 telemetry:
   otlpEndpoint: collector.example.com:4317
   otlpInsecure: true
+routing:
+  type: noop
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -273,6 +279,53 @@ dataplane:
 	_, err := LoadV2Config(cfgPath)
 	if err == nil {
 		t.Fatal("expected validation error for invalid dataplane type")
+	}
+}
+
+func TestLoadV2ConfigRequiresExplicitRuntimeBackendTypes(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "missing dataplane type",
+			yaml: `
+agent:
+  id: test-agent
+routing:
+  type: noop
+`,
+			wantErr: "dataplane.type is required",
+		},
+		{
+			name: "missing routing type",
+			yaml: `
+agent:
+  id: test-agent
+dataplane:
+  type: noop
+`,
+			wantErr: "routing.type is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+			if err := os.WriteFile(cfgPath, []byte(tt.yaml), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadV2Config(cfgPath)
+			if err == nil {
+				t.Fatalf("expected validation error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadV2Config error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -400,7 +453,7 @@ func TestLoadV2Config_InvalidMetricsPath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			cfgPath := filepath.Join(dir, "agent.yaml")
-			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\nmetrics:\n"
+			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\nrouting:\n  type: noop\nmetrics:\n"
 			for _, line := range strings.Split(strings.TrimSuffix(tt.metricsYAML, "\n"), "\n") {
 				content += "  " + line + "\n"
 			}
@@ -438,6 +491,7 @@ kubernetes:
 			name: "negative routing command timeout",
 			yaml: `
 routing:
+  type: noop
   cmdTimeout: -1s
 `,
 			wantErr: "routing.cmdTimeout",
@@ -464,7 +518,11 @@ rollout:
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			cfgPath := filepath.Join(dir, "agent.yaml")
-			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\n" + tt.yaml
+			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\n"
+			if !strings.Contains(tt.yaml, "\nrouting:") {
+				content += "routing:\n  type: noop\n"
+			}
+			content += tt.yaml
 
 			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 				t.Fatal(err)

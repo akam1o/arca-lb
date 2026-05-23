@@ -176,12 +176,6 @@ func applyV2Defaults(cfg *V2Config) {
 	if cfg.Kubernetes.ResyncInterval == 0 {
 		cfg.Kubernetes.ResyncInterval = 30 * time.Second
 	}
-	if cfg.DataPlane.Type == "" {
-		cfg.DataPlane.Type = "noop"
-	}
-	if cfg.Routing.Type == "" {
-		cfg.Routing.Type = "noop"
-	}
 	if cfg.Routing.VTYShPath == "" {
 		cfg.Routing.VTYShPath = "/usr/bin/vtysh"
 	}
@@ -250,6 +244,9 @@ func validateV2(cfg *V2Config) error {
 		return fmt.Errorf("healthCheck.defaultTimeout must be positive")
 	}
 
+	if cfg.DataPlane.Type == "" {
+		return fmt.Errorf("dataplane.type is required")
+	}
 	switch cfg.DataPlane.Type {
 	case "vpp", "noop":
 	default:
@@ -261,6 +258,9 @@ func validateV2(cfg *V2Config) error {
 		}
 	}
 
+	if cfg.Routing.Type == "" {
+		return fmt.Errorf("routing.type is required")
+	}
 	switch cfg.Routing.Type {
 	case "frr", "noop":
 	default:

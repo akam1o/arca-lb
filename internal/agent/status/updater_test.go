@@ -557,6 +557,68 @@ func TestUpdateVIPStatusTreatsExpiredAgentStatusAsUnknown(t *testing.T) {
 	}
 }
 
+func TestRefreshAggregateStatusCapsAgentReportedTTL(t *testing.T) {
+	now := time.Now()
+	stale := metav1.NewTime(now.Add(-2 * MaxAgentStatusTTL))
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Generation: 3,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+			},
+		},
+		Status: v1alpha1.VirtualIPStatus{
+			AgentStatuses: []v1alpha1.AgentStatus{
+				{
+					AgentID:            "node-a",
+					ObservedGeneration: 3,
+					HealthyBackends:    1,
+					TotalBackends:      1,
+					LastUpdateTime:     &stale,
+					TTLSeconds:         int64((24 * time.Hour) / time.Second),
+					Backends: []v1alpha1.BackendStatus{
+						{Address: "10.0.0.1", Healthy: true},
+					},
+					Conditions: []metav1.Condition{
+						{Type: ConditionServing, Status: metav1.ConditionTrue, Reason: "BackendsHealthy"},
+						{Type: ConditionRouteAdvertised, Status: metav1.ConditionTrue, Reason: "Advertised"},
+					},
+				},
+			},
+		},
+	}
+
+	RefreshAggregateStatus(vip, 3, now, time.Minute)
+
+	if len(vip.Status.AgentStatuses) != 1 {
+		t.Fatalf("AgentStatuses = %#v, want capped expired status retained for diagnostics", vip.Status.AgentStatuses)
+	}
+	if vip.Status.HealthyBackends != 0 {
+		t.Fatalf("HealthyBackends = %d, want capped stale status excluded", vip.Status.HealthyBackends)
+	}
+	serving := meta.FindStatusCondition(vip.Status.Conditions, ConditionServing)
+	if serving == nil || serving.Status != metav1.ConditionUnknown || serving.Reason != reasonAgentStatusExpired {
+		t.Fatalf("Serving aggregate = %+v, want Unknown AgentStatusExpired", serving)
+	}
+	advertised := meta.FindStatusCondition(vip.Status.Conditions, ConditionRouteAdvertised)
+	if advertised == nil || advertised.Status != metav1.ConditionUnknown || advertised.Reason != reasonAgentStatusExpired {
+		t.Fatalf("RouteAdvertised aggregate = %+v, want Unknown AgentStatusExpired", advertised)
+	}
+}
+
+func TestDurationSecondsCapsConfiguredAgentStatusTTL(t *testing.T) {
+	got := durationSeconds(24 * time.Hour)
+	want := int64(MaxAgentStatusTTL / time.Second)
+	if got != want {
+		t.Fatalf("durationSeconds(24h) = %d, want capped %d", got, want)
+	}
+}
+
 func TestUpdateVIPStatusKeepsRouteAdvertisedWhenFreshAgentAdvertisesWithExpiredPeer(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {

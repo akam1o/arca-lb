@@ -26,6 +26,10 @@ const (
 	// without a refresh from the reporting agent.
 	DefaultAgentStatusTTL = 2 * time.Minute
 
+	// MaxAgentStatusTTL caps agent-reported freshness so stale observations
+	// cannot keep aggregate health green for an unbounded amount of time.
+	MaxAgentStatusTTL = time.Hour
+
 	// DefaultExpiredAgentStatusRetention is how long expired per-agent
 	// observations are retained for diagnostics before being pruned.
 	DefaultExpiredAgentStatusRetention = 7 * 24 * time.Hour
@@ -237,10 +241,13 @@ func normalizeAgentID(agentID string) string {
 }
 
 func normalizeAgentStatusTTL(ttl time.Duration) time.Duration {
-	if ttl > 0 {
-		return ttl
+	if ttl <= 0 {
+		return DefaultAgentStatusTTL
 	}
-	return DefaultAgentStatusTTL
+	if ttl > MaxAgentStatusTTL {
+		return MaxAgentStatusTTL
+	}
+	return ttl
 }
 
 func durationSeconds(ttl time.Duration) int64 {
@@ -321,7 +328,10 @@ func agentStatusExpired(status v1alpha1.AgentStatus, now time.Time, ttl time.Dur
 
 func agentStatusTTL(status v1alpha1.AgentStatus, fallback time.Duration) time.Duration {
 	if status.TTLSeconds > 0 {
-		return time.Duration(status.TTLSeconds) * time.Second
+		if status.TTLSeconds > int64(MaxAgentStatusTTL/time.Second) {
+			return MaxAgentStatusTTL
+		}
+		return normalizeAgentStatusTTL(time.Duration(status.TTLSeconds) * time.Second)
 	}
 	return normalizeAgentStatusTTL(fallback)
 }

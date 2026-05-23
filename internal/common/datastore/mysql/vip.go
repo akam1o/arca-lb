@@ -11,6 +11,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // VIPRecord represents a VIP record in the database
@@ -346,30 +347,33 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 		return err
 	}
 
-	// Check if VIP exists
-	existing, err := ds.GetVIP(ctx, vip.ID)
-	if err != nil {
-		if errors.Is(err, datastore.ErrNotFound) {
-			return err
-		}
-		return fmt.Errorf("failed to get VIP: %w", err)
-	}
-
-	// Preserve CreatedAt
-	vip.CreatedAt = existing.CreatedAt
-	vip.UpdatedAt = time.Now()
-
-	fallback := VIPRecord{
-		VIP:       existing.VIP,
-		Port:      existing.Port,
-		Protocol:  string(existing.Protocol),
-		LBMethod:  string(existing.LBMethod),
-		CreatedAt: existing.CreatedAt,
-		UpdatedAt: existing.UpdatedAt,
-	}
-
 	// Update VIP in transaction
-	err = ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing VIPRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", vip.ID).
+			First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return datastore.ErrNotFound
+			}
+			return fmt.Errorf("failed to get VIP: %w", err)
+		}
+
+		// Preserve CreatedAt and use the locked row as the fallback for partial updates.
+		vip.CreatedAt = existing.CreatedAt
+		vip.UpdatedAt = time.Now()
+
+		fallback := VIPRecord{
+			VIP:       existing.VIP,
+			Port:      existing.Port,
+			Protocol:  existing.Protocol,
+			LBMethod:  existing.LBMethod,
+			EncapType: existing.EncapType,
+			DSCP:      existing.DSCP,
+			CreatedAt: existing.CreatedAt,
+			UpdatedAt: existing.UpdatedAt,
+		}
+
 		// Update VIP
 		result := tx.Model(&VIPRecord{}).
 			Where("id = ?", vip.ID).

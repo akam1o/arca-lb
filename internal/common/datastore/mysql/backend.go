@@ -10,6 +10,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // BackendRecord represents a backend record in the database
@@ -162,35 +163,36 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 		return err
 	}
 
-	// Check if backend exists
-	existing, err := ds.GetBackend(ctx, backend.ID)
-	if err != nil {
-		if errors.Is(err, datastore.ErrNotFound) {
+	// Update backend in transaction
+	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing BackendRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", backend.ID).
+			First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return datastore.ErrNotFound
+			}
+			return fmt.Errorf("failed to get backend: %w", err)
+		}
+
+		// Preserve CreatedAt and VIPID from the locked row.
+		backend.CreatedAt = existing.CreatedAt
+		backend.VIPID = existing.VIPID
+		backend.UpdatedAt = time.Now()
+		if err := datastore.ValidateBackendForWrite(backend); err != nil {
 			return err
 		}
-		return fmt.Errorf("failed to get backend: %w", err)
-	}
 
-	// Preserve CreatedAt and VIPID
-	backend.CreatedAt = existing.CreatedAt
-	backend.VIPID = existing.VIPID
-	backend.UpdatedAt = time.Now()
-	if err := datastore.ValidateBackendForWrite(backend); err != nil {
-		return err
-	}
+		// Convert to database record
+		backendRecord := BackendRecord{
+			ID:        backend.ID,
+			VIPID:     backend.VIPID,
+			IP:        backend.IP,
+			Weight:    backend.Weight,
+			CreatedAt: backend.CreatedAt,
+			UpdatedAt: backend.UpdatedAt,
+		}
 
-	// Convert to database record
-	backendRecord := BackendRecord{
-		ID:        backend.ID,
-		VIPID:     backend.VIPID,
-		IP:        backend.IP,
-		Weight:    backend.Weight,
-		CreatedAt: backend.CreatedAt,
-		UpdatedAt: backend.UpdatedAt,
-	}
-
-	// Update backend in transaction
-	err = ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Update backend
 		result := tx.Model(&BackendRecord{}).Where("id = ?", backend.ID).Updates(&backendRecord)
 		if result.Error != nil {

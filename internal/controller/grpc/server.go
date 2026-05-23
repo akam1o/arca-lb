@@ -21,13 +21,13 @@ import (
 type Server struct {
 	config     *config.Config
 	grpcServer *grpc.Server
-	datastore  datastore.DataStore
+	datastore  datastore.ConfigSyncStore
 	logger     *logrus.Logger
 	listener   net.Listener
 }
 
 // NewServer creates a new gRPC server instance
-func NewServer(cfg *config.Config, ds datastore.DataStore, logger *logrus.Logger) *Server {
+func NewServer(cfg *config.Config, ds datastore.ConfigSyncStore, logger *logrus.Logger) *Server {
 	return &Server{
 		config:    cfg,
 		datastore: ds,

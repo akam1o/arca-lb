@@ -22,7 +22,7 @@ const watchConfigCoalesceWindow = 25 * time.Millisecond
 // ConfigSyncService implements the ConfigSync gRPC service
 type ConfigSyncService struct {
 	pb.UnimplementedConfigSyncServer
-	datastore                      datastore.DataStore
+	datastore                      datastore.ConfigSyncStore
 	logger                         *logrus.Logger
 	authorizeAgentIDWithClientCert bool
 }
@@ -38,7 +38,7 @@ func WithAgentIDClientCertAuthorization(enabled bool) ConfigSyncServiceOption {
 }
 
 // NewConfigSyncService creates a new ConfigSyncService
-func NewConfigSyncService(ds datastore.DataStore, logger *logrus.Logger, opts ...ConfigSyncServiceOption) *ConfigSyncService {
+func NewConfigSyncService(ds datastore.ConfigSyncStore, logger *logrus.Logger, opts ...ConfigSyncServiceOption) *ConfigSyncService {
 	service := &ConfigSyncService{
 		datastore: ds,
 		logger:    logger,

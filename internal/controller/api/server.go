@@ -24,12 +24,12 @@ type Server struct {
 	config     *config.Config
 	router     *gin.Engine
 	httpServer *http.Server
-	datastore  datastore.DataStore
+	datastore  datastore.ControllerStore
 	logger     *logrus.Logger
 }
 
 // NewServer creates a new REST API server instance
-func NewServer(cfg *config.Config, ds datastore.DataStore, logger *logrus.Logger) *Server {
+func NewServer(cfg *config.Config, ds datastore.ControllerStore, logger *logrus.Logger) *Server {
 	// Set Gin mode based on log level
 	if cfg.Log.Level == "debug" {
 		gin.SetMode(gin.DebugMode)

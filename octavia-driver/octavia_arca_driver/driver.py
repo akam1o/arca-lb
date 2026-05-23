@@ -290,6 +290,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         # Parse flavor metadata for encap settings.
         flavor = self._listener_flavor(lst, lb_id)
+        self.validate_flavor(flavor)
         encap_type = flavor.get("encap_type", self._default_encap_type)
         dscp = flavor.get("dscp", self._default_dscp)
 
@@ -1173,6 +1174,30 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return constants.FLAVOR_METADATA
 
     def validate_flavor(self, flavor_metadata):
+        if not flavor_metadata:
+            return
+        if not hasattr(flavor_metadata, "get"):
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Flavor metadata must be a mapping.",
+                operator_fault_string=(
+                    "Flavor metadata must be a mapping, got "
+                    f"{type(flavor_metadata).__name__}"
+                ),
+            )
+        unknown_keys = sorted(
+            set(flavor_metadata) - set(constants.FLAVOR_METADATA)
+        )
+        if unknown_keys:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "Unsupported flavor metadata key(s): "
+                    f"{', '.join(unknown_keys)}."
+                ),
+                operator_fault_string=(
+                    "Unsupported flavor metadata key(s): "
+                    f"{', '.join(unknown_keys)}"
+                ),
+            )
         encap = flavor_metadata.get("encap_type")
         if encap and encap not in constants.VALID_ENCAP_TYPES:
             raise driver_exc.UnsupportedOptionError(
@@ -1198,8 +1223,18 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return {}
 
     def validate_availability_zone(self, availability_zone_metadata):
-        # No AZ-specific configuration.
-        pass
+        if availability_zone_metadata:
+            unknown_keys = sorted(availability_zone_metadata)
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "Availability zone metadata is not supported by "
+                    "the ArcaLB driver."
+                ),
+                operator_fault_string=(
+                    "Unsupported availability zone metadata key(s): "
+                    f"{', '.join(unknown_keys)}"
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers

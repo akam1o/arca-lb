@@ -830,6 +830,33 @@ class TestDriverLifecycle(unittest.TestCase):
         self.assertEqual(spec["encapType"], "L3DSR")
         self.assertEqual(spec["dscp"], 22)
 
+    def test_listener_create_rejects_unknown_flavor_metadata(self):
+        lb_id = "bbbbbbbb-1111-2222-3333-444444444444"
+        listener = FakeObj({
+            "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "loadbalancer_id": lb_id,
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "project_id": "test-project",
+        })
+
+        self.mock_k8s.find_by_loadbalancer.return_value = []
+        self.mock_driver_lib.get_loadbalancer.return_value = FakeObj({
+            "loadbalancer_id": lb_id,
+            "vip_address": "203.0.113.10",
+            "flavor": {
+                "flavor_data": json.dumps({
+                    "encap_type": "L3DSR",
+                    "encapType": "GRE4",
+                }),
+            },
+        })
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.listener_create(listener)
+
+        self.mock_k8s.create_virtualip.assert_not_called()
+
     def test_pool_create_without_listener_does_not_associate_single_lb_vip(self):
         existing_vip = _make_vip(
             "octavia-bbbbbbbb-aaaaaaaa",
@@ -4110,6 +4137,19 @@ class TestDriverLifecycle(unittest.TestCase):
         from octavia_lib.api.drivers import exceptions as driver_exc
         with self.assertRaises(driver_exc.UnsupportedOptionError):
             self.driver.validate_flavor({"encap_type": "L3DSR", "dscp": "0"})
+
+    def test_validate_flavor_rejects_unknown_metadata(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.validate_flavor({
+                "encap_type": "L3DSR",
+                "encapType": "GRE4",
+            })
+
+    def test_validate_availability_zone_rejects_metadata(self):
+        from octavia_lib.api.drivers import exceptions as driver_exc
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.validate_availability_zone({"encap_type": "L3DSR"})
 
     def test_virtualip_status_change_updates_octavia_status(self):
         vip = _make_vip(

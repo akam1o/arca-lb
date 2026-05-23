@@ -316,6 +316,72 @@ func TestEngineProbeJobsUseMonitorAddress(t *testing.T) {
 	}
 }
 
+func TestEngineRecordsDroppedProbeJobs(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{MaxConcurrentChecks: 1}, nil, nil, logger)
+	engine.jobCh = make(chan *probeJob, 1)
+
+	vs := &vipHealthState{
+		vipKey: "default/vip-1",
+		epoch:  3,
+		spec: &v1alpha1.HealthCheckSpec{
+			TimeoutSeconds: 2,
+		},
+		backends: map[string]*backendHealthState{
+			"10.0.0.1": {address: "10.0.0.1", state: V2StateUnknown},
+			"10.0.0.2": {address: "10.0.0.2", state: V2StateUnknown},
+		},
+		prober: &recordingV2Prober{},
+	}
+
+	engine.emitProbeJobs(vs)
+
+	if got := len(engine.jobCh); got != 1 {
+		t.Fatalf("queued jobs = %d, want 1", got)
+	}
+	if got := engine.droppedProbeJobs(); got != 1 {
+		t.Fatalf("dropped probe jobs = %d, want 1", got)
+	}
+}
+
+func TestEngineRecordsDroppedProbeResults(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{WorkerCount: 1, MaxConcurrentChecks: 1}, nil, nil, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine.ctx = ctx
+	engine.jobCh = make(chan *probeJob, 1)
+	engine.resultCh = make(chan *probeResult, 1)
+	engine.resultCh <- &probeResult{}
+
+	engine.workerWG.Add(1)
+	go engine.worker(0)
+	engine.jobCh <- &probeJob{
+		vipKey:      "default/vip-1",
+		backendAddr: "10.0.0.1",
+		targetAddr:  "10.0.0.1",
+		prober:      &recordingV2Prober{},
+		timeout:     time.Second,
+	}
+	close(engine.jobCh)
+
+	done := make(chan struct{})
+	go func() {
+		engine.workerWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker")
+	}
+
+	if got := engine.droppedProbeResults(); got != 1 {
+		t.Fatalf("dropped probe results = %d, want 1", got)
+	}
+}
+
 func TestEngineMaxConcurrentChecksLimitsActiveProbes(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(EngineConfig{WorkerCount: 4, MaxConcurrentChecks: 2}, nil, nil, logger)

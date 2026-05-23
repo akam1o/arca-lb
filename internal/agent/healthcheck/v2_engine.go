@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
@@ -71,8 +72,13 @@ type Engine struct {
 	resultWG    sync.WaitGroup
 
 	// Metrics
-	probeCounter  metric.Int64Counter
-	probeDuration metric.Float64Histogram
+	probeCounter       metric.Int64Counter
+	probeDuration      metric.Float64Histogram
+	probeDroppedJobs   metric.Int64Counter
+	probeDroppedResult metric.Int64Counter
+
+	droppedJobs    atomic.Uint64
+	droppedResults atomic.Uint64
 }
 
 type vipHealthState struct {
@@ -137,15 +143,21 @@ func NewEngine(cfg EngineConfig, st *store.Store, callback V2StateChangeCallback
 		metric.WithDescription("Total number of health check probes"))
 	probeDuration, _ := meter.Float64Histogram("arca_healthcheck_probe_duration_seconds",
 		metric.WithDescription("Duration of health check probes"))
+	probeDroppedJobs, _ := meter.Int64Counter("arca_healthcheck_probe_jobs_dropped_total",
+		metric.WithDescription("Total number of health check probe jobs dropped because the job queue was full"))
+	probeDroppedResult, _ := meter.Int64Counter("arca_healthcheck_probe_results_dropped_total",
+		metric.WithDescription("Total number of health check probe results dropped because the result queue was full"))
 
 	return &Engine{
-		config:        cfg,
-		store:         st,
-		callback:      callback,
-		logger:        logger.With("component", "healthcheck"),
-		vips:          make(map[string]*vipHealthState),
-		probeCounter:  probeCounter,
-		probeDuration: probeDuration,
+		config:             cfg,
+		store:              st,
+		callback:           callback,
+		logger:             logger.With("component", "healthcheck"),
+		vips:               make(map[string]*vipHealthState),
+		probeCounter:       probeCounter,
+		probeDuration:      probeDuration,
+		probeDroppedJobs:   probeDroppedJobs,
+		probeDroppedResult: probeDroppedResult,
 	}
 }
 
@@ -459,8 +471,9 @@ func (e *Engine) emitProbeJobs(vs *vipHealthState) {
 		select {
 		case e.jobCh <- job:
 		default:
+			dropped := e.recordDroppedProbeJob(vs.vipKey)
 			e.logger.Warn("job channel full, skipping probe",
-				"vip", vs.vipKey, "backend", addr)
+				"vip", vs.vipKey, "backend", addr, "dropped_jobs_total", dropped)
 		}
 	}
 }
@@ -507,9 +520,33 @@ func (e *Engine) worker(id int) {
 		select {
 		case e.resultCh <- pr:
 		default:
-			e.logger.Warn("result channel full", "vip", job.vipKey, "backend", job.backendAddr)
+			dropped := e.recordDroppedProbeResult(job.vipKey)
+			e.logger.Warn("result channel full",
+				"vip", job.vipKey, "backend", job.backendAddr, "dropped_results_total", dropped)
 		}
 	}
+}
+
+func (e *Engine) recordDroppedProbeJob(vipKey string) uint64 {
+	dropped := e.droppedJobs.Add(1)
+	e.probeDroppedJobs.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("vip", vipKey)))
+	return dropped
+}
+
+func (e *Engine) recordDroppedProbeResult(vipKey string) uint64 {
+	dropped := e.droppedResults.Add(1)
+	e.probeDroppedResult.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("vip", vipKey)))
+	return dropped
+}
+
+func (e *Engine) droppedProbeJobs() uint64 {
+	return e.droppedJobs.Load()
+}
+
+func (e *Engine) droppedProbeResults() uint64 {
+	return e.droppedResults.Load()
 }
 
 func (e *Engine) acquireProbeSlot() bool {

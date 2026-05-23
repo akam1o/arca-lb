@@ -11,11 +11,20 @@ type Config struct {
 	Type string // "mysql" or "etcd"
 
 	// MySQL settings.
-	MySQLHost     string
-	MySQLPort     int
-	MySQLUser     string
-	MySQLPassword string
-	MySQLDatabase string
+	MySQLHost              string
+	MySQLPort              int
+	MySQLUser              string
+	MySQLPassword          string
+	MySQLDatabase          string
+	MySQLTLSMode           string
+	MySQLTLSCAFile         string
+	MySQLTLSCertFile       string
+	MySQLTLSKeyFile        string
+	MySQLTLSServerName     string
+	MySQLMaxOpenConns      int
+	MySQLMaxIdleConns      int
+	MySQLConnMaxLifetime   time.Duration
+	MySQLWatchPollInterval time.Duration
 
 	// etcd settings.
 	EtcdEndpoints      []string

@@ -60,11 +60,20 @@ type EtcdConfig struct {
 
 // MySQLConfig represents MySQL-specific configuration
 type MySQLConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
+	Host              string        `yaml:"host"`
+	Port              int           `yaml:"port"`
+	User              string        `yaml:"user"`
+	Password          string        `yaml:"password"`
+	Database          string        `yaml:"database"`
+	TLSMode           string        `yaml:"tls_mode"`
+	TLSCAFile         string        `yaml:"tls_ca_file"`
+	TLSCertFile       string        `yaml:"tls_cert_file"`
+	TLSKeyFile        string        `yaml:"tls_key_file"`
+	TLSServerName     string        `yaml:"tls_server_name"`
+	MaxOpenConns      int           `yaml:"max_open_conns"`
+	MaxIdleConns      int           `yaml:"max_idle_conns"`
+	ConnMaxLifetime   time.Duration `yaml:"conn_max_lifetime"`
+	WatchPollInterval time.Duration `yaml:"watch_poll_interval"`
 }
 
 // GRPCConfig represents the gRPC server configuration
@@ -342,6 +351,46 @@ func validateMySQLConfig(cfg MySQLConfig) error {
 	if cfg.Database == "" {
 		return fmt.Errorf("datastore.mysql.database is required")
 	}
+	if err := validateMySQLTLSConfig(cfg); err != nil {
+		return err
+	}
+	if cfg.MaxOpenConns < 0 {
+		return fmt.Errorf("datastore.mysql.max_open_conns must be non-negative")
+	}
+	if cfg.MaxIdleConns < 0 {
+		return fmt.Errorf("datastore.mysql.max_idle_conns must be non-negative")
+	}
+	if cfg.MaxOpenConns > 0 && cfg.MaxIdleConns > cfg.MaxOpenConns {
+		return fmt.Errorf("datastore.mysql.max_idle_conns must not exceed datastore.mysql.max_open_conns")
+	}
+	if cfg.ConnMaxLifetime < 0 {
+		return fmt.Errorf("datastore.mysql.conn_max_lifetime must be non-negative")
+	}
+	if cfg.WatchPollInterval < 0 {
+		return fmt.Errorf("datastore.mysql.watch_poll_interval must be non-negative")
+	}
+	return nil
+}
+
+func validateMySQLTLSConfig(cfg MySQLConfig) error {
+	switch cfg.TLSMode {
+	case "", "false", "true", "skip-verify", "preferred", "custom":
+	default:
+		return fmt.Errorf("datastore.mysql.tls_mode must be one of false, true, skip-verify, preferred, or custom")
+	}
+
+	hasCustomTLSFields := cfg.TLSCAFile != "" || cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" || cfg.TLSServerName != ""
+	if hasCustomTLSFields && cfg.TLSMode != "custom" {
+		return fmt.Errorf("datastore.mysql.tls_mode must be custom when MySQL TLS certificate fields are set")
+	}
+	if cfg.TLSMode == "custom" {
+		if !hasCustomTLSFields {
+			return fmt.Errorf("datastore.mysql.tls_mode custom requires at least one MySQL TLS certificate field")
+		}
+		if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
+			return fmt.Errorf("datastore.mysql.tls_cert_file and datastore.mysql.tls_key_file must both be set when client certificate is configured")
+		}
+	}
 	return nil
 }
 
@@ -367,6 +416,15 @@ func (c *Config) ToDataStoreConfig() *datastore.Config {
 		cfg.MySQLUser = c.DataStore.MySQL.User
 		cfg.MySQLPassword = c.DataStore.MySQL.Password
 		cfg.MySQLDatabase = c.DataStore.MySQL.Database
+		cfg.MySQLTLSMode = c.DataStore.MySQL.TLSMode
+		cfg.MySQLTLSCAFile = c.DataStore.MySQL.TLSCAFile
+		cfg.MySQLTLSCertFile = c.DataStore.MySQL.TLSCertFile
+		cfg.MySQLTLSKeyFile = c.DataStore.MySQL.TLSKeyFile
+		cfg.MySQLTLSServerName = c.DataStore.MySQL.TLSServerName
+		cfg.MySQLMaxOpenConns = c.DataStore.MySQL.MaxOpenConns
+		cfg.MySQLMaxIdleConns = c.DataStore.MySQL.MaxIdleConns
+		cfg.MySQLConnMaxLifetime = c.DataStore.MySQL.ConnMaxLifetime
+		cfg.MySQLWatchPollInterval = c.DataStore.MySQL.WatchPollInterval
 	}
 
 	return cfg

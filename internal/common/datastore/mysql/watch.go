@@ -36,7 +36,10 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 	go func() {
 		defer close(eventChan)
 
-		pollInterval := 100 * time.Millisecond
+		pollInterval := ds.watchPollInterval
+		if pollInterval <= 0 {
+			pollInterval = DefaultWatchPollInterval
+		}
 
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()

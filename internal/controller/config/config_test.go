@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfigRequiresGRPCTLSFiles(t *testing.T) {
@@ -553,6 +554,113 @@ func TestLoadConfigRejectsInvalidDataStoreSettings(t *testing.T) {
 `,
 			wantErr: "datastore.mysql.database",
 		},
+		{
+			name: "mysql invalid tls mode",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    database: arcalb
+    tls_mode: strict
+`,
+			wantErr: "datastore.mysql.tls_mode",
+		},
+		{
+			name: "mysql tls files require custom mode",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    database: arcalb
+    tls_mode: true
+    tls_ca_file: /tmp/ca.crt
+`,
+			wantErr: "datastore.mysql.tls_mode",
+		},
+		{
+			name: "mysql custom tls requires custom field",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    database: arcalb
+    tls_mode: custom
+`,
+			wantErr: "datastore.mysql.tls_mode custom",
+		},
+		{
+			name: "mysql tls partial client certificate",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    database: arcalb
+    tls_mode: custom
+    tls_cert_file: /tmp/client.crt
+`,
+			wantErr: "datastore.mysql.tls_cert_file and datastore.mysql.tls_key_file",
+		},
+		{
+			name: "mysql negative max open conns",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    database: arcalb
+    max_open_conns: -1
+`,
+			wantErr: "datastore.mysql.max_open_conns",
+		},
+		{
+			name: "mysql max idle exceeds max open",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    database: arcalb
+    max_open_conns: 5
+    max_idle_conns: 6
+`,
+			wantErr: "datastore.mysql.max_idle_conns",
+		},
+		{
+			name: "mysql negative connection lifetime",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    database: arcalb
+    conn_max_lifetime: -1s
+`,
+			wantErr: "datastore.mysql.conn_max_lifetime",
+		},
+		{
+			name: "mysql negative watch poll interval",
+			yaml: `datastore:
+  type: mysql
+  mysql:
+    host: 127.0.0.1
+    port: 3306
+    user: arcalb
+    database: arcalb
+    watch_poll_interval: -1s
+`,
+			wantErr: "datastore.mysql.watch_poll_interval",
+		},
 	}
 
 	for _, tt := range tests {
@@ -563,6 +671,68 @@ func TestLoadConfigRejectsInvalidDataStoreSettings(t *testing.T) {
 				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadConfigAcceptsMySQLOperationalSettings(t *testing.T) {
+	path := writeConfigFile(t, `
+datastore:
+  type: mysql
+  mysql:
+    host: db.example.com
+    port: 3307
+    user: arcalb
+    password: secret
+    database: arcalb
+    tls_mode: custom
+    tls_ca_file: /etc/mysql/ca.pem
+    tls_cert_file: /etc/mysql/client.pem
+    tls_key_file: /etc/mysql/client-key.pem
+    tls_server_name: mysql.internal.example
+    max_open_conns: 50
+    max_idle_conns: 10
+    conn_max_lifetime: 10m
+    watch_poll_interval: 250ms
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	dsCfg := cfg.ToDataStoreConfig()
+
+	if dsCfg.MySQLHost != "db.example.com" {
+		t.Fatalf("MySQLHost = %q, want db.example.com", dsCfg.MySQLHost)
+	}
+	if dsCfg.MySQLPort != 3307 {
+		t.Fatalf("MySQLPort = %d, want 3307", dsCfg.MySQLPort)
+	}
+	if dsCfg.MySQLTLSMode != "custom" {
+		t.Fatalf("MySQLTLSMode = %q, want custom", dsCfg.MySQLTLSMode)
+	}
+	if dsCfg.MySQLTLSCAFile != "/etc/mysql/ca.pem" {
+		t.Fatalf("MySQLTLSCAFile = %q", dsCfg.MySQLTLSCAFile)
+	}
+	if dsCfg.MySQLTLSCertFile != "/etc/mysql/client.pem" {
+		t.Fatalf("MySQLTLSCertFile = %q", dsCfg.MySQLTLSCertFile)
+	}
+	if dsCfg.MySQLTLSKeyFile != "/etc/mysql/client-key.pem" {
+		t.Fatalf("MySQLTLSKeyFile = %q", dsCfg.MySQLTLSKeyFile)
+	}
+	if dsCfg.MySQLTLSServerName != "mysql.internal.example" {
+		t.Fatalf("MySQLTLSServerName = %q", dsCfg.MySQLTLSServerName)
+	}
+	if dsCfg.MySQLMaxOpenConns != 50 {
+		t.Fatalf("MySQLMaxOpenConns = %d, want 50", dsCfg.MySQLMaxOpenConns)
+	}
+	if dsCfg.MySQLMaxIdleConns != 10 {
+		t.Fatalf("MySQLMaxIdleConns = %d, want 10", dsCfg.MySQLMaxIdleConns)
+	}
+	if dsCfg.MySQLConnMaxLifetime != 10*time.Minute {
+		t.Fatalf("MySQLConnMaxLifetime = %s, want 10m", dsCfg.MySQLConnMaxLifetime)
+	}
+	if dsCfg.MySQLWatchPollInterval != 250*time.Millisecond {
+		t.Fatalf("MySQLWatchPollInterval = %s, want 250ms", dsCfg.MySQLWatchPollInterval)
 	}
 }
 

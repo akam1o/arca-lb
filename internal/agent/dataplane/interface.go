@@ -1,5 +1,5 @@
 // Package dataplane defines the abstraction layer for data-plane backends.
-// Implementations include VPP (production), IPVS (lightweight), and Noop (testing).
+// Implementations include VPP (production) and Noop (testing).
 package dataplane
 
 import (

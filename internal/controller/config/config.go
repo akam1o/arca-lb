@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -127,7 +128,7 @@ func LoadConfig(path string) (*Config, error) {
 // setDefaults sets default values for configuration
 func (c *Config) setDefaults() {
 	if c.Server.Host == "" {
-		c.Server.Host = "0.0.0.0"
+		c.Server.Host = "127.0.0.1"
 	}
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
@@ -155,7 +156,7 @@ func (c *Config) setDefaults() {
 	}
 
 	if c.GRPC.Host == "" {
-		c.GRPC.Host = "0.0.0.0"
+		c.GRPC.Host = "127.0.0.1"
 	}
 	if c.GRPC.Port == 0 {
 		c.GRPC.Port = 50051
@@ -232,6 +233,14 @@ func (c *Config) validate() error {
 			return fmt.Errorf("server.key_file is required when server.tls is enabled")
 		}
 	}
+	if !isLoopbackBindHost(c.Server.Host) {
+		if !c.Server.TLS {
+			return fmt.Errorf("server.tls must be enabled when server.host is non-loopback")
+		}
+		if c.Server.APIKey == "" {
+			return fmt.Errorf("server.api_key or server.api_key_file must be set when server.host is non-loopback")
+		}
+	}
 	if c.Server.ReadTimeout <= 0 {
 		return fmt.Errorf("server.read_timeout must be positive")
 	}
@@ -293,7 +302,27 @@ func (c *Config) validate() error {
 	if c.GRPC.RequireClientCert && c.GRPC.ClientCAFile == "" {
 		return fmt.Errorf("grpc.client_ca_file is required when grpc.require_client_cert is enabled")
 	}
+	if !isLoopbackBindHost(c.GRPC.Host) {
+		if !c.GRPC.TLS {
+			return fmt.Errorf("grpc.tls must be enabled when grpc.host is non-loopback")
+		}
+		if c.GRPC.APIKey == "" && !c.GRPC.RequireClientCert {
+			return fmt.Errorf("grpc.api_key, grpc.api_key_file, or grpc.require_client_cert must be set when grpc.host is non-loopback")
+		}
+	}
 	return nil
+}
+
+func isLoopbackBindHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return addr.IsLoopback()
 }
 
 func validateAPIKey(field, value string) error {

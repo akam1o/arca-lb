@@ -444,6 +444,104 @@ func TestLoadConfigDefaultsMaxBodyBytes(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDefaultsControllerListenersToLoopback(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig())
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Fatalf("Server.Host = %q, want 127.0.0.1", cfg.Server.Host)
+	}
+	if cfg.GRPC.Host != "127.0.0.1" {
+		t.Fatalf("GRPC.Host = %q, want 127.0.0.1", cfg.GRPC.Host)
+	}
+}
+
+func TestLoadConfigRejectsUnauthenticatedNonLoopbackControllerBinds(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "rest without tls",
+			yaml: `
+server:
+  host: 0.0.0.0
+`,
+			wantErr: "server.tls must be enabled when server.host is non-loopback",
+		},
+		{
+			name: "rest without api key",
+			yaml: `
+server:
+  host: 0.0.0.0
+  tls: true
+  cert_file: /tmp/server.crt
+  key_file: /tmp/server.key
+`,
+			wantErr: "server.api_key or server.api_key_file must be set when server.host is non-loopback",
+		},
+		{
+			name: "grpc without tls",
+			yaml: `
+grpc:
+  host: 0.0.0.0
+`,
+			wantErr: "grpc.tls must be enabled when grpc.host is non-loopback",
+		},
+		{
+			name: "grpc without auth",
+			yaml: `
+grpc:
+  host: 0.0.0.0
+  tls: true
+  cert_file: /tmp/grpc.crt
+  key_file: /tmp/grpc.key
+`,
+			wantErr: "grpc.api_key, grpc.api_key_file, or grpc.require_client_cert must be set when grpc.host is non-loopback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, minimalEtcdConfig()+tt.yaml)
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadConfig error = %v, want %s validation error", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsAuthenticatedNonLoopbackControllerBinds(t *testing.T) {
+	path := writeConfigFile(t, minimalEtcdConfig()+`
+server:
+  host: 0.0.0.0
+  tls: true
+  cert_file: /tmp/server.crt
+  key_file: /tmp/server.key
+  api_key: controller-rest-secret
+grpc:
+  host: 0.0.0.0
+  tls: true
+  cert_file: /tmp/grpc.crt
+  key_file: /tmp/grpc.key
+  require_client_cert: true
+  client_ca_file: /tmp/ca.crt
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Server.Host != "0.0.0.0" || cfg.GRPC.Host != "0.0.0.0" {
+		t.Fatalf("hosts = server %q grpc %q, want non-loopback binds", cfg.Server.Host, cfg.GRPC.Host)
+	}
+}
+
 func TestLoadConfigRejectsInvalidAllowedOrigins(t *testing.T) {
 	tests := []struct {
 		name   string

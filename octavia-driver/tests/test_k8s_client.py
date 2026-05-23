@@ -369,6 +369,23 @@ class TestVirtualIPStatusWatcher(unittest.TestCase):
         self.assertEqual(watcher._callback_failures_total, 3)
         self.assertEqual(watcher._callback_failure_streak, 3)
 
+    def test_health_exports_callback_failure_state(self):
+        watcher = self._watcher_with_thread(FakeThread(alive=True))
+        watcher._callback_failures_total = 4
+        watcher._callback_failure_streak = 2
+
+        self.assertEqual(watcher.callback_failures_total, 4)
+        self.assertEqual(watcher.callback_failure_streak, 2)
+        self.assertEqual(
+            watcher.health(),
+            {
+                "healthy": False,
+                "running": True,
+                "callback_failures_total": 4,
+                "callback_failure_streak": 2,
+            },
+        )
+
     def test_watch_timeout_tracks_sync_interval(self):
         watcher = self._watcher_with_thread(FakeThread(alive=False))
 

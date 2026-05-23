@@ -298,6 +298,24 @@ class VirtualIPStatusWatcher:
         self._callback_failures_total = 0
         self._callback_failure_streak = 0
 
+    @property
+    def callback_failures_total(self):
+        return getattr(self, "_callback_failures_total", 0)
+
+    @property
+    def callback_failure_streak(self):
+        return getattr(self, "_callback_failure_streak", 0)
+
+    def health(self):
+        return {
+            "healthy": self.callback_failure_streak == 0,
+            "running": (
+                self._thread is not None and self._thread.is_alive()
+            ),
+            "callback_failures_total": self.callback_failures_total,
+            "callback_failure_streak": self.callback_failure_streak,
+        }
+
     def start(self, callback):
         """Start watching VirtualIP status changes in a background thread.
 

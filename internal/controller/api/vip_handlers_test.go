@@ -160,6 +160,22 @@ func TestAPIKeyAuthMiddleware(t *testing.T) {
 			},
 			expectedStatus: http.StatusUnauthorized,
 		},
+		{
+			name: "multiple authorization headers are rejected",
+			setHeader: func(req *http.Request) {
+				req.Header.Add("Authorization", "Bearer controller-secret")
+				req.Header.Add("Authorization", "Bearer wrong-controller-key")
+			},
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "multiple x api key headers are rejected",
+			setHeader: func(req *http.Request) {
+				req.Header.Add("X-API-Key", "controller-secret")
+				req.Header.Add("X-API-Key", "wrong-controller-key")
+			},
+			expectedStatus: http.StatusUnauthorized,
+		},
 	}
 
 	for _, tt := range tests {

@@ -21,6 +21,18 @@ func TestAuthenticateIncomingContextRejectsMalformedAuthorizationBeforeXAPIKey(t
 	}
 }
 
+func TestAuthenticateIncomingContextRejectsMultipleAuthorizationValues(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		authorizationMetadataKey, "Bearer controller-grpc-secret",
+		authorizationMetadataKey, "Bearer wrong-controller-grpc-secret",
+	))
+
+	err := authenticateIncomingContext(ctx, "controller-grpc-secret")
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("authenticateIncomingContext error = %v, want unauthenticated", err)
+	}
+}
+
 func TestAuthenticateIncomingContextAcceptsXAPIKeyWithoutAuthorization(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
 		apiKeyMetadataKey, "controller-grpc-secret",
@@ -28,5 +40,17 @@ func TestAuthenticateIncomingContextAcceptsXAPIKeyWithoutAuthorization(t *testin
 
 	if err := authenticateIncomingContext(ctx, "controller-grpc-secret"); err != nil {
 		t.Fatalf("authenticateIncomingContext with x-api-key: %v", err)
+	}
+}
+
+func TestAuthenticateIncomingContextRejectsMultipleXAPIKeyValues(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		apiKeyMetadataKey, "controller-grpc-secret",
+		apiKeyMetadataKey, "wrong-controller-grpc-secret",
+	))
+
+	err := authenticateIncomingContext(ctx, "controller-grpc-secret")
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("authenticateIncomingContext error = %v, want unauthenticated", err)
 	}
 }

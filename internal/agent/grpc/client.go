@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	pb "github.com/akam1o/arca-lb/pkg/grpc"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -201,8 +203,6 @@ func (c *Client) connect() error {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	// Add timeout
-	opts = append(opts, grpc.WithBlock()) // nolint:staticcheck // WithBlock is required for blocking dial until connection or timeout
 	if c.dialContext != nil {
 		opts = append(opts, grpc.WithContextDialer(c.dialContext))
 	}
@@ -220,7 +220,15 @@ func (c *Client) connect() error {
 	for attempt := 1; attempt <= c.config.Controller.MaxRetries; attempt++ {
 		// Use c.ctx as parent to support immediate cancellation on Stop()
 		ctx, cancel := context.WithTimeout(c.ctx, c.config.Controller.Timeout)
-		conn, err := grpc.DialContext(ctx, c.config.Controller.Address, opts...) // nolint:staticcheck // DialContext retained for compatibility with grpc 1.x clients
+		conn, err := grpc.NewClient(grpcClientTarget(c.config.Controller.Address), opts...)
+		if err == nil {
+			err = waitForReady(ctx, conn)
+			if err != nil {
+				if closeErr := conn.Close(); closeErr != nil {
+					c.logger.WithError(closeErr).Warn("failed to close unsuccessful gRPC connection")
+				}
+			}
+		}
 		cancel()
 
 		if err == nil {
@@ -252,6 +260,33 @@ func (c *Client) connect() error {
 	}
 
 	return fmt.Errorf("failed to connect after %d attempts", c.config.Controller.MaxRetries)
+}
+
+func grpcClientTarget(address string) string {
+	if strings.Contains(address, "://") {
+		return address
+	}
+	return "passthrough:///" + address
+}
+
+func waitForReady(ctx context.Context, conn *grpc.ClientConn) error {
+	conn.Connect()
+	for {
+		state := conn.GetState()
+		if state == connectivity.Ready {
+			return nil
+		}
+		if state == connectivity.Shutdown {
+			return fmt.Errorf("connection shut down before becoming ready")
+		}
+		if !conn.WaitForStateChange(ctx, state) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("connection did not become ready")
+		}
+		conn.Connect()
+	}
 }
 
 // reconnect attempts to reconnect to the controller

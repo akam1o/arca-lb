@@ -284,6 +284,43 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestGRPCClientTargetPreservesDialContextTargets(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+		want    string
+	}{
+		{
+			name:    "host port",
+			address: "127.0.0.1:50051",
+			want:    "passthrough:///127.0.0.1:50051",
+		},
+		{
+			name:    "bufconn",
+			address: "bufnet",
+			want:    "passthrough:///bufnet",
+		},
+		{
+			name:    "explicit dns",
+			address: "dns:///controller.default.svc.cluster.local:50051",
+			want:    "dns:///controller.default.svc.cluster.local:50051",
+		},
+		{
+			name:    "explicit unix",
+			address: "unix:///run/arca-lb/controller.sock",
+			want:    "unix:///run/arca-lb/controller.sock",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := grpcClientTarget(tt.address); got != tt.want {
+				t.Fatalf("grpcClientTarget(%q) = %q, want %q", tt.address, got, tt.want)
+			}
+		})
+	}
+}
+
 func testConfigSnapshot(config *models.Config) *pb.ConfigSnapshot {
 	if config == nil {
 		return nil

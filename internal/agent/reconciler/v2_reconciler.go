@@ -37,6 +37,7 @@ const (
 	TuningDriftPolicyRollingRecreate = "rolling_recreate"
 
 	defaultDeleteRetryInterval = time.Second
+	defaultReconcilerStopWait  = 30 * time.Second
 )
 
 // TuningDriftConfig controls repair of forwarding-compatible retained VIPs
@@ -725,12 +726,35 @@ func (vr *vipReconciler) triggerReconcile() {
 }
 
 func (vr *vipReconciler) stop() {
+	vr.stopWithTimeout(defaultReconcilerStopWait)
+}
+
+func (vr *vipReconciler) stopWithTimeout(timeout time.Duration) bool {
 	select {
 	case <-vr.stopCh:
 	default:
 		close(vr.stopCh)
 	}
-	<-vr.stopped
+
+	if timeout <= 0 {
+		select {
+		case <-vr.stopped:
+			return true
+		default:
+			vr.logger.Warn("per-VIP reconciler stop timed out", "timeout", timeout)
+			return false
+		}
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-vr.stopped:
+		return true
+	case <-timer.C:
+		vr.logger.Warn("per-VIP reconciler stop timed out", "timeout", timeout)
+		return false
+	}
 }
 
 func (vr *vipReconciler) run(ctx context.Context) {

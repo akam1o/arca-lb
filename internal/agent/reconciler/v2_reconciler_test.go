@@ -123,6 +123,30 @@ func TestV2ManagerStopDoesNotWaitForPendingDeleteRetry(t *testing.T) {
 	}
 }
 
+func TestVIPReconcilerStopTimesOutWhenWorkerDoesNotExit(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	vr := &vipReconciler{
+		key:     "default/web",
+		logger:  logger,
+		stopCh:  make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+
+	start := time.Now()
+	if vr.stopWithTimeout(10 * time.Millisecond) {
+		t.Fatal("stopWithTimeout returned true, want timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("stopWithTimeout took %s, want bounded timeout", elapsed)
+	}
+
+	select {
+	case <-vr.stopCh:
+	default:
+		t.Fatal("stopWithTimeout did not signal stopCh")
+	}
+}
+
 func TestV2ReconcilerReportsStatusAndWithdrawsRouteWhenDataPlaneFails(t *testing.T) {
 	dp := newRecordingDataPlane()
 	dp.applyErr = errors.New("apply failed")

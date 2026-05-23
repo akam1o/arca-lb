@@ -42,8 +42,25 @@ type KubernetesSettings struct {
 
 // DataPlaneSettings configures the data-plane backend.
 type DataPlaneSettings struct {
-	Type string                 `yaml:"type"` // "vpp" or "noop"
-	VPP  map[string]interface{} `yaml:"vpp,omitempty"`
+	Type      string                 `yaml:"type"` // "vpp" or "noop"
+	VPP       map[string]interface{} `yaml:"vpp,omitempty"`
+	VPPConfig VPPDataPlaneConfig     `yaml:"-"`
+}
+
+// VPPDataPlaneConfig contains validated VPP dataplane settings.
+type VPPDataPlaneConfig struct {
+	SocketPath                   string
+	ConnectTimeout               time.Duration
+	ReconnectInterval            time.Duration
+	EncapType                    string
+	DSCP                         uint8
+	ServiceType                  string
+	NewFlowsTableLength          uint32
+	FailOnAllBackendsDown        bool
+	StateVerificationInterval    time.Duration
+	RetainedVIPTuningDriftPolicy string
+	RetainedVIPTuningDriftDrain  time.Duration
+	RollingRecreateDrain         time.Duration
 }
 
 // RoutingSettings configures BGP route management.
@@ -253,9 +270,13 @@ func validateV2(cfg *V2Config) error {
 		return fmt.Errorf("unsupported dataplane.type: %s", cfg.DataPlane.Type)
 	}
 	if cfg.DataPlane.Type == "vpp" {
-		if err := validateV2VPPSettings(cfg.DataPlane.VPP); err != nil {
+		vppConfig, err := parseV2VPPSettings(cfg.DataPlane.VPP)
+		if err != nil {
 			return err
 		}
+		cfg.DataPlane.VPPConfig = vppConfig
+	} else {
+		cfg.DataPlane.VPPConfig = defaultV2VPPSettings()
 	}
 
 	if cfg.Routing.Type == "" {
@@ -289,63 +310,89 @@ func validateV2(cfg *V2Config) error {
 	return nil
 }
 
-func validateV2VPPSettings(vpp map[string]interface{}) error {
+func defaultV2VPPSettings() VPPDataPlaneConfig {
+	return VPPDataPlaneConfig{
+		SocketPath:                "/run/vpp/api.sock",
+		ConnectTimeout:            10 * time.Second,
+		ReconnectInterval:         5 * time.Second,
+		EncapType:                 "L3DSR",
+		DSCP:                      10,
+		ServiceType:               "CLUSTERIP",
+		NewFlowsTableLength:       65536,
+		StateVerificationInterval: 30 * time.Second,
+	}
+}
+
+func parseV2VPPSettings(vpp map[string]interface{}) (VPPDataPlaneConfig, error) {
+	cfg := defaultV2VPPSettings()
 	if vpp == nil {
-		return nil
+		return cfg, nil
 	}
 
 	for key := range vpp {
 		if !knownV2VPPSetting(key) {
-			return fmt.Errorf("dataplane.vpp.%s is not supported", key)
+			return cfg, fmt.Errorf("dataplane.vpp.%s is not supported", key)
 		}
 	}
 
 	if value, ok := vpp["socket_path"]; ok {
 		socketPath, ok := value.(string)
 		if !ok || socketPath == "" {
-			return fmt.Errorf("dataplane.vpp.socket_path must be a non-empty string")
+			return cfg, fmt.Errorf("dataplane.vpp.socket_path must be a non-empty string")
 		}
+		cfg.SocketPath = socketPath
 	}
 
 	if value, ok := vpp["encap_type"]; ok {
 		encapType, ok := value.(string)
 		if !ok || !validV2VPPEncapType(encapType) {
-			return fmt.Errorf("dataplane.vpp.encap_type must be one of GRE4, GRE6, L3DSR, NAT4, NAT6")
+			return cfg, fmt.Errorf("dataplane.vpp.encap_type must be one of GRE4, GRE6, L3DSR, NAT4, NAT6")
 		}
+		cfg.EncapType = encapType
 	}
 
 	if value, ok := vpp["dscp"]; ok {
 		dscp, ok := v2IntegerSetting(value)
 		if !ok || dscp < 1 || dscp > 63 {
-			return fmt.Errorf("dataplane.vpp.dscp must be an integer between 1 and 63")
+			return cfg, fmt.Errorf("dataplane.vpp.dscp must be an integer between 1 and 63")
 		}
+		cfg.DSCP = uint8(dscp)
 	}
 
 	if value, ok := vpp["service_type"]; ok {
 		serviceType, ok := value.(string)
 		if !ok || !validV2VPPServiceType(serviceType) {
-			return fmt.Errorf("dataplane.vpp.service_type must be one of CLUSTERIP, NODEPORT")
+			return cfg, fmt.Errorf("dataplane.vpp.service_type must be one of CLUSTERIP, NODEPORT")
 		}
+		cfg.ServiceType = serviceType
 	}
 
 	if value, ok := vpp["new_flows_table_length"]; ok {
 		tableLength, ok := v2IntegerSetting(value)
 		if !ok || tableLength < 1 || tableLength > int64(^uint32(0)) || !isPowerOfTwo(tableLength) {
-			return fmt.Errorf("dataplane.vpp.new_flows_table_length must be a power-of-two integer between 1 and %d", uint64(^uint32(0)))
+			return cfg, fmt.Errorf("dataplane.vpp.new_flows_table_length must be a power-of-two integer between 1 and %d", uint64(^uint32(0)))
 		}
+		cfg.NewFlowsTableLength = uint32(tableLength)
 	}
 
 	if value, ok := vpp["fail_on_all_backends_down"]; ok {
 		if _, ok := value.(bool); !ok {
-			return fmt.Errorf("dataplane.vpp.fail_on_all_backends_down must be a boolean")
+			return cfg, fmt.Errorf("dataplane.vpp.fail_on_all_backends_down must be a boolean")
 		}
+		cfg.FailOnAllBackendsDown = value.(bool)
 	}
 
 	for _, key := range []string{"connect_timeout", "reconnect_interval"} {
 		if value, ok := vpp[key]; ok {
 			timeout, ok := v2DurationSetting(value)
 			if !ok || timeout <= 0 {
-				return fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
+				return cfg, fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
+			}
+			switch key {
+			case "connect_timeout":
+				cfg.ConnectTimeout = timeout
+			case "reconnect_interval":
+				cfg.ReconnectInterval = timeout
 			}
 		}
 	}
@@ -353,27 +400,35 @@ func validateV2VPPSettings(vpp map[string]interface{}) error {
 	if value, ok := vpp["retained_vip_tuning_drift_policy"]; ok {
 		policy, ok := value.(string)
 		if !ok || (policy != "" && !validV2VPPTuningDriftPolicy(policy)) {
-			return fmt.Errorf("dataplane.vpp.retained_vip_tuning_drift_policy must be one of preserve, rolling_recreate")
+			return cfg, fmt.Errorf("dataplane.vpp.retained_vip_tuning_drift_policy must be one of preserve, rolling_recreate")
 		}
+		cfg.RetainedVIPTuningDriftPolicy = policy
 	}
 
 	if value, ok := vpp["state_verification_interval"]; ok {
 		interval, ok := v2DurationSetting(value)
 		if !ok || interval <= 0 {
-			return fmt.Errorf("dataplane.vpp.state_verification_interval must be a positive duration")
+			return cfg, fmt.Errorf("dataplane.vpp.state_verification_interval must be a positive duration")
 		}
+		cfg.StateVerificationInterval = interval
 	}
 
 	for _, key := range []string{"retained_vip_tuning_drift_drain", "rolling_recreate_drain"} {
 		if value, ok := vpp[key]; ok {
 			drain, ok := v2DurationSetting(value)
 			if !ok || drain <= 0 {
-				return fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
+				return cfg, fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
+			}
+			switch key {
+			case "retained_vip_tuning_drift_drain":
+				cfg.RetainedVIPTuningDriftDrain = drain
+			case "rolling_recreate_drain":
+				cfg.RollingRecreateDrain = drain
 			}
 		}
 	}
 
-	return nil
+	return cfg, nil
 }
 
 func knownV2VPPSetting(key string) bool {

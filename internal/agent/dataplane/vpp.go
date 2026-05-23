@@ -11,6 +11,7 @@ import (
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	agentconfig "github.com/akam1o/arca-lb/internal/agent/config"
 	"go.fd.io/govpp"
 	"go.fd.io/govpp/binapi/ip_types"
 	"go.fd.io/govpp/binapi/lb"
@@ -19,116 +20,7 @@ import (
 )
 
 // VPPConfig holds VPP-specific configuration.
-type VPPConfig struct {
-	SocketPath                string
-	ConnectTimeout            time.Duration
-	ReconnectInterval         time.Duration
-	EncapType                 string
-	DSCP                      uint8
-	ServiceType               string
-	NewFlowsTableLength       uint32
-	FailOnAllBackendsDown     bool
-	StateVerificationInterval time.Duration
-}
-
-func vppConfigFromMap(m map[string]interface{}) VPPConfig {
-	cfg := VPPConfig{
-		SocketPath:                "/run/vpp/api.sock",
-		ConnectTimeout:            10 * time.Second,
-		ReconnectInterval:         5 * time.Second,
-		EncapType:                 "L3DSR",
-		DSCP:                      10,
-		ServiceType:               "CLUSTERIP",
-		NewFlowsTableLength:       65536,
-		StateVerificationInterval: 30 * time.Second,
-	}
-	if m == nil {
-		return cfg
-	}
-	if v, ok := m["socket_path"].(string); ok {
-		cfg.SocketPath = v
-	}
-	if v, ok := vppDurationSetting(m["connect_timeout"]); ok {
-		cfg.ConnectTimeout = v
-	}
-	if v, ok := vppDurationSetting(m["reconnect_interval"]); ok {
-		cfg.ReconnectInterval = v
-	}
-	if v, ok := m["encap_type"].(string); ok {
-		cfg.EncapType = v
-	}
-	if v, ok := vppIntegerSetting(m["dscp"]); ok && v >= 0 && v <= 255 {
-		cfg.DSCP = uint8(v)
-	}
-	if v, ok := m["service_type"].(string); ok {
-		cfg.ServiceType = v
-	}
-	if v, ok := vppIntegerSetting(m["new_flows_table_length"]); ok && v >= 0 && v <= int64(^uint32(0)) {
-		cfg.NewFlowsTableLength = uint32(v)
-	}
-	if v, ok := m["fail_on_all_backends_down"].(bool); ok {
-		cfg.FailOnAllBackendsDown = v
-	}
-	if v, ok := vppDurationSetting(m["state_verification_interval"]); ok {
-		cfg.StateVerificationInterval = v
-	}
-	return cfg
-}
-
-func vppIntegerSetting(value interface{}) (int64, bool) {
-	switch v := value.(type) {
-	case int:
-		return int64(v), true
-	case int8:
-		return int64(v), true
-	case int16:
-		return int64(v), true
-	case int32:
-		return int64(v), true
-	case int64:
-		return v, true
-	case uint:
-		if uint64(v) > uint64(^uint64(0)>>1) {
-			return 0, false
-		}
-		return int64(v), true
-	case uint8:
-		return int64(v), true
-	case uint16:
-		return int64(v), true
-	case uint32:
-		return int64(v), true
-	case uint64:
-		if v > uint64(^uint64(0)>>1) {
-			return 0, false
-		}
-		return int64(v), true
-	default:
-		return 0, false
-	}
-}
-
-func vppDurationSetting(value interface{}) (time.Duration, bool) {
-	if seconds, ok := vppIntegerSetting(value); ok {
-		return time.Duration(seconds) * time.Second, true
-	}
-	switch v := value.(type) {
-	case nil:
-		return 0, false
-	case time.Duration:
-		return v, true
-	case string:
-		if v == "" {
-			return 0, false
-		}
-		d, err := time.ParseDuration(v)
-		return d, err == nil
-	case float64:
-		return time.Duration(v * float64(time.Second)), true
-	default:
-		return 0, false
-	}
-}
+type VPPConfig = agentconfig.VPPDataPlaneConfig
 
 // VPP implements DataPlane using fd.io VPP.
 type VPP struct {
@@ -168,9 +60,7 @@ type vipAttributes struct {
 }
 
 // NewVPP creates a new VPP data plane.
-func NewVPP(cfg map[string]interface{}) (*VPP, error) {
-	config := vppConfigFromMap(cfg)
-
+func NewVPP(config VPPConfig) (*VPP, error) {
 	conn, err := connectVPP(config)
 	if err != nil {
 		return nil, err

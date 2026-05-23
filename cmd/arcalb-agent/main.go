@@ -111,7 +111,7 @@ func run() int {
 	}()
 
 	// Create data plane
-	dp, err := dataplane.New(cfg.DataPlane.Type, cfg.DataPlane.VPP)
+	dp, err := dataplane.New(cfg.DataPlane.Type, dataplane.Config{VPP: cfg.DataPlane.VPPConfig})
 	if err != nil {
 		logger.Error("failed to create data plane", "error", err)
 		return 1
@@ -182,7 +182,7 @@ func run() int {
 	// Create reconciler manager
 	reconMgr := reconciler.NewManager(dp, router, st, hcEngine, cfg.Agent.ReconcileInterval, logger)
 	reconMgr.SetStatusUpdater(statusUpdater)
-	reconMgr.SetTuningDriftConfig(retainedVIPTuningDriftConfig(cfg.DataPlane.VPP, logger))
+	reconMgr.SetTuningDriftConfig(retainedVIPTuningDriftConfig(cfg.DataPlane.VPPConfig))
 	reconMgr.SetRolloutCoordinator(rolloutCoordinator)
 
 	// Wire health change callback: when health changes, trigger reconcile
@@ -652,55 +652,16 @@ func uint8PtrEqual(a, b *uint8) bool {
 	return *a == *b
 }
 
-func retainedVIPTuningDriftConfig(vpp map[string]interface{}, logger *slog.Logger) reconciler.TuningDriftConfig {
-	cfg := reconciler.TuningDriftConfig{}
-	if vpp == nil {
-		return cfg
+func retainedVIPTuningDriftConfig(vpp agentconfig.VPPDataPlaneConfig) reconciler.TuningDriftConfig {
+	cfg := reconciler.TuningDriftConfig{
+		Policy: vpp.RetainedVIPTuningDriftPolicy,
 	}
-
-	if policy, ok := vpp["retained_vip_tuning_drift_policy"].(string); ok && policy != "" {
-		cfg.Policy = policy
+	if vpp.RetainedVIPTuningDriftDrain > 0 {
+		cfg.DrainDuration = vpp.RetainedVIPTuningDriftDrain
+	} else if vpp.RollingRecreateDrain > 0 {
+		cfg.DrainDuration = vpp.RollingRecreateDrain
 	}
-
-	for _, key := range []string{"retained_vip_tuning_drift_drain", "rolling_recreate_drain"} {
-		value, ok := vpp[key]
-		if !ok {
-			continue
-		}
-		drain, err := durationSetting(value)
-		if err != nil {
-			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", err)
-			continue
-		}
-		if drain <= 0 {
-			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", "must be positive")
-			continue
-		}
-		cfg.DrainDuration = drain
-		break
-	}
-
 	return cfg
-}
-
-func durationSetting(value interface{}) (time.Duration, error) {
-	switch v := value.(type) {
-	case time.Duration:
-		return v, nil
-	case string:
-		if v == "" {
-			return 0, nil
-		}
-		return time.ParseDuration(v)
-	case int:
-		return time.Duration(v) * time.Second, nil
-	case int64:
-		return time.Duration(v) * time.Second, nil
-	case float64:
-		return time.Duration(v * float64(time.Second)), nil
-	default:
-		return 0, fmt.Errorf("unsupported duration type %T", value)
-	}
 }
 
 func setupLogger(cfg agentconfig.LogSettings) *slog.Logger {

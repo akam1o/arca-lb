@@ -185,6 +185,79 @@ routing:
 	}
 }
 
+func TestLoadV2ConfigParsesTypedVPPConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: vpp
+  vpp:
+    socket_path: /tmp/vpp.sock
+    connect_timeout: 2s
+    reconnect_interval: 3
+    encap_type: GRE4
+    dscp: 12
+    service_type: NODEPORT
+    new_flows_table_length: 131072
+    fail_on_all_backends_down: true
+    state_verification_interval: 45s
+    retained_vip_tuning_drift_policy: preserve
+    retained_vip_tuning_drift_drain: 11s
+    rolling_recreate_drain: 12s
+routing:
+  type: noop
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadV2Config(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadV2Config: %v", err)
+	}
+
+	vpp := cfg.DataPlane.VPPConfig
+	if vpp.SocketPath != "/tmp/vpp.sock" {
+		t.Fatalf("SocketPath = %q, want /tmp/vpp.sock", vpp.SocketPath)
+	}
+	if vpp.ConnectTimeout != 2*time.Second {
+		t.Fatalf("ConnectTimeout = %s, want 2s", vpp.ConnectTimeout)
+	}
+	if vpp.ReconnectInterval != 3*time.Second {
+		t.Fatalf("ReconnectInterval = %s, want 3s", vpp.ReconnectInterval)
+	}
+	if vpp.EncapType != "GRE4" {
+		t.Fatalf("EncapType = %q, want GRE4", vpp.EncapType)
+	}
+	if vpp.DSCP != 12 {
+		t.Fatalf("DSCP = %d, want 12", vpp.DSCP)
+	}
+	if vpp.ServiceType != "NODEPORT" {
+		t.Fatalf("ServiceType = %q, want NODEPORT", vpp.ServiceType)
+	}
+	if vpp.NewFlowsTableLength != 131072 {
+		t.Fatalf("NewFlowsTableLength = %d, want 131072", vpp.NewFlowsTableLength)
+	}
+	if !vpp.FailOnAllBackendsDown {
+		t.Fatal("FailOnAllBackendsDown = false, want true")
+	}
+	if vpp.StateVerificationInterval != 45*time.Second {
+		t.Fatalf("StateVerificationInterval = %s, want 45s", vpp.StateVerificationInterval)
+	}
+	if vpp.RetainedVIPTuningDriftPolicy != "preserve" {
+		t.Fatalf("RetainedVIPTuningDriftPolicy = %q, want preserve", vpp.RetainedVIPTuningDriftPolicy)
+	}
+	if vpp.RetainedVIPTuningDriftDrain != 11*time.Second {
+		t.Fatalf("RetainedVIPTuningDriftDrain = %s, want 11s", vpp.RetainedVIPTuningDriftDrain)
+	}
+	if vpp.RollingRecreateDrain != 12*time.Second {
+		t.Fatalf("RollingRecreateDrain = %s, want 12s", vpp.RollingRecreateDrain)
+	}
+}
+
 func TestLoadV2ConfigRejectsInvalidEnvOverrides(t *testing.T) {
 	tests := []struct {
 		name    string

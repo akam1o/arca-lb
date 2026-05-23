@@ -24,6 +24,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func TestRetainedVIPTuningDriftConfigUsesTypedVPPSettings(t *testing.T) {
+	cfg := retainedVIPTuningDriftConfig(agentconfig.VPPDataPlaneConfig{
+		RetainedVIPTuningDriftPolicy: reconciler.TuningDriftPolicyPreserve,
+		RetainedVIPTuningDriftDrain:  2 * time.Second,
+		RollingRecreateDrain:         3 * time.Second,
+	})
+
+	if cfg.Policy != reconciler.TuningDriftPolicyPreserve {
+		t.Fatalf("Policy = %q, want %q", cfg.Policy, reconciler.TuningDriftPolicyPreserve)
+	}
+	if cfg.DrainDuration != 2*time.Second {
+		t.Fatalf("DrainDuration = %s, want 2s", cfg.DrainDuration)
+	}
+}
+
 func TestAgentHTTPMuxServesHealthWhenMetricsDisabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := newAgentHTTPMux(agentconfig.MetricsSettings{

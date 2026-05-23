@@ -46,40 +46,6 @@ func testVPPConfig() VPPConfig {
 	}
 }
 
-func TestVPPConfigFromMapParsesConnectionSettings(t *testing.T) {
-	cfg := vppConfigFromMap(map[string]interface{}{
-		"socket_path":                 "/tmp/vpp.sock",
-		"connect_timeout":             "2s",
-		"reconnect_interval":          int64(3),
-		"dscp":                        uint8(12),
-		"new_flows_table_length":      uint32(131072),
-		"fail_on_all_backends_down":   true,
-		"state_verification_interval": "45s",
-	})
-
-	if cfg.SocketPath != "/tmp/vpp.sock" {
-		t.Fatalf("SocketPath = %q, want /tmp/vpp.sock", cfg.SocketPath)
-	}
-	if cfg.ConnectTimeout != 2*time.Second {
-		t.Fatalf("ConnectTimeout = %s, want 2s", cfg.ConnectTimeout)
-	}
-	if cfg.ReconnectInterval != 3*time.Second {
-		t.Fatalf("ReconnectInterval = %s, want 3s", cfg.ReconnectInterval)
-	}
-	if cfg.DSCP != 12 {
-		t.Fatalf("DSCP = %d, want 12", cfg.DSCP)
-	}
-	if cfg.NewFlowsTableLength != 131072 {
-		t.Fatalf("NewFlowsTableLength = %d, want 131072", cfg.NewFlowsTableLength)
-	}
-	if !cfg.FailOnAllBackendsDown {
-		t.Fatal("FailOnAllBackendsDown = false, want true")
-	}
-	if cfg.StateVerificationInterval != 45*time.Second {
-		t.Fatalf("StateVerificationInterval = %s, want 45s", cfg.StateVerificationInterval)
-	}
-}
-
 func newMockConnectedVPP(t *testing.T) *VPP {
 	t.Helper()
 
@@ -174,7 +140,7 @@ func TestVPPAPIConversionsRejectUnsupportedValues(t *testing.T) {
 }
 
 func TestNoopApplyAndRemoveVIP(t *testing.T) {
-	dp, err := New("noop", nil)
+	dp, err := New("noop", Config{})
 	if err != nil {
 		t.Fatalf("New noop: %v", err)
 	}
@@ -218,7 +184,7 @@ func TestNoopApplyAndRemoveVIP(t *testing.T) {
 }
 
 func TestNoopSetBackends(t *testing.T) {
-	dp, err := New("noop", nil)
+	dp, err := New("noop", Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +213,7 @@ func TestNoopSetBackends(t *testing.T) {
 }
 
 func TestNoopAddRemoveBackend(t *testing.T) {
-	dp, err := New("noop", nil)
+	dp, err := New("noop", Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,14 +247,14 @@ func TestNoopAddRemoveBackend(t *testing.T) {
 }
 
 func TestNewUnsupportedType(t *testing.T) {
-	_, err := New("invalid", nil)
+	_, err := New("invalid", Config{})
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
 }
 
 func TestNoopRemoveNonexistent(t *testing.T) {
-	dp, err := New("noop", nil)
+	dp, err := New("noop", Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

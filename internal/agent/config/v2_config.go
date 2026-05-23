@@ -10,6 +10,7 @@ import (
 
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
 	"github.com/akam1o/arca-lb/internal/common/models"
+	"gopkg.in/yaml.v3"
 )
 
 // V2Config is the top-level configuration for the v2 agent.
@@ -42,9 +43,26 @@ type KubernetesSettings struct {
 
 // DataPlaneSettings configures the data-plane backend.
 type DataPlaneSettings struct {
-	Type      string                 `yaml:"type"` // "vpp" or "noop"
-	VPP       map[string]interface{} `yaml:"vpp,omitempty"`
-	VPPConfig VPPDataPlaneConfig     `yaml:"-"`
+	Type      string             `yaml:"type"` // "vpp" or "noop"
+	VPP       *VPPSettings       `yaml:"vpp,omitempty"`
+	VPPConfig VPPDataPlaneConfig `yaml:"-"`
+}
+
+// VPPSettings contains YAML-facing VPP settings before defaults are applied.
+// Pointer fields distinguish omitted settings from explicit zero values.
+type VPPSettings struct {
+	SocketPath                   *string        `yaml:"socket_path,omitempty"`
+	ConnectTimeout               *time.Duration `yaml:"connect_timeout,omitempty"`
+	ReconnectInterval            *time.Duration `yaml:"reconnect_interval,omitempty"`
+	EncapType                    *string        `yaml:"encap_type,omitempty"`
+	DSCP                         *int64         `yaml:"dscp,omitempty"`
+	ServiceType                  *string        `yaml:"service_type,omitempty"`
+	NewFlowsTableLength          *int64         `yaml:"new_flows_table_length,omitempty"`
+	FailOnAllBackendsDown        *bool          `yaml:"fail_on_all_backends_down,omitempty"`
+	StateVerificationInterval    *time.Duration `yaml:"state_verification_interval,omitempty"`
+	RetainedVIPTuningDriftPolicy *string        `yaml:"retained_vip_tuning_drift_policy,omitempty"`
+	RetainedVIPTuningDriftDrain  *time.Duration `yaml:"retained_vip_tuning_drift_drain,omitempty"`
+	RollingRecreateDrain         *time.Duration `yaml:"rolling_recreate_drain,omitempty"`
 }
 
 // VPPDataPlaneConfig contains validated VPP dataplane settings.
@@ -323,112 +341,185 @@ func defaultV2VPPSettings() VPPDataPlaneConfig {
 	}
 }
 
-func parseV2VPPSettings(vpp map[string]interface{}) (VPPDataPlaneConfig, error) {
+func parseV2VPPSettings(vpp *VPPSettings) (VPPDataPlaneConfig, error) {
 	cfg := defaultV2VPPSettings()
 	if vpp == nil {
 		return cfg, nil
 	}
 
-	for key := range vpp {
-		if !knownV2VPPSetting(key) {
-			return cfg, fmt.Errorf("dataplane.vpp.%s is not supported", key)
-		}
-	}
-
-	if value, ok := vpp["socket_path"]; ok {
-		socketPath, ok := value.(string)
-		if !ok || socketPath == "" {
+	if vpp.SocketPath != nil {
+		if *vpp.SocketPath == "" {
 			return cfg, fmt.Errorf("dataplane.vpp.socket_path must be a non-empty string")
 		}
-		cfg.SocketPath = socketPath
+		cfg.SocketPath = *vpp.SocketPath
 	}
 
-	if value, ok := vpp["encap_type"]; ok {
-		encapType, ok := value.(string)
-		if !ok || !validV2VPPEncapType(encapType) {
+	if vpp.EncapType != nil {
+		if !validV2VPPEncapType(*vpp.EncapType) {
 			return cfg, fmt.Errorf("dataplane.vpp.encap_type must be one of GRE4, GRE6, L3DSR, NAT4, NAT6")
 		}
-		cfg.EncapType = encapType
+		cfg.EncapType = *vpp.EncapType
 	}
 
-	if value, ok := vpp["dscp"]; ok {
-		dscp, ok := v2IntegerSetting(value)
-		if !ok || dscp < 1 || dscp > 63 {
+	if vpp.DSCP != nil {
+		if *vpp.DSCP < 1 || *vpp.DSCP > 63 {
 			return cfg, fmt.Errorf("dataplane.vpp.dscp must be an integer between 1 and 63")
 		}
-		cfg.DSCP = uint8(dscp)
+		cfg.DSCP = uint8(*vpp.DSCP)
 	}
 
-	if value, ok := vpp["service_type"]; ok {
-		serviceType, ok := value.(string)
-		if !ok || !validV2VPPServiceType(serviceType) {
+	if vpp.ServiceType != nil {
+		if !validV2VPPServiceType(*vpp.ServiceType) {
 			return cfg, fmt.Errorf("dataplane.vpp.service_type must be one of CLUSTERIP, NODEPORT")
 		}
-		cfg.ServiceType = serviceType
+		cfg.ServiceType = *vpp.ServiceType
 	}
 
-	if value, ok := vpp["new_flows_table_length"]; ok {
-		tableLength, ok := v2IntegerSetting(value)
-		if !ok || tableLength < 1 || tableLength > int64(^uint32(0)) || !isPowerOfTwo(tableLength) {
+	if vpp.NewFlowsTableLength != nil {
+		if *vpp.NewFlowsTableLength < 1 || *vpp.NewFlowsTableLength > int64(^uint32(0)) || !isPowerOfTwo(*vpp.NewFlowsTableLength) {
 			return cfg, fmt.Errorf("dataplane.vpp.new_flows_table_length must be a power-of-two integer between 1 and %d", uint64(^uint32(0)))
 		}
-		cfg.NewFlowsTableLength = uint32(tableLength)
+		cfg.NewFlowsTableLength = uint32(*vpp.NewFlowsTableLength)
 	}
 
-	if value, ok := vpp["fail_on_all_backends_down"]; ok {
-		if _, ok := value.(bool); !ok {
-			return cfg, fmt.Errorf("dataplane.vpp.fail_on_all_backends_down must be a boolean")
+	if vpp.FailOnAllBackendsDown != nil {
+		cfg.FailOnAllBackendsDown = *vpp.FailOnAllBackendsDown
+	}
+
+	if vpp.ConnectTimeout != nil {
+		if *vpp.ConnectTimeout <= 0 {
+			return cfg, fmt.Errorf("dataplane.vpp.connect_timeout must be a positive duration")
 		}
-		cfg.FailOnAllBackendsDown = value.(bool)
+		cfg.ConnectTimeout = *vpp.ConnectTimeout
 	}
-
-	for _, key := range []string{"connect_timeout", "reconnect_interval"} {
-		if value, ok := vpp[key]; ok {
-			timeout, ok := v2DurationSetting(value)
-			if !ok || timeout <= 0 {
-				return cfg, fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
-			}
-			switch key {
-			case "connect_timeout":
-				cfg.ConnectTimeout = timeout
-			case "reconnect_interval":
-				cfg.ReconnectInterval = timeout
-			}
+	if vpp.ReconnectInterval != nil {
+		if *vpp.ReconnectInterval <= 0 {
+			return cfg, fmt.Errorf("dataplane.vpp.reconnect_interval must be a positive duration")
 		}
+		cfg.ReconnectInterval = *vpp.ReconnectInterval
 	}
 
-	if value, ok := vpp["retained_vip_tuning_drift_policy"]; ok {
-		policy, ok := value.(string)
-		if !ok || (policy != "" && !validV2VPPTuningDriftPolicy(policy)) {
+	if vpp.RetainedVIPTuningDriftPolicy != nil {
+		if *vpp.RetainedVIPTuningDriftPolicy != "" && !validV2VPPTuningDriftPolicy(*vpp.RetainedVIPTuningDriftPolicy) {
 			return cfg, fmt.Errorf("dataplane.vpp.retained_vip_tuning_drift_policy must be one of preserve, rolling_recreate")
 		}
-		cfg.RetainedVIPTuningDriftPolicy = policy
+		cfg.RetainedVIPTuningDriftPolicy = *vpp.RetainedVIPTuningDriftPolicy
 	}
 
-	if value, ok := vpp["state_verification_interval"]; ok {
-		interval, ok := v2DurationSetting(value)
-		if !ok || interval <= 0 {
+	if vpp.StateVerificationInterval != nil {
+		if *vpp.StateVerificationInterval <= 0 {
 			return cfg, fmt.Errorf("dataplane.vpp.state_verification_interval must be a positive duration")
 		}
-		cfg.StateVerificationInterval = interval
+		cfg.StateVerificationInterval = *vpp.StateVerificationInterval
 	}
 
-	for _, key := range []string{"retained_vip_tuning_drift_drain", "rolling_recreate_drain"} {
-		if value, ok := vpp[key]; ok {
-			drain, ok := v2DurationSetting(value)
-			if !ok || drain <= 0 {
-				return cfg, fmt.Errorf("dataplane.vpp.%s must be a positive duration", key)
-			}
-			switch key {
-			case "retained_vip_tuning_drift_drain":
-				cfg.RetainedVIPTuningDriftDrain = drain
-			case "rolling_recreate_drain":
-				cfg.RollingRecreateDrain = drain
-			}
+	if vpp.RetainedVIPTuningDriftDrain != nil {
+		if *vpp.RetainedVIPTuningDriftDrain <= 0 {
+			return cfg, fmt.Errorf("dataplane.vpp.retained_vip_tuning_drift_drain must be a positive duration")
 		}
+		cfg.RetainedVIPTuningDriftDrain = *vpp.RetainedVIPTuningDriftDrain
+	}
+
+	if vpp.RollingRecreateDrain != nil {
+		if *vpp.RollingRecreateDrain <= 0 {
+			return cfg, fmt.Errorf("dataplane.vpp.rolling_recreate_drain must be a positive duration")
+		}
+		cfg.RollingRecreateDrain = *vpp.RollingRecreateDrain
 	}
 
 	return cfg, nil
+}
+
+func (s *VPPSettings) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("dataplane.vpp must be a mapping")
+	}
+	*s = VPPSettings{}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		keyNode := value.Content[i]
+		valueNode := value.Content[i+1]
+		key := keyNode.Value
+		if !knownV2VPPSetting(key) {
+			return fmt.Errorf("dataplane.vpp.%s is not supported", key)
+		}
+
+		path := "dataplane.vpp." + key
+		switch key {
+		case "socket_path":
+			field, err := decodeV2StringSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.SocketPath = field
+		case "connect_timeout":
+			field, err := decodeV2DurationSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.ConnectTimeout = field
+		case "reconnect_interval":
+			field, err := decodeV2DurationSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.ReconnectInterval = field
+		case "encap_type":
+			field, err := decodeV2StringSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.EncapType = field
+		case "dscp":
+			field, err := decodeV2IntegerSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.DSCP = field
+		case "service_type":
+			field, err := decodeV2StringSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.ServiceType = field
+		case "new_flows_table_length":
+			field, err := decodeV2IntegerSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.NewFlowsTableLength = field
+		case "fail_on_all_backends_down":
+			field, err := decodeV2BoolSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.FailOnAllBackendsDown = field
+		case "state_verification_interval":
+			field, err := decodeV2DurationSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.StateVerificationInterval = field
+		case "retained_vip_tuning_drift_policy":
+			field, err := decodeV2StringSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.RetainedVIPTuningDriftPolicy = field
+		case "retained_vip_tuning_drift_drain":
+			field, err := decodeV2DurationSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.RetainedVIPTuningDriftDrain = field
+		case "rolling_recreate_drain":
+			field, err := decodeV2DurationSetting(path, valueNode)
+			if err != nil {
+				return err
+			}
+			s.RollingRecreateDrain = field
+		}
+	}
+	return nil
 }
 
 func knownV2VPPSetting(key string) bool {
@@ -482,55 +573,60 @@ func isPowerOfTwo(value int64) bool {
 	return value > 0 && value&(value-1) == 0
 }
 
-func v2DurationSetting(value interface{}) (time.Duration, bool) {
-	if seconds, ok := v2IntegerSetting(value); ok {
-		return time.Duration(seconds) * time.Second, true
+func decodeV2StringSetting(path string, value *yaml.Node) (*string, error) {
+	if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+		return nil, fmt.Errorf("%s must be a string", path)
 	}
-	switch v := value.(type) {
-	case time.Duration:
-		return v, true
-	case string:
-		if v == "" {
-			return 0, false
-		}
-		d, err := time.ParseDuration(v)
-		return d, err == nil
-	case float64:
-		return time.Duration(v * float64(time.Second)), true
-	default:
-		return 0, false
-	}
+	parsed := value.Value
+	return &parsed, nil
 }
 
-func v2IntegerSetting(value interface{}) (int64, bool) {
-	switch v := value.(type) {
-	case int:
-		return int64(v), true
-	case int8:
-		return int64(v), true
-	case int16:
-		return int64(v), true
-	case int32:
-		return int64(v), true
-	case int64:
-		return v, true
-	case uint:
-		if uint64(v) > uint64(^uint64(0)>>1) {
-			return 0, false
-		}
-		return int64(v), true
-	case uint8:
-		return int64(v), true
-	case uint16:
-		return int64(v), true
-	case uint32:
-		return int64(v), true
-	case uint64:
-		if v > uint64(^uint64(0)>>1) {
-			return 0, false
-		}
-		return int64(v), true
-	default:
-		return 0, false
+func decodeV2BoolSetting(path string, value *yaml.Node) (*bool, error) {
+	var parsed bool
+	if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" || value.Decode(&parsed) != nil {
+		return nil, fmt.Errorf("%s must be a boolean", path)
 	}
+	return &parsed, nil
+}
+
+func decodeV2IntegerSetting(path string, value *yaml.Node) (*int64, error) {
+	var parsed int64
+	if value.Kind != yaml.ScalarNode || value.Tag != "!!int" || value.Decode(&parsed) != nil {
+		return nil, fmt.Errorf("%s must be an integer", path)
+	}
+	return &parsed, nil
+}
+
+func decodeV2DurationSetting(path string, value *yaml.Node) (*time.Duration, error) {
+	if value.Kind != yaml.ScalarNode {
+		return nil, fmt.Errorf("%s must be a duration", path)
+	}
+
+	var parsed time.Duration
+	switch value.Tag {
+	case "!!int":
+		var seconds int64
+		if err := value.Decode(&seconds); err != nil {
+			return nil, fmt.Errorf("%s must be a duration", path)
+		}
+		parsed = time.Duration(seconds) * time.Second
+	case "!!float":
+		seconds, err := strconv.ParseFloat(value.Value, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s must be a duration", path)
+		}
+		parsed = time.Duration(seconds * float64(time.Second))
+	case "!!str":
+		if value.Value == "" {
+			return nil, fmt.Errorf("%s must be a duration", path)
+		}
+		duration, err := time.ParseDuration(value.Value)
+		if err != nil {
+			return nil, fmt.Errorf("%s must be a duration", path)
+		}
+		parsed = duration
+	default:
+		return nil, fmt.Errorf("%s must be a duration", path)
+	}
+	return &parsed, nil
 }

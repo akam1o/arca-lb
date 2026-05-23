@@ -258,6 +258,52 @@ routing:
 	}
 }
 
+func TestLoadV2ConfigTracksUnsetVPPSettingsSeparatelyFromDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: vpp
+  vpp:
+    socket_path: /tmp/vpp.sock
+routing:
+  type: noop
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadV2Config(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadV2Config: %v", err)
+	}
+
+	if cfg.DataPlane.VPP == nil {
+		t.Fatal("DataPlane.VPP = nil, want parsed VPP settings")
+	}
+	if cfg.DataPlane.VPP.SocketPath == nil || *cfg.DataPlane.VPP.SocketPath != "/tmp/vpp.sock" {
+		t.Fatalf("DataPlane.VPP.SocketPath = %v, want /tmp/vpp.sock", cfg.DataPlane.VPP.SocketPath)
+	}
+	if cfg.DataPlane.VPP.DSCP != nil {
+		t.Fatalf("DataPlane.VPP.DSCP = %v, want nil for unset field", *cfg.DataPlane.VPP.DSCP)
+	}
+	if cfg.DataPlane.VPP.ConnectTimeout != nil {
+		t.Fatalf("DataPlane.VPP.ConnectTimeout = %s, want nil for unset field", *cfg.DataPlane.VPP.ConnectTimeout)
+	}
+	if cfg.DataPlane.VPPConfig.SocketPath != "/tmp/vpp.sock" {
+		t.Fatalf("VPPConfig.SocketPath = %q, want /tmp/vpp.sock", cfg.DataPlane.VPPConfig.SocketPath)
+	}
+	if cfg.DataPlane.VPPConfig.DSCP != 10 {
+		t.Fatalf("VPPConfig.DSCP = %d, want default 10", cfg.DataPlane.VPPConfig.DSCP)
+	}
+	if cfg.DataPlane.VPPConfig.ConnectTimeout != 10*time.Second {
+		t.Fatalf("VPPConfig.ConnectTimeout = %s, want default 10s", cfg.DataPlane.VPPConfig.ConnectTimeout)
+	}
+}
+
 func TestLoadV2ConfigRejectsInvalidEnvOverrides(t *testing.T) {
 	tests := []struct {
 		name    string

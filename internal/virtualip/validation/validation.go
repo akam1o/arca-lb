@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	"github.com/akam1o/arca-lb/internal/common/models"
@@ -199,6 +200,9 @@ func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
 			return fmt.Errorf("spec.healthCheck.http.method must be one of GET, HEAD, POST, got %q", hc.HTTP.Method)
 		}
 		if hc.HTTP.Path != "" {
+			if !strings.HasPrefix(hc.HTTP.Path, "/") || strings.HasPrefix(hc.HTTP.Path, "//") {
+				return fmt.Errorf("spec.healthCheck.http.path must be relative and start with a single slash, got %q", hc.HTTP.Path)
+			}
 			parsedPath, err := url.Parse(hc.HTTP.Path)
 			if err != nil {
 				return fmt.Errorf("spec.healthCheck.http.path %q is not valid: %w", hc.HTTP.Path, err)

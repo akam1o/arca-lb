@@ -153,6 +153,7 @@ spec:
                       path:
                         default: /
                         description: Path is the HTTP path to probe.
+                        pattern: ^/($|[^/].*)
                         type: string
                       port:
                         description: Port is the target port for the HTTP request.

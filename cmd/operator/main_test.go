@@ -29,8 +29,8 @@ func TestBindOperatorFlagsDefaultsToProductionZap(t *testing.T) {
 	if opts.probeAddr != ":8081" {
 		t.Fatalf("probeAddr = %q, want :8081", opts.probeAddr)
 	}
-	if opts.enableWebhooks {
-		t.Fatal("expected webhooks to be disabled by default")
+	if !opts.enableWebhooks {
+		t.Fatal("expected webhooks to be enabled by default")
 	}
 	if opts.enableLeaderElection {
 		t.Fatal("expected leader election to be disabled by default")

@@ -125,6 +125,7 @@ type HTTPHealthCheck struct {
 	Port int `json:"port"`
 
 	// Path is the HTTP path to probe.
+	// +kubebuilder:validation:Pattern=`^/($|[^/].*)`
 	// +kubebuilder:default="/"
 	Path string `json:"path,omitempty"`
 

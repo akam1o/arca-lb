@@ -26,6 +26,10 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	if !containsString(stringSlice(t, http["required"]), "port") {
 		t.Fatalf("healthCheck.http.port is not required in CRD schema")
 	}
+	path := nestedMap(t, http, "properties", "path")
+	if got := path["pattern"]; got != "^/($|[^/].*)" {
+		t.Fatalf("healthCheck.http.path pattern = %v, want single-slash relative path pattern", got)
+	}
 	expectedCodes := nestedMap(t, http, "properties", "expectedCodes")
 	expectedCodeItems := nestedMap(t, expectedCodes, "items")
 	if got := expectedCodeItems["minimum"]; got != 100 {

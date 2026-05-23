@@ -61,6 +61,13 @@ func TestValidateSpecRejectsInvalidHTTPHealthCheckMethodAndPath(t *testing.T) {
 			wantErr: "spec.healthCheck.http.method",
 		},
 		{
+			name: "path without leading slash",
+			mutate: func(hc *v1alpha1.HTTPHealthCheck) {
+				hc.Path = "health"
+			},
+			wantErr: "spec.healthCheck.http.path must be relative",
+		},
+		{
 			name: "absolute URL path",
 			mutate: func(hc *v1alpha1.HTTPHealthCheck) {
 				hc.Path = "http://169.254.169.254/latest/meta-data"

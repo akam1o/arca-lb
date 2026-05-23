@@ -4,7 +4,7 @@ kind: ClusterRole
 metadata:
   name: arca-lb-operator
 rules:
-  # VirtualIP CRD full access
+  # VirtualIP CRD reconcile access
   - apiGroups:
       - arca.io
     resources:
@@ -13,10 +13,7 @@ rules:
       - get
       - list
       - watch
-      - create
       - update
-      - patch
-      - delete
   - apiGroups:
       - arca.io
     resources:

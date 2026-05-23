@@ -256,32 +256,6 @@ spec:
           status:
             description: VirtualIPStatus defines the observed state of a VirtualIP.
             properties:
-              backends:
-                description: Backends reports per-backend health status.
-                items:
-                  description: BackendStatus reports the health state of a single
-                    backend.
-                  properties:
-                    address:
-                      description: Address is the IP address of the backend.
-                      type: string
-                    healthy:
-                      description: Healthy indicates whether the backend is currently
-                        healthy.
-                      type: boolean
-                    lastProbeTime:
-                      description: LastProbeTime is the timestamp of the most recent
-                        probe.
-                      format: date-time
-                      type: string
-                    message:
-                      description: Message provides human-readable details.
-                      type: string
-                  required:
-                  - address
-                  - healthy
-                  type: object
-                type: array
               agentStatuses:
                 description: AgentStatuses contains per-agent observations used to
                   build the aggregate status.
@@ -303,8 +277,8 @@ spec:
                             description: Address is the IP address of the backend.
                             type: string
                           healthy:
-                            description: Healthy indicates whether the backend is currently
-                              healthy.
+                            description: Healthy indicates whether the backend is
+                              currently healthy.
                             type: boolean
                           lastProbeTime:
                             description: LastProbeTime is the timestamp of the most
@@ -322,8 +296,8 @@ spec:
                     conditions:
                       description: Conditions represent this agent's latest observations.
                       items:
-                        description: Condition contains details for one aspect of the
-                          current state of this API Resource.
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
                         properties:
                           lastTransitionTime:
                             description: |-
@@ -386,13 +360,6 @@ spec:
                         written.
                       format: date-time
                       type: string
-                    ttlSeconds:
-                      description: TTLSeconds is how long this observation should remain
-                        valid.
-                      format: int64
-                      maximum: 3600
-                      minimum: 1
-                      type: integer
                     observedGeneration:
                       description: ObservedGeneration is the VirtualIP generation
                         observed by this agent.
@@ -401,6 +368,13 @@ spec:
                     totalBackends:
                       description: TotalBackends is the total number of configured
                         backends observed by this agent.
+                      type: integer
+                    ttlSeconds:
+                      description: TTLSeconds is how long this observation should
+                        remain valid.
+                      format: int64
+                      maximum: 3600
+                      minimum: 1
                       type: integer
                   required:
                   - agentID
@@ -411,6 +385,32 @@ spec:
                 x-kubernetes-list-map-keys:
                 - agentID
                 x-kubernetes-list-type: map
+              backends:
+                description: Backends reports per-backend health status.
+                items:
+                  description: BackendStatus reports the health state of a single
+                    backend.
+                  properties:
+                    address:
+                      description: Address is the IP address of the backend.
+                      type: string
+                    healthy:
+                      description: Healthy indicates whether the backend is currently
+                        healthy.
+                      type: boolean
+                    lastProbeTime:
+                      description: LastProbeTime is the timestamp of the most recent
+                        probe.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message provides human-readable details.
+                      type: string
+                  required:
+                  - address
+                  - healthy
+                  type: object
+                type: array
               conditions:
                 description: Conditions represent the latest available observations.
                 items:

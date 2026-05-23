@@ -11,6 +11,8 @@ GOMODCACHE_DIR := $(CURDIR)/.gomodcache
 GOTMP_DIR := $(CURDIR)/.gotmp
 GO_ENV := GOCACHE=$(GOCACHE_DIR) GOMODCACHE=$(GOMODCACHE_DIR) GOTMPDIR=$(GOTMP_DIR)
 GOLANGCI_LINT_VERSION ?= v2.6.0
+TOOLS_BIN_DIR := $(CURDIR)/bin/tools
+CONTROLLER_GEN_VERSION ?= v0.16.5
 
 PROTO_SRC := api/proto
 PROTO_OUT := pkg/grpc
@@ -21,7 +23,7 @@ DOCKER_AGENT_FILE ?= deploy/docker/Dockerfile.agent
 DOCKER_AGENT_IMAGE ?= arcalb-agent:latest
 DOCKER_OPERATOR_IMAGE ?= arcalb-operator:latest
 
-CONTROLLER_GEN ?= $(shell command -v controller-gen 2>/dev/null)
+CONTROLLER_GEN ?= $(TOOLS_BIN_DIR)/controller-gen
 CRD_OPTIONS ?= crd:generateEmbeddedObjectMeta=true
 
 define ensure_tool
@@ -95,14 +97,19 @@ deps: goenv ## Download dependencies
 
 .PHONY: manifests
 manifests: ## Generate CRD manifests via controller-gen
-	$(call ensure_tool,controller-gen)
+	$(call ensure_tool,$(CONTROLLER_GEN))
 	$(CONTROLLER_GEN) $(CRD_OPTIONS) paths="./api/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: ## Generate deepcopy methods via controller-gen
-	$(call ensure_tool,controller-gen)
+	$(call ensure_tool,$(CONTROLLER_GEN))
 	$(CONTROLLER_GEN) object:headerFile="" paths="./api/..."
 
 .PHONY: install-controller-gen
 install-controller-gen: goenv ## Install controller-gen tool
-	$(GO_ENV) go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+	@mkdir -p $(TOOLS_BIN_DIR)
+	$(GO_ENV) GOBIN=$(TOOLS_BIN_DIR) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
+.PHONY: verify-generate
+verify-generate: install-controller-gen manifests generate ## Verify CRD and deepcopy generated files are current
+	git diff --exit-code -- api/v1alpha1/zz_generated.deepcopy.go config/crd/bases

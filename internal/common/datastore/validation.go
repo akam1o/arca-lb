@@ -3,14 +3,49 @@ package datastore
 import (
 	"fmt"
 	"net"
+	"strings"
+	"unicode"
 
 	"github.com/akam1o/arca-lb/internal/common/models"
 )
+
+// MaxResourceIDBytes is the maximum accepted byte length for datastore resource IDs.
+const MaxResourceIDBytes = 256
+
+// ValidateResourceID validates IDs before they are used in datastore keys or queries.
+func ValidateResourceID(field, value string) error {
+	if value == "" {
+		return fmt.Errorf("%w: %s is required", ErrInvalidInput, field)
+	}
+	if len(value) > MaxResourceIDBytes {
+		return fmt.Errorf("%w: %s must be at most %d bytes", ErrInvalidInput, field, MaxResourceIDBytes)
+	}
+	if strings.Contains(value, "/") {
+		return fmt.Errorf("%w: %s must not contain '/'", ErrInvalidInput, field)
+	}
+	if strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("%w: %s must not contain whitespace", ErrInvalidInput, field)
+	}
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return fmt.Errorf("%w: %s must not contain control characters", ErrInvalidInput, field)
+	}
+	return nil
+}
+
+func validateOptionalResourceID(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	return ValidateResourceID(field, value)
+}
 
 // ValidateVIPForWrite validates VIP fields before a datastore mutation.
 func ValidateVIPForWrite(vip *models.VIP) error {
 	if vip == nil {
 		return ErrInvalidInput
+	}
+	if err := validateOptionalResourceID("vip id", vip.ID); err != nil {
+		return err
 	}
 	if net.ParseIP(vip.VIP) == nil {
 		return fmt.Errorf("%w: vip must be a valid IP address", ErrInvalidInput)
@@ -50,6 +85,9 @@ func ValidateBackendFieldsForWrite(backend *models.Backend) error {
 	if backend == nil {
 		return ErrInvalidInput
 	}
+	if err := validateOptionalResourceID("backend id", backend.ID); err != nil {
+		return err
+	}
 	if net.ParseIP(backend.IP) == nil {
 		return fmt.Errorf("%w: backend ip must be a valid IP address", ErrInvalidInput)
 	}
@@ -64,8 +102,8 @@ func ValidateBackendForWrite(backend *models.Backend) error {
 	if err := ValidateBackendFieldsForWrite(backend); err != nil {
 		return err
 	}
-	if backend.VIPID == "" {
-		return ErrInvalidInput
+	if err := ValidateResourceID("backend vip_id", backend.VIPID); err != nil {
+		return err
 	}
 	return nil
 }

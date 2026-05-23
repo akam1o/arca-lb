@@ -56,6 +56,43 @@ func TestEtcdDataStoreRejectsEmptyMutationIdentities(t *testing.T) {
 	}
 }
 
+func TestEtcdDataStoreRejectsMalformedResourceIdentities(t *testing.T) {
+	ctx := context.Background()
+	ds := &EtcdDataStore{}
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "CreateVIP id", call: func() error {
+			return ds.CreateVIP(ctx, &models.VIP{ID: "vip/1", VIP: "192.0.2.10", Port: 80, Protocol: models.ProtocolTCP})
+		}},
+		{name: "GetVIP id", call: func() error { _, err := ds.GetVIP(ctx, "vip/1"); return err }},
+		{name: "UpdateVIP id", call: func() error {
+			return ds.UpdateVIP(ctx, &models.VIP{ID: "vip/1", VIP: "192.0.2.10", Port: 80, Protocol: models.ProtocolTCP})
+		}},
+		{name: "DeleteVIP id", call: func() error { return ds.DeleteVIP(ctx, "vip/1") }},
+		{name: "AddBackend id", call: func() error {
+			return ds.AddBackend(ctx, &models.Backend{ID: "backend/1", VIPID: "vip-1", IP: "10.0.0.1", Weight: 1})
+		}},
+		{name: "AddBackend vip_id", call: func() error { return ds.AddBackend(ctx, &models.Backend{VIPID: "vip/1", IP: "10.0.0.1", Weight: 1}) }},
+		{name: "GetBackend id", call: func() error { _, err := ds.GetBackend(ctx, "backend/1"); return err }},
+		{name: "ListBackends vip_id", call: func() error { _, err := ds.ListBackends(ctx, "vip/1"); return err }},
+		{name: "UpdateBackend id", call: func() error {
+			return ds.UpdateBackend(ctx, &models.Backend{ID: "backend/1", VIPID: "vip-1", IP: "10.0.0.1", Weight: 1})
+		}},
+		{name: "DeleteBackend id", call: func() error { return ds.DeleteBackend(ctx, "backend/1") }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, datastore.ErrInvalidInput) {
+				t.Fatalf("error = %v, want %v", err, datastore.ErrInvalidInput)
+			}
+		})
+	}
+}
+
 func TestEtcdDataStoreRejectsInvalidMutationModels(t *testing.T) {
 	ctx := context.Background()
 	ds := &EtcdDataStore{}
@@ -209,6 +246,36 @@ func TestEtcdTransactionRejectsEmptyMutationIdentities(t *testing.T) {
 		{name: "UpdateVIP", call: func() error { return tx.UpdateVIP(ctx, &models.VIP{}) }},
 		{name: "DeleteVIP", call: func() error { return tx.DeleteVIP(ctx, "") }},
 		{name: "AddBackend", call: func() error { return tx.AddBackend(ctx, &models.Backend{}) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, datastore.ErrInvalidInput) {
+				t.Fatalf("error = %v, want %v", err, datastore.ErrInvalidInput)
+			}
+		})
+	}
+}
+
+func TestEtcdTransactionRejectsMalformedResourceIdentities(t *testing.T) {
+	ctx := context.Background()
+	tx := &EtcdTransaction{}
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "CreateVIP id", call: func() error {
+			return tx.CreateVIP(ctx, &models.VIP{ID: "vip/1", VIP: "192.0.2.10", Port: 80, Protocol: models.ProtocolTCP})
+		}},
+		{name: "UpdateVIP id", call: func() error {
+			return tx.UpdateVIP(ctx, &models.VIP{ID: "vip/1", VIP: "192.0.2.10", Port: 80, Protocol: models.ProtocolTCP})
+		}},
+		{name: "DeleteVIP id", call: func() error { return tx.DeleteVIP(ctx, "vip/1") }},
+		{name: "AddBackend id", call: func() error {
+			return tx.AddBackend(ctx, &models.Backend{ID: "backend/1", VIPID: "vip-1", IP: "10.0.0.1", Weight: 1})
+		}},
+		{name: "AddBackend vip_id", call: func() error { return tx.AddBackend(ctx, &models.Backend{VIPID: "vip/1", IP: "10.0.0.1", Weight: 1}) }},
 	}
 
 	for _, tt := range tests {

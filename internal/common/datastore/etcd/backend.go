@@ -158,6 +158,10 @@ func (ds *EtcdDataStore) deleteBackendIPIndexesForVIP(ctx context.Context, vipID
 
 // GetBackend retrieves a backend by ID from etcd using the index
 func (ds *EtcdDataStore) GetBackend(ctx context.Context, id string) (*models.Backend, error) {
+	if err := datastore.ValidateResourceID("backend id", id); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
@@ -196,6 +200,10 @@ func (ds *EtcdDataStore) GetBackend(ctx context.Context, id string) (*models.Bac
 
 // ListBackends retrieves all backends for a VIP from etcd
 func (ds *EtcdDataStore) ListBackends(ctx context.Context, vipID string) ([]models.Backend, error) {
+	if err := datastore.ValidateResourceID("backend vip_id", vipID); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
@@ -226,8 +234,8 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
-	if backend.ID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("backend id", backend.ID); err != nil {
+		return err
 	}
 	if err := datastore.ValidateBackendFieldsForWrite(backend); err != nil {
 		return err
@@ -313,8 +321,8 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 
 // DeleteBackend deletes a backend and its index from etcd
 func (ds *EtcdDataStore) DeleteBackend(ctx context.Context, id string) error {
-	if id == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("backend id", id); err != nil {
+		return err
 	}
 
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)

@@ -199,8 +199,8 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 	if vip == nil {
 		return datastore.ErrInvalidInput
 	}
-	if vip.ID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("vip id", vip.ID); err != nil {
+		return err
 	}
 	if err := datastore.ValidateVIPForWrite(vip); err != nil {
 		return err
@@ -305,8 +305,8 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 
 // DeleteVIP adds a VIP deletion operation to the transaction
 func (tx *MySQLTransaction) DeleteVIP(ctx context.Context, id string) error {
-	if id == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return err
 	}
 
 	db := tx.tx.WithContext(ctx)

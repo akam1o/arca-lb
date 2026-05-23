@@ -97,6 +97,10 @@ func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backen
 
 // GetBackend retrieves a backend by ID from MySQL
 func (ds *MySQLDataStore) GetBackend(ctx context.Context, id string) (*models.Backend, error) {
+	if err := datastore.ValidateResourceID("backend id", id); err != nil {
+		return nil, err
+	}
+
 	db := ds.db.WithContext(ctx)
 
 	var backendRecord BackendRecord
@@ -119,6 +123,10 @@ func (ds *MySQLDataStore) GetBackend(ctx context.Context, id string) (*models.Ba
 
 // ListBackends retrieves all backends for a VIP from MySQL
 func (ds *MySQLDataStore) ListBackends(ctx context.Context, vipID string) ([]models.Backend, error) {
+	if err := datastore.ValidateResourceID("backend vip_id", vipID); err != nil {
+		return nil, err
+	}
+
 	db := ds.db.WithContext(ctx)
 
 	var backendRecords []BackendRecord
@@ -147,8 +155,8 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 		return datastore.ErrInvalidInput
 	}
 
-	if backend.ID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("backend id", backend.ID); err != nil {
+		return err
 	}
 	if err := datastore.ValidateBackendFieldsForWrite(backend); err != nil {
 		return err
@@ -215,8 +223,8 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 
 // DeleteBackend deletes a backend from MySQL
 func (ds *MySQLDataStore) DeleteBackend(ctx context.Context, id string) error {
-	if id == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("backend id", id); err != nil {
+		return err
 	}
 
 	// Get backend to find VIP ID

@@ -307,8 +307,8 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 		return datastore.ErrInvalidInput
 	}
 
-	if vip.ID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("vip id", vip.ID); err != nil {
+		return err
 	}
 	if err := datastore.ValidateVIPForWrite(vip); err != nil {
 		return err
@@ -404,8 +404,8 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 
 // DeleteVIP adds a VIP deletion operation to the transaction
 func (tx *EtcdTransaction) DeleteVIP(ctx context.Context, id string) error {
-	if id == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return err
 	}
 
 	if _, deleted := tx.deletedVIPIDs[id]; deleted {

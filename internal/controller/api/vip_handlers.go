@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode"
 
+	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -18,8 +18,6 @@ import (
 type badRequestError string
 
 func (e badRequestError) Error() string { return string(e) }
-
-const maxResourceIDBytes = 256
 
 // HealthCheckRequest represents the request body for an optional health check when creating a VIP.
 type HealthCheckRequest struct {
@@ -53,20 +51,8 @@ type UpdateVIPRequest struct {
 }
 
 func validateResourceID(field, value string) error {
-	if value == "" {
-		return badRequestError(field + " is required")
-	}
-	if len(value) > maxResourceIDBytes {
-		return badRequestError(field + " must be at most 256 bytes")
-	}
-	if strings.Contains(value, "/") {
-		return badRequestError(field + " must not contain '/'")
-	}
-	if strings.IndexFunc(value, unicode.IsSpace) >= 0 {
-		return badRequestError(field + " must not contain whitespace")
-	}
-	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
-		return badRequestError(field + " must not contain control characters")
+	if err := datastore.ValidateResourceID(field, value); err != nil {
+		return badRequestError(err.Error())
 	}
 	return nil
 }

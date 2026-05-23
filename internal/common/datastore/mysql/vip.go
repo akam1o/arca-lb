@@ -157,6 +157,10 @@ func (ds *MySQLDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error 
 
 // GetVIP retrieves a VIP by ID from MySQL
 func (ds *MySQLDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, error) {
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return nil, err
+	}
+
 	db := ds.db.WithContext(ctx)
 
 	var vipRecord VIPRecord
@@ -335,8 +339,8 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 		return datastore.ErrInvalidInput
 	}
 
-	if vip.ID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("vip id", vip.ID); err != nil {
+		return err
 	}
 	if err := datastore.ValidateVIPForWrite(vip); err != nil {
 		return err
@@ -463,8 +467,8 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 
 // DeleteVIP deletes a VIP and its associated backends from MySQL
 func (ds *MySQLDataStore) DeleteVIP(ctx context.Context, id string) error {
-	if id == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return err
 	}
 
 	// Delete VIP in transaction (CASCADE will handle backends and health checks)

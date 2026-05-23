@@ -53,7 +53,7 @@ func TestValidateResourceID(t *testing.T) {
 		},
 		{
 			name:  "max length",
-			value: strings.Repeat("a", maxResourceIDBytes),
+			value: strings.Repeat("a", datastore.MaxResourceIDBytes),
 		},
 		{
 			name:      "empty",
@@ -82,7 +82,7 @@ func TestValidateResourceID(t *testing.T) {
 		},
 		{
 			name:      "too long",
-			value:     strings.Repeat("a", maxResourceIDBytes+1),
+			value:     strings.Repeat("a", datastore.MaxResourceIDBytes+1),
 			expectErr: true,
 		},
 	}

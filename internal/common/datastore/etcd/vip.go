@@ -97,6 +97,10 @@ func prepareHealthCheckForVIP(vip, existing *models.VIP, now time.Time) {
 
 // GetVIP retrieves a VIP by ID from etcd
 func (ds *EtcdDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, error) {
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
@@ -150,8 +154,8 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
-	if vip.ID == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("vip id", vip.ID); err != nil {
+		return err
 	}
 	if err := datastore.ValidateVIPForWrite(vip); err != nil {
 		return err
@@ -228,8 +232,8 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 
 // DeleteVIP deletes a VIP and its associated backends from etcd
 func (ds *EtcdDataStore) DeleteVIP(ctx context.Context, id string) error {
-	if id == "" {
-		return datastore.ErrInvalidInput
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return err
 	}
 
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)

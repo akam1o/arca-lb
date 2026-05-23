@@ -1739,6 +1739,17 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 			wantErr: "vip config at index 0 id is required",
 		},
 		{
+			name: "malformed VIP id",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip/1", "192.0.2.10"),
+					},
+				},
+			},
+			wantErr: "vip config at index 0 id must not contain '/'",
+		},
+		{
 			name: "duplicate VIP tuple",
 			input: &pb.ConfigSnapshot{
 				Vips: []*pb.VIPConfig{
@@ -1827,6 +1838,30 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 				},
 			},
 			wantErr: "health check at vip index 0 vip_id is required",
+		},
+		{
+			name: "malformed health check id",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck("hc 1", "vip-1"),
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 id must not contain whitespace",
+		},
+		{
+			name: "malformed health check vip id",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck("hc-1", "vip 1"),
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 vip_id must not contain whitespace",
 		},
 		{
 			name: "invalid backend IP",
@@ -1948,6 +1983,20 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 			wantErr: "backend at vip index 0 backend index 0 id is required",
 		},
 		{
+			name: "malformed backend id",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip-1", "192.0.2.10"),
+						Backends: []*pb.Backend{
+							validBackend("backend/1", "vip-1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 id must not contain '/'",
+		},
+		{
 			name: "missing backend vip id",
 			input: &pb.ConfigSnapshot{
 				Vips: []*pb.VIPConfig{
@@ -1960,6 +2009,20 @@ func TestConvertProtoToConfigRejectsMalformedConfig(t *testing.T) {
 				},
 			},
 			wantErr: "backend at vip index 0 backend index 0 vip_id is required",
+		},
+		{
+			name: "malformed backend vip id",
+			input: &pb.ConfigSnapshot{
+				Vips: []*pb.VIPConfig{
+					{
+						Vip: validVIP("vip-1", "192.0.2.10"),
+						Backends: []*pb.Backend{
+							validBackend("backend-1", "vip 1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 vip_id must not contain whitespace",
 		},
 		{
 			name: "duplicate backend id",

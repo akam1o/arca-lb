@@ -406,8 +406,8 @@ func validateConfigIdentity(config *models.Config) error {
 	seenBackendIDs := make(map[string]backendConfigLocation)
 	for vipIndex := range config.VIPs {
 		vipConfig := &config.VIPs[vipIndex]
-		if vipConfig.VIP.ID == "" {
-			return fmt.Errorf("vip config at index %d id is required", vipIndex)
+		if err := datastore.ValidateResourceID(fmt.Sprintf("vip config at index %d id", vipIndex), vipConfig.VIP.ID); err != nil {
+			return err
 		}
 		if firstIndex, ok := seenVIPIDs[vipConfig.VIP.ID]; ok {
 			return fmt.Errorf("vip config at index %d duplicates vip id %q first seen at index %d", vipIndex, vipConfig.VIP.ID, firstIndex)
@@ -421,8 +421,13 @@ func validateConfigIdentity(config *models.Config) error {
 		seenVIPTuples[tupleKey] = vipIndex
 
 		if vipConfig.HealthCheck != nil {
-			if vipConfig.HealthCheck.VIPID == "" {
-				return fmt.Errorf("health check at vip index %d vip_id is required", vipIndex)
+			if vipConfig.HealthCheck.ID != "" {
+				if err := datastore.ValidateResourceID(fmt.Sprintf("health check at vip index %d id", vipIndex), vipConfig.HealthCheck.ID); err != nil {
+					return err
+				}
+			}
+			if err := datastore.ValidateResourceID(fmt.Sprintf("health check at vip index %d vip_id", vipIndex), vipConfig.HealthCheck.VIPID); err != nil {
+				return err
 			}
 			if vipConfig.HealthCheck.VIPID != vipConfig.VIP.ID {
 				return fmt.Errorf("health check at vip index %d vip_id %q does not match vip id %q", vipIndex, vipConfig.HealthCheck.VIPID, vipConfig.VIP.ID)
@@ -431,11 +436,11 @@ func validateConfigIdentity(config *models.Config) error {
 
 		seenBackendIPs := make(map[string]int, len(vipConfig.Backends))
 		for backendIndex, backend := range vipConfig.Backends {
-			if backend.ID == "" {
-				return fmt.Errorf("backend at vip index %d backend index %d id is required", vipIndex, backendIndex)
+			if err := datastore.ValidateResourceID(fmt.Sprintf("backend at vip index %d backend index %d id", vipIndex, backendIndex), backend.ID); err != nil {
+				return err
 			}
-			if backend.VIPID == "" {
-				return fmt.Errorf("backend at vip index %d backend index %d vip_id is required", vipIndex, backendIndex)
+			if err := datastore.ValidateResourceID(fmt.Sprintf("backend at vip index %d backend index %d vip_id", vipIndex, backendIndex), backend.VIPID); err != nil {
+				return err
 			}
 			if backend.VIPID != vipConfig.VIP.ID {
 				return fmt.Errorf("backend at vip index %d backend index %d vip_id %q does not match vip id %q", vipIndex, backendIndex, backend.VIPID, vipConfig.VIP.ID)

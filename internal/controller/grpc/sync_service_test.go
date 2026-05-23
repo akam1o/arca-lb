@@ -327,9 +327,9 @@ func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
 			LBMethod: models.LBMethodMaglev,
 		}
 	}
-	validHealthCheck := func(vipID string) *models.HealthCheck {
+	healthCheck := func(id, vipID string) *models.HealthCheck {
 		return &models.HealthCheck{
-			ID:          "hc-1",
+			ID:          id,
 			VIPID:       vipID,
 			Type:        models.HCTypeTCP,
 			IntervalSec: 5,
@@ -340,6 +340,9 @@ func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
 				"port": 8080,
 			},
 		}
+	}
+	validHealthCheck := func(vipID string) *models.HealthCheck {
+		return healthCheck("hc-1", vipID)
 	}
 	validBackend := func(id, vipID, ip string) models.Backend {
 		return models.Backend{
@@ -370,6 +373,17 @@ func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
 				},
 			},
 			wantErr: "vip config at index 0 id is required",
+		},
+		{
+			name: "malformed VIP id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip/1", "192.0.2.10"),
+					},
+				},
+			},
+			wantErr: "vip config at index 0 id must not contain '/'",
 		},
 		{
 			name: "duplicate VIP id",
@@ -404,6 +418,30 @@ func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
 			wantErr: "health check at vip index 0 vip_id is required",
 		},
 		{
+			name: "malformed health check id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: healthCheck("hc 1", "vip-1"),
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 id must not contain whitespace",
+		},
+		{
+			name: "malformed health check vip id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck("vip 1"),
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 vip_id must not contain whitespace",
+		},
+		{
 			name: "health check vip id mismatch",
 			config: &models.Config{
 				VIPs: []models.VIPConfig{
@@ -430,6 +468,20 @@ func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
 			wantErr: "backend at vip index 0 backend index 0 id is required",
 		},
 		{
+			name: "malformed backend id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend/1", "vip-1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 id must not contain '/'",
+		},
+		{
 			name: "missing backend vip id",
 			config: &models.Config{
 				VIPs: []models.VIPConfig{
@@ -442,6 +494,20 @@ func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
 				},
 			},
 			wantErr: "backend at vip index 0 backend index 0 vip_id is required",
+		},
+		{
+			name: "malformed backend vip id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip 1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 vip_id must not contain whitespace",
 		},
 		{
 			name: "backend vip id mismatch",

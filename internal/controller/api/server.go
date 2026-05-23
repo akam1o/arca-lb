@@ -35,9 +35,14 @@ func NewServer(cfg *config.Config, ds datastore.DataStore, logger *logrus.Logger
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	router := gin.New()
+	if err := router.SetTrustedProxies(nil); err != nil {
+		logger.WithError(err).Warn("Failed to disable trusted proxies")
+	}
+
 	server := &Server{
 		config:    cfg,
-		router:    gin.New(),
+		router:    router,
 		datastore: ds,
 		logger:    logger,
 	}

@@ -63,6 +63,35 @@ func TestVirtualIPCRDRequiresSpec(t *testing.T) {
 	}
 }
 
+func TestVirtualIPCRDDefinesAdmissionDefaults(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+
+	spec := crdSchemaProperty(t, crd, "spec")
+	encapType := nestedMap(t, spec, "properties", "encapType")
+	if got := encapType["default"]; got != "L3DSR" {
+		t.Fatalf("spec.encapType default = %v, want L3DSR", got)
+	}
+
+	backends := crdSchemaProperty(t, crd, "spec", "backends")
+	backendWeight := nestedMap(t, backends, "items", "properties", "weight")
+	if got := backendWeight["default"]; got != 1 {
+		t.Fatalf("spec.backends[].weight default = %v, want 1", got)
+	}
+
+	healthCheck := crdSchemaProperty(t, crd, "spec", "healthCheck")
+	for field, want := range map[string]int{
+		"fallCount":       2,
+		"intervalSeconds": 5,
+		"riseCount":       3,
+		"timeoutSeconds":  3,
+	} {
+		fieldSchema := nestedMap(t, healthCheck, "properties", field)
+		if got := fieldSchema["default"]; got != want {
+			t.Fatalf("spec.healthCheck.%s default = %v, want %d", field, got, want)
+		}
+	}
+}
+
 func TestVirtualIPCRDConstrainsAgentStatusTTL(t *testing.T) {
 	crd := loadVirtualIPCRD(t)
 	agentStatuses := crdSchemaProperty(t, crd, "status", "agentStatuses")

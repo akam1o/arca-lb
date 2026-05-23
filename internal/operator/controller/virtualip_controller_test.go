@@ -102,26 +102,6 @@ func TestValidateSpecRejectsInvalidHTTPExpectedCodes(t *testing.T) {
 	}
 }
 
-func TestApplyDefaultsUsesBackendWeightOne(t *testing.T) {
-	vip := &v1alpha1.VirtualIP{
-		Spec: v1alpha1.VirtualIPSpec{
-			Address:  "203.0.113.10",
-			Port:     80,
-			Protocol: v1alpha1.ProtocolTCP,
-			Backends: []v1alpha1.BackendSpec{
-				{Address: "10.0.1.1"},
-			},
-		},
-	}
-
-	if changed := applyDefaults(vip); !changed {
-		t.Fatal("expected defaults to be applied")
-	}
-	if got := vip.Spec.Backends[0].Weight; got != v1alpha1.DefaultBackendWeight {
-		t.Fatalf("backend weight default = %d, want %d", got, v1alpha1.DefaultBackendWeight)
-	}
-}
-
 func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := v1alpha1.AddToScheme(scheme); err != nil {

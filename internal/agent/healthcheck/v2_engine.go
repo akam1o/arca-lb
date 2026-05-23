@@ -144,9 +144,9 @@ func NewEngine(cfg EngineConfig, st *store.Store, callback V2StateChangeCallback
 	probeDuration, _ := meter.Float64Histogram("arca_healthcheck_probe_duration_seconds",
 		metric.WithDescription("Duration of health check probes"))
 	probeDroppedJobs, _ := meter.Int64Counter("arca_healthcheck_probe_jobs_dropped_total",
-		metric.WithDescription("Total number of health check probe jobs dropped because the job queue was full"))
+		metric.WithDescription("Total number of health check probe jobs dropped before they could be queued"))
 	probeDroppedResult, _ := meter.Int64Counter("arca_healthcheck_probe_results_dropped_total",
-		metric.WithDescription("Total number of health check probe results dropped because the result queue was full"))
+		metric.WithDescription("Total number of health check probe results dropped before they could be queued"))
 
 	return &Engine{
 		config:             cfg,
@@ -451,30 +451,50 @@ func (e *Engine) scheduleProbes(ctx context.Context, vs *vipHealthState) {
 }
 
 func (e *Engine) emitProbeJobs(vs *vipHealthState) {
+	jobs := e.probeJobs(vs)
+	for _, job := range jobs {
+		if !e.enqueueProbeJob(job) {
+			dropped := e.recordDroppedProbeJob(job.vipKey)
+			e.logger.Warn("health check engine stopped before probe job could be queued",
+				"vip", job.vipKey, "backend", job.backendAddr, "dropped_jobs_total", dropped)
+			return
+		}
+	}
+}
+
+func (e *Engine) probeJobs(vs *vipHealthState) []*probeJob {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	timeout := time.Duration(vs.spec.TimeoutSeconds) * time.Second
+	jobs := make([]*probeJob, 0, len(vs.backends))
 	for addr, bhs := range vs.backends {
 		targetAddr := bhs.targetAddress
 		if targetAddr == "" {
 			targetAddr = addr
 		}
-		job := &probeJob{
+		jobs = append(jobs, &probeJob{
 			vipKey:      vs.vipKey,
 			epoch:       vs.epoch,
 			backendAddr: addr,
 			targetAddr:  targetAddr,
 			prober:      vs.prober,
 			timeout:     timeout,
-		}
-		select {
-		case e.jobCh <- job:
-		default:
-			dropped := e.recordDroppedProbeJob(vs.vipKey)
-			e.logger.Warn("job channel full, skipping probe",
-				"vip", vs.vipKey, "backend", addr, "dropped_jobs_total", dropped)
-		}
+		})
+	}
+	return jobs
+}
+
+func (e *Engine) enqueueProbeJob(job *probeJob) bool {
+	var done <-chan struct{}
+	if e.ctx != nil {
+		done = e.ctx.Done()
+	}
+	select {
+	case e.jobCh <- job:
+		return true
+	case <-done:
+		return false
 	}
 }
 
@@ -517,13 +537,24 @@ func (e *Engine) worker(id int) {
 				attribute.String("vip", job.vipKey),
 			))
 
-		select {
-		case e.resultCh <- pr:
-		default:
+		if !e.enqueueProbeResult(pr) {
 			dropped := e.recordDroppedProbeResult(job.vipKey)
-			e.logger.Warn("result channel full",
+			e.logger.Warn("health check engine stopped before probe result could be queued",
 				"vip", job.vipKey, "backend", job.backendAddr, "dropped_results_total", dropped)
 		}
+	}
+}
+
+func (e *Engine) enqueueProbeResult(result *probeResult) bool {
+	var done <-chan struct{}
+	if e.ctx != nil {
+		done = e.ctx.Done()
+	}
+	select {
+	case e.resultCh <- result:
+		return true
+	case <-done:
+		return false
 	}
 }
 

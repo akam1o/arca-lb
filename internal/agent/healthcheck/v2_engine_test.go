@@ -316,9 +316,12 @@ func TestEngineProbeJobsUseMonitorAddress(t *testing.T) {
 	}
 }
 
-func TestEngineRecordsDroppedProbeJobs(t *testing.T) {
+func TestEngineBackpressuresProbeJobs(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(EngineConfig{MaxConcurrentChecks: 1}, nil, nil, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine.ctx = ctx
 	engine.jobCh = make(chan *probeJob, 1)
 
 	vs := &vipHealthState{
@@ -334,17 +337,40 @@ func TestEngineRecordsDroppedProbeJobs(t *testing.T) {
 		prober: &recordingV2Prober{},
 	}
 
-	engine.emitProbeJobs(vs)
+	done := make(chan struct{})
+	go func() {
+		engine.emitProbeJobs(vs)
+		close(done)
+	}()
 
-	if got := len(engine.jobCh); got != 1 {
-		t.Fatalf("queued jobs = %d, want 1", got)
+	select {
+	case <-done:
+		t.Fatal("emitProbeJobs returned while job queue was still full")
+	case <-time.After(50 * time.Millisecond):
 	}
-	if got := engine.droppedProbeJobs(); got != 1 {
-		t.Fatalf("dropped probe jobs = %d, want 1", got)
+	if got := engine.droppedProbeJobs(); got != 0 {
+		t.Fatalf("dropped probe jobs = %d, want 0 while context is active", got)
+	}
+
+	first := <-engine.jobCh
+	if first == nil {
+		t.Fatal("first queued job is nil")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for probe job enqueue to resume")
+	}
+	if got := len(engine.jobCh); got != 1 {
+		t.Fatalf("queued jobs after draining = %d, want 1", got)
+	}
+	if got := engine.droppedProbeJobs(); got != 0 {
+		t.Fatalf("dropped probe jobs = %d, want 0", got)
 	}
 }
 
-func TestEngineRecordsDroppedProbeResults(t *testing.T) {
+func TestEngineBackpressuresProbeResults(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(EngineConfig{WorkerCount: 1, MaxConcurrentChecks: 1}, nil, nil, logger)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -373,12 +399,28 @@ func TestEngineRecordsDroppedProbeResults(t *testing.T) {
 
 	select {
 	case <-done:
+		t.Fatal("worker returned while result queue was still full")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	<-engine.resultCh
+
+	select {
+	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for worker")
 	}
 
-	if got := engine.droppedProbeResults(); got != 1 {
-		t.Fatalf("dropped probe results = %d, want 1", got)
+	if got := engine.droppedProbeResults(); got != 0 {
+		t.Fatalf("dropped probe results = %d, want 0", got)
+	}
+	select {
+	case result := <-engine.resultCh:
+		if result.backendAddr != "10.0.0.1" {
+			t.Fatalf("result backendAddr = %q, want 10.0.0.1", result.backendAddr)
+		}
+	default:
+		t.Fatal("expected queued probe result after result queue was drained")
 	}
 }
 

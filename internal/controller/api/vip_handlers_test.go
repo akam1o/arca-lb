@@ -1069,6 +1069,105 @@ func TestUpdateVIPClearsDSCP(t *testing.T) {
 	require.Nil(t, storedVIP.DSCP)
 }
 
+func TestUpdateVIPUpdatesHealthCheck(t *testing.T) {
+	server, mockDS := setupTestServer()
+	ctx := context.TODO()
+
+	vip := &models.VIP{
+		ID:       "vip-1",
+		VIP:      "192.168.1.100",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		HealthCheck: &models.HealthCheck{
+			ID:          "hc-1",
+			VIPID:       "vip-1",
+			Type:        models.HCTypeTCP,
+			IntervalSec: 10,
+			TimeoutSec:  5,
+			RiseCount:   3,
+			FallCount:   2,
+			Config:      models.HCConfig{"port": float64(8080)},
+		},
+	}
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
+
+	body, err := json.Marshal(map[string]interface{}{
+		"health_check": map[string]interface{}{
+			"type":       "HTTP",
+			"interval":   "15s",
+			"timeout":    "3s",
+			"rise_count": 4,
+			"fall_count": 5,
+			"config":     map[string]interface{}{"port": 8081, "path": "/readyz"},
+		},
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/vips/vip-1", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var updatedVIP models.VIP
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &updatedVIP))
+	require.NotNil(t, updatedVIP.HealthCheck)
+	assert.Equal(t, models.HCTypeHTTP, updatedVIP.HealthCheck.Type)
+	assert.Equal(t, 15, updatedVIP.HealthCheck.IntervalSec)
+	assert.Equal(t, 3, updatedVIP.HealthCheck.TimeoutSec)
+	assert.Equal(t, 4, updatedVIP.HealthCheck.RiseCount)
+	assert.Equal(t, 5, updatedVIP.HealthCheck.FallCount)
+
+	storedVIP, err := mockDS.GetVIP(ctx, "vip-1")
+	require.NoError(t, err)
+	require.NotNil(t, storedVIP.HealthCheck)
+	assert.Equal(t, models.HCTypeHTTP, storedVIP.HealthCheck.Type)
+	assert.Equal(t, 15, storedVIP.HealthCheck.IntervalSec)
+	assert.Equal(t, 3, storedVIP.HealthCheck.TimeoutSec)
+}
+
+func TestUpdateVIPClearsHealthCheck(t *testing.T) {
+	server, mockDS := setupTestServer()
+	ctx := context.TODO()
+
+	vip := &models.VIP{
+		ID:       "vip-1",
+		VIP:      "192.168.1.100",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+		HealthCheck: &models.HealthCheck{
+			ID:          "hc-1",
+			VIPID:       "vip-1",
+			Type:        models.HCTypeHTTP,
+			IntervalSec: 10,
+			TimeoutSec:  5,
+			RiseCount:   3,
+			FallCount:   2,
+			Config:      models.HCConfig{"port": float64(8080)},
+		},
+	}
+	require.NoError(t, mockDS.CreateVIP(ctx, vip))
+
+	body, err := json.Marshal(map[string]interface{}{
+		"health_check": nil,
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/vips/vip-1", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var updatedVIP models.VIP
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &updatedVIP))
+	require.Nil(t, updatedVIP.HealthCheck)
+
+	storedVIP, err := mockDS.GetVIP(ctx, "vip-1")
+	require.NoError(t, err)
+	require.Nil(t, storedVIP.HealthCheck)
+}
+
 func TestUpdateVIPRejectsExistingBackendAddressFamilyMismatch(t *testing.T) {
 	server, mockDS := setupTestServer()
 	ctx := context.TODO()

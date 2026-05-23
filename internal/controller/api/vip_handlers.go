@@ -43,12 +43,13 @@ type CreateVIPRequest struct {
 
 // UpdateVIPRequest represents the request body for updating a VIP
 type UpdateVIPRequest struct {
-	VIP       *string           `json:"vip" binding:"omitempty,ip"`
-	Port      *int              `json:"port" binding:"omitempty,min=1,max=65535"`
-	Protocol  *models.Protocol  `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
-	LBMethod  *models.LBMethod  `json:"lb_method" binding:"omitempty,oneof=maglev"`
-	EncapType *models.EncapType `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
-	DSCP      *uint8            `json:"dscp" binding:"omitempty,min=0,max=63"`
+	VIP         *string             `json:"vip" binding:"omitempty,ip"`
+	Port        *int                `json:"port" binding:"omitempty,min=1,max=65535"`
+	Protocol    *models.Protocol    `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
+	LBMethod    *models.LBMethod    `json:"lb_method" binding:"omitempty,oneof=maglev"`
+	EncapType   *models.EncapType   `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
+	DSCP        *uint8              `json:"dscp" binding:"omitempty,min=0,max=63"`
+	HealthCheck *HealthCheckRequest `json:"health_check,omitempty"`
 }
 
 func validateResourceID(field, value string) error {
@@ -100,6 +101,45 @@ func parseHealthCheckDuration(value, field string) (time.Duration, error) {
 		return 0, badRequestError("health check " + field + " must be at most 2147483647 seconds")
 	}
 	return duration, nil
+}
+
+func healthCheckFromRequest(req *HealthCheckRequest) (*models.HealthCheck, error) {
+	if req == nil {
+		return nil, nil
+	}
+
+	hcType := models.HCType(strings.ToLower(req.Type))
+
+	interval, err := parseHealthCheckDuration(req.Interval, "interval")
+	if err != nil {
+		return nil, err
+	}
+
+	timeout, err := parseHealthCheckDuration(req.Timeout, "timeout")
+	if err != nil {
+		return nil, err
+	}
+	if timeout >= interval {
+		return nil, badRequestError("health check timeout must be less than interval")
+	}
+
+	riseCount := req.RiseCount
+	if riseCount == 0 {
+		riseCount = 3
+	}
+	fallCount := req.FallCount
+	if fallCount == 0 {
+		fallCount = 2
+	}
+
+	return &models.HealthCheck{
+		Type:        hcType,
+		IntervalSec: int(interval / time.Second),
+		TimeoutSec:  int(timeout / time.Second),
+		RiseCount:   riseCount,
+		FallCount:   fallCount,
+		Config:      req.Config,
+	}, nil
 }
 
 func effectiveEncapType(encapType models.EncapType) models.EncapType {
@@ -328,41 +368,12 @@ func (s *Server) createVIP(c *gin.Context) {
 
 	// Set health check if provided
 	if req.HealthCheck != nil {
-		hcType := models.HCType(strings.ToLower(req.HealthCheck.Type))
-
-		interval, err := parseHealthCheckDuration(req.HealthCheck.Interval, "interval")
+		healthCheck, err := healthCheckFromRequest(req.HealthCheck)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-
-		timeout, err := parseHealthCheckDuration(req.HealthCheck.Timeout, "timeout")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if timeout >= interval {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "health check timeout must be less than interval"})
-			return
-		}
-
-		riseCount := req.HealthCheck.RiseCount
-		if riseCount == 0 {
-			riseCount = 3
-		}
-		fallCount := req.HealthCheck.FallCount
-		if fallCount == 0 {
-			fallCount = 2
-		}
-
-		vip.HealthCheck = &models.HealthCheck{
-			Type:        hcType,
-			IntervalSec: int(interval / time.Second),
-			TimeoutSec:  int(timeout / time.Second),
-			RiseCount:   riseCount,
-			FallCount:   fallCount,
-			Config:      req.HealthCheck.Config,
-		}
+		vip.HealthCheck = healthCheck
 	}
 
 	// Create context with timeout
@@ -444,7 +455,11 @@ func (s *Server) updateVIP(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := validateKnownJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type", "dscp"); err != nil {
+	if err := validateKnownJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type", "dscp", "health_check"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownNestedJSONFields(requestFields, "health_check", "type", "interval", "timeout", "rise_count", "fall_count", "config"); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -487,6 +502,22 @@ func (s *Server) updateVIP(c *gin.Context) {
 			vip.DSCP = nil
 		} else {
 			vip.DSCP = req.DSCP
+		}
+	}
+	if rawHealthCheck, ok := requestFields["health_check"]; ok {
+		if rawJSONIsNull(rawHealthCheck) {
+			vip.HealthCheck = nil
+		} else {
+			if err := validateHealthCheckRequest(req.HealthCheck); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			healthCheck, err := healthCheckFromRequest(req.HealthCheck)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			vip.HealthCheck = healthCheck
 		}
 	}
 

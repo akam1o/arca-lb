@@ -276,6 +276,44 @@ class TestVirtualIPClient(unittest.TestCase):
             f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
         )
 
+    def test_find_by_loadbalancer_merges_label_and_annotation_matches(self):
+        labeled = {
+            "metadata": {
+                "name": "vip-new",
+                "namespace": "arca-lb-system",
+                "annotations": {
+                    constants.ANNOTATION_LB_ID: "lb-1111",
+                },
+            },
+        }
+        legacy = {
+            "metadata": {
+                "name": "vip-legacy",
+                "namespace": "arca-lb-system",
+                "annotations": {
+                    constants.ANNOTATION_LB_ID: "lb-1111",
+                },
+            },
+        }
+        api = FakeCustomObjectsApi(list_results=[
+            {"items": [labeled]},
+            {"items": [labeled, legacy]},
+        ])
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+
+        self.assertEqual(
+            client.find_by_loadbalancer("lb-1111"),
+            [labeled, legacy],
+        )
+
+        self.assertEqual(len(api.list_calls), 2)
+        self.assertEqual(
+            api.list_calls[1]["label_selector"],
+            f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
+        )
+
 
 class TestVirtualIPStatusWatcher(unittest.TestCase):
     def _watcher_with_thread(self, thread):

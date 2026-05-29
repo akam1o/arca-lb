@@ -206,24 +206,31 @@ class VirtualIPClient:
 
     def find_by_loadbalancer(self, lb_id):
         """Find all VirtualIP resources associated with a loadbalancer ID."""
+        vips = []
+        seen = set()
+
+        def append_matching(items):
+            for item in items:
+                annotations = item.get("metadata", {}).get(
+                    "annotations", {}
+                )
+                if annotations.get(constants.ANNOTATION_LB_ID) != lb_id:
+                    continue
+                identity = self._object_identity(item)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                vips.append(item)
+
         result = self.list_virtualips(
             label_selector=self._selector_for_identity(
                 constants.LABEL_OCTAVIA_LB_ID_HASH, lb_id
             )
         )
-        vips = []
-        for item in result.get("items", []):
-            annotations = item.get("metadata", {}).get("annotations", {})
-            if annotations.get(constants.ANNOTATION_LB_ID) == lb_id:
-                vips.append(item)
-        if vips:
-            return vips
+        append_matching(result.get("items", []))
 
         result = self.list_virtualips(label_selector=self._managed_selector())
-        for item in result.get("items", []):
-            annotations = item.get("metadata", {}).get("annotations", {})
-            if annotations.get(constants.ANNOTATION_LB_ID) == lb_id:
-                vips.append(item)
+        append_matching(result.get("items", []))
         return vips
 
     def find_by_listener(self, listener_id):
@@ -275,6 +282,17 @@ class VirtualIPClient:
         return (
             f"{constants.LABEL_MANAGED_BY}="
             f"{constants.LABEL_MANAGED_BY_VALUE}"
+        )
+
+    @staticmethod
+    def _object_identity(item):
+        metadata = item.get("metadata", {})
+        if metadata.get("uid"):
+            return ("uid", metadata["uid"])
+        return (
+            "name",
+            metadata.get("namespace", ""),
+            metadata.get("name", ""),
         )
 
 

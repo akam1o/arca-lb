@@ -113,7 +113,7 @@ func TestUpdateBackendReturnsNotFoundWhenLockedRowMissing(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT \\* FROM `backends` WHERE id = \\? ORDER BY `backends`\\.`id` LIMIT \\? FOR UPDATE").
+	mock.ExpectQuery("SELECT \\* FROM `backends` WHERE id = \\? ORDER BY `backends`\\.`id` LIMIT \\?").
 		WithArgs("backend-1", 1).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id",

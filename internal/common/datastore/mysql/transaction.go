@@ -11,6 +11,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ChangeEvent represents a change event to be logged
@@ -161,13 +162,13 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 	}
 	backend.UpdatedAt = now
 
-	// Verify VIP exists
-	var count int64
-	if err := db.Table("vips").Where("id = ?", backend.VIPID).Count(&count).Error; err != nil {
-		return fmt.Errorf("failed to verify VIP: %w", err)
+	vipRecord, err := lockVIPRecordForUpdate(db, backend.VIPID)
+	if err != nil {
+		return err
 	}
-	if count == 0 {
-		return datastore.ErrNotFound
+	vip := vipModelFromRecord(vipRecord)
+	if err := datastore.ValidateBackendAddressFamilyForVIP(&vip, backend); err != nil {
+		return err
 	}
 
 	// Convert to database record
@@ -209,16 +210,22 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 	db := tx.tx.WithContext(ctx)
 
 	// Check if VIP exists
-	var existingRecord VIPRecord
-	if err := db.Where("id = ?", vip.ID).First(&existingRecord).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return datastore.ErrNotFound
-		}
-		return normalizeError(fmt.Errorf("failed to check VIP: %w", err))
+	existingRecord, err := lockVIPRecordForUpdate(db, vip.ID)
+	if err != nil {
+		return err
 	}
 
 	vip.UpdatedAt = time.Now()
 	vip.CreatedAt = existingRecord.CreatedAt
+	var backendRecords []BackendRecord
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("vip_id = ?", vip.ID).
+		Find(&backendRecords).Error; err != nil {
+		return normalizeError(fmt.Errorf("failed to list backends for VIP validation: %w", err))
+	}
+	if err := validateBackendRecordsForVIP(vip, backendRecords); err != nil {
+		return err
+	}
 
 	// Update VIP
 	result := db.Model(&VIPRecord{}).

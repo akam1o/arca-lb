@@ -104,22 +104,27 @@ func (ds *EtcdDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, er
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
+	vip, _, err := ds.getVIPWithModRevision(ctx, id)
+	return vip, err
+}
+
+func (ds *EtcdDataStore) getVIPWithModRevision(ctx context.Context, id string) (*models.VIP, int64, error) {
 	key := ds.vipKey(id)
 	resp, err := ds.client.Get(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get VIP from etcd: %w", err)
+		return nil, 0, fmt.Errorf("failed to get VIP from etcd: %w", err)
 	}
 
 	if len(resp.Kvs) == 0 {
-		return nil, datastore.ErrNotFound
+		return nil, 0, datastore.ErrNotFound
 	}
 
 	var vip models.VIP
 	if err := json.Unmarshal(resp.Kvs[0].Value, &vip); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal VIP: %w", err)
+		return nil, 0, fmt.Errorf("failed to unmarshal VIP: %w", err)
 	}
 
-	return &vip, nil
+	return &vip, resp.Kvs[0].ModRevision, nil
 }
 
 // ListVIPs retrieves all VIPs from etcd
@@ -161,6 +166,11 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 		return err
 	}
 
+	revisionValue, err := ds.getRevisionValue(ctx)
+	if err != nil {
+		return err
+	}
+
 	// Check if VIP exists
 	existing, err := ds.GetVIP(ctx, vip.ID)
 	if err != nil {
@@ -185,6 +195,13 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 	if err := ds.checkVIPTupleAvailable(ctx, vip); err != nil {
 		return fmt.Errorf("failed to verify VIP tuple: %w", err)
 	}
+	backends, err := ds.ListBackends(ctx, vip.ID)
+	if err != nil {
+		return fmt.Errorf("failed to list backends for VIP validation: %w", err)
+	}
+	if err := datastore.ValidateBackendFamiliesForVIP(vip, backends); err != nil {
+		return err
+	}
 
 	// Update in etcd only if the VIP still exists.
 	key := ds.vipKey(vip.ID)
@@ -192,6 +209,7 @@ func (ds *EtcdDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
 	newIndexKey := ds.vipTupleIndexKey(vip)
 	checks := []etcdTxnCheck{
 		{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
+		{cmp: clientv3.Compare(clientv3.Value(ds.revisionKey()), "=", revisionValue), err: datastore.ErrConflict},
 	}
 	if oldIndexOwned {
 		checks = append(checks,

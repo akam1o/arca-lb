@@ -89,13 +89,13 @@ func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backen
 
 	// Add backend in transaction
 	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Verify VIP exists
-		var count int64
-		if err := tx.Table("vips").Where("id = ?", backend.VIPID).Count(&count).Error; err != nil {
-			return fmt.Errorf("failed to verify VIP: %w", err)
+		vipRecord, err := lockVIPRecordForUpdate(tx, backend.VIPID)
+		if err != nil {
+			return err
 		}
-		if count == 0 {
-			return datastore.ErrNotFound
+		vip := vipModelFromRecord(vipRecord)
+		if err := datastore.ValidateBackendAddressFamilyForVIP(&vip, backend); err != nil {
+			return err
 		}
 
 		// Create backend
@@ -194,6 +194,18 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 	// Update backend in transaction
 	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing BackendRecord
+		if err := tx.Where("id = ?", backend.ID).
+			First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return datastore.ErrNotFound
+			}
+			return fmt.Errorf("failed to get backend: %w", err)
+		}
+
+		vipRecord, err := lockVIPRecordForUpdate(tx, existing.VIPID)
+		if err != nil {
+			return err
+		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ?", backend.ID).
 			First(&existing).Error; err != nil {
@@ -208,6 +220,10 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 		backend.VIPID = existing.VIPID
 		backend.UpdatedAt = time.Now()
 		if err := datastore.ValidateBackendForWrite(backend); err != nil {
+			return err
+		}
+		vip := vipModelFromRecord(vipRecord)
+		if err := datastore.ValidateBackendAddressFamilyForVIP(&vip, backend); err != nil {
 			return err
 		}
 

@@ -21,6 +21,8 @@ type EtcdTransaction struct {
 	checks             []etcdTxnCheck
 	createdVIPIDs      map[string]struct{}
 	createdBackendIDs  map[string]struct{}
+	vipSpecs           map[string]models.VIP
+	backendSpecsByVIP  map[string][]models.Backend
 	vipTupleIndexKeys  map[string]string
 	vipOriginalIndexes map[string]string
 	vipOriginalOwned   map[string]bool
@@ -40,6 +42,8 @@ func (ds *EtcdDataStore) BeginTx(ctx context.Context) (datastore.Transaction, er
 		checks:             make([]etcdTxnCheck, 0),
 		createdVIPIDs:      make(map[string]struct{}),
 		createdBackendIDs:  make(map[string]struct{}),
+		vipSpecs:           make(map[string]models.VIP),
+		backendSpecsByVIP:  make(map[string][]models.Backend),
 		vipTupleIndexKeys:  make(map[string]string),
 		vipOriginalIndexes: make(map[string]string),
 		vipOriginalOwned:   make(map[string]bool),
@@ -210,10 +214,32 @@ func (tx *EtcdTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error
 	}
 	tx.ops = append(tx.ops, clientv3.OpPut(key, string(data)), clientv3.OpPut(indexKey, vip.ID))
 	tx.createdVIPIDs[vip.ID] = struct{}{}
+	tx.vipSpecs[vip.ID] = *vip
 	tx.vipTupleIndexKeys[vip.ID] = indexKey
 	tx.vipTupleOwners[indexKey] = vip.ID
 
 	return nil
+}
+
+func (tx *EtcdTransaction) parentVIPForBackend(ctx context.Context, vipID string) (*models.VIP, error) {
+	if vip, ok := tx.vipSpecs[vipID]; ok {
+		return &vip, nil
+	}
+	vip, revision, err := tx.ds.getVIPWithModRevision(ctx, vipID)
+	if err != nil {
+		return nil, err
+	}
+	tx.checks = append(tx.checks,
+		etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Version(tx.ds.vipKey(vipID)), ">", 0),
+			err: datastore.ErrNotFound,
+		},
+		etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.ModRevision(tx.ds.vipKey(vipID)), "=", revision),
+			err: datastore.ErrConflict,
+		},
+	)
+	return vip, nil
 }
 
 // AddBackend adds a backend creation operation to the transaction
@@ -252,14 +278,12 @@ func (tx *EtcdTransaction) AddBackend(ctx context.Context, backend *models.Backe
 		return fmt.Errorf("failed to verify backend IP: %w", err)
 	}
 
-	if _, created := tx.createdVIPIDs[backend.VIPID]; !created {
-		if _, err := tx.ds.GetVIP(ctx, backend.VIPID); err != nil {
-			return fmt.Errorf("failed to verify VIP: %w", err)
-		}
-		tx.checks = append(tx.checks, etcdTxnCheck{
-			cmp: clientv3.Compare(clientv3.Version(tx.ds.vipKey(backend.VIPID)), ">", 0),
-			err: datastore.ErrNotFound,
-		})
+	parentVIP, err := tx.parentVIPForBackend(ctx, backend.VIPID)
+	if err != nil {
+		return fmt.Errorf("failed to verify VIP: %w", err)
+	}
+	if err := datastore.ValidateBackendAddressFamilyForVIP(parentVIP, backend); err != nil {
+		return err
 	}
 
 	// Add put operations to transaction
@@ -291,6 +315,7 @@ func (tx *EtcdTransaction) AddBackend(ctx context.Context, backend *models.Backe
 	)
 	tx.createdBackendIDs[backend.ID] = struct{}{}
 	tx.backendIPOwners[ipIndexKey] = backend.ID
+	tx.backendSpecsByVIP[backend.VIPID] = append(tx.backendSpecsByVIP[backend.VIPID], *backend)
 
 	return nil
 }
@@ -317,6 +342,10 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 	originalIndexKey := tx.vipOriginalIndexes[vip.ID]
 	originalIndexOwned := tx.vipOriginalOwned[vip.ID]
 	if _, created := tx.createdVIPIDs[vip.ID]; !created {
+		revisionValue, err := tx.ds.getRevisionValue(ctx)
+		if err != nil {
+			return err
+		}
 		existing, err := tx.ds.GetVIP(ctx, vip.ID)
 		if err != nil {
 			return fmt.Errorf("failed to verify VIP: %w", err)
@@ -348,6 +377,10 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 				)
 			}
 		}
+		tx.checks = append(tx.checks, etcdTxnCheck{
+			cmp: clientv3.Compare(clientv3.Value(tx.ds.revisionKey()), "=", revisionValue),
+			err: datastore.ErrConflict,
+		})
 		if currentIndexKey == "" && originalIndexOwned {
 			currentIndexKey = originalIndexKey
 		}
@@ -369,9 +402,22 @@ func (tx *EtcdTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error
 	if err != nil {
 		return fmt.Errorf("failed to verify VIP tuple: %w", err)
 	}
+	if _, created := tx.createdVIPIDs[vip.ID]; !created {
+		backends, err := tx.ds.ListBackends(ctx, vip.ID)
+		if err != nil {
+			return fmt.Errorf("failed to list backends for VIP validation: %w", err)
+		}
+		backends = append(backends, tx.backendSpecsByVIP[vip.ID]...)
+		if err := datastore.ValidateBackendFamiliesForVIP(vip, backends); err != nil {
+			return err
+		}
+	} else if err := datastore.ValidateBackendFamiliesForVIP(vip, tx.backendSpecsByVIP[vip.ID]); err != nil {
+		return err
+	}
 
 	// Add put operation to transaction
 	tx.ops = append(tx.ops, clientv3.OpPut(key, string(data)))
+	tx.vipSpecs[vip.ID] = *vip
 	newIndexKey := tx.ds.vipTupleIndexKey(vip)
 	if currentIndexKey != newIndexKey {
 		if (newIndexKey != originalIndexKey || originalIndexOwned) && needsEmptyIndexCheck {

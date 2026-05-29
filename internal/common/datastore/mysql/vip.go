@@ -68,6 +68,27 @@ func vipModelFromRecord(vipRecord VIPRecord) models.VIP {
 	return vip
 }
 
+func lockVIPRecordForUpdate(db *gorm.DB, id string) (VIPRecord, error) {
+	var record VIPRecord
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", id).
+		First(&record).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return VIPRecord{}, datastore.ErrNotFound
+		}
+		return VIPRecord{}, fmt.Errorf("failed to get VIP: %w", err)
+	}
+	return record, nil
+}
+
+func validateBackendRecordsForVIP(vip *models.VIP, records []BackendRecord) error {
+	backends := make([]models.Backend, 0, len(records))
+	for _, record := range records {
+		backends = append(backends, backendModelFromRecord(record))
+	}
+	return datastore.ValidateBackendFamiliesForVIP(vip, backends)
+}
+
 func healthCheckModelFromRecord(hcRecord HealthCheckRecord) (*models.HealthCheck, error) {
 	var hcConfig models.HCConfig
 	if len(hcRecord.Config) > 0 {
@@ -381,19 +402,23 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 
 	// Update VIP in transaction
 	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing VIPRecord
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ?", vip.ID).
-			First(&existing).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return datastore.ErrNotFound
-			}
-			return fmt.Errorf("failed to get VIP: %w", err)
+		existing, err := lockVIPRecordForUpdate(tx, vip.ID)
+		if err != nil {
+			return err
 		}
 
 		// Preserve CreatedAt and use the locked row as the fallback for partial updates.
 		vip.CreatedAt = existing.CreatedAt
 		vip.UpdatedAt = time.Now()
+		var backendRecords []BackendRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("vip_id = ?", vip.ID).
+			Find(&backendRecords).Error; err != nil {
+			return normalizeError(fmt.Errorf("failed to list backends for VIP validation: %w", err))
+		}
+		if err := validateBackendRecordsForVIP(vip, backendRecords); err != nil {
+			return err
+		}
 
 		fallback := VIPRecord{
 			VIP:       existing.VIP,

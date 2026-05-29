@@ -47,7 +47,8 @@ func ValidateVIPForWrite(vip *models.VIP) error {
 	if err := validateOptionalResourceID("vip id", vip.ID); err != nil {
 		return err
 	}
-	if net.ParseIP(vip.VIP) == nil {
+	vipIP := net.ParseIP(vip.VIP)
+	if vipIP == nil {
 		return fmt.Errorf("%w: vip must be a valid IP address", ErrInvalidInput)
 	}
 	if vip.Port < 1 || vip.Port > 65535 {
@@ -65,6 +66,9 @@ func ValidateVIPForWrite(vip *models.VIP) error {
 	case "", models.EncapTypeGRE4, models.EncapTypeGRE6, models.EncapTypeL3DSR, models.EncapTypeNAT4, models.EncapTypeNAT6:
 	default:
 		return fmt.Errorf("%w: vip encap_type is unsupported", ErrInvalidInput)
+	}
+	if err := validateVIPAddressFamily(vipIP, models.EffectiveEncapType(vip.EncapType)); err != nil {
+		return err
 	}
 	if vip.DSCP != nil && *vip.DSCP > 63 {
 		return fmt.Errorf("%w: vip dscp must be between 0 and 63", ErrInvalidInput)
@@ -93,6 +97,65 @@ func ValidateBackendFieldsForWrite(backend *models.Backend) error {
 	}
 	if backend.Weight < 1 || backend.Weight > 100 {
 		return fmt.Errorf("%w: backend weight must be between 1 and 100", ErrInvalidInput)
+	}
+	return nil
+}
+
+func validateVIPAddressFamily(ip net.IP, encapType models.EncapType) error {
+	isIPv4 := ip.To4() != nil
+	switch {
+	case models.EncapRequiresIPv4VIP(encapType):
+		if !isIPv4 {
+			return fmt.Errorf("%w: vip must be IPv4 when encap_type is %s", ErrInvalidInput, encapType)
+		}
+	case models.EncapRequiresIPv6VIP(encapType):
+		if isIPv4 {
+			return fmt.Errorf("%w: vip must be IPv6 when encap_type is %s", ErrInvalidInput, encapType)
+		}
+	}
+	return nil
+}
+
+// ValidateBackendAddressFamilyForVIP validates backend address-family invariants
+// against the effective encapsulation mode of its parent VIP.
+func ValidateBackendAddressFamilyForVIP(vip *models.VIP, backend *models.Backend) error {
+	if backend == nil {
+		return ErrInvalidInput
+	}
+	return ValidateBackendIPFamilyForVIP(vip, backend.IP)
+}
+
+// ValidateBackendIPFamilyForVIP validates a backend IP against its parent VIP.
+func ValidateBackendIPFamilyForVIP(vip *models.VIP, backendIP string) error {
+	if vip == nil {
+		return ErrInvalidInput
+	}
+	ip := net.ParseIP(backendIP)
+	if ip == nil {
+		return fmt.Errorf("%w: backend ip must be a valid IP address", ErrInvalidInput)
+	}
+
+	encapType := models.EffectiveEncapType(vip.EncapType)
+	isIPv4 := ip.To4() != nil
+	switch {
+	case models.EncapRequiresIPv4Backend(encapType):
+		if !isIPv4 {
+			return fmt.Errorf("%w: backend ip must be IPv4 when encap_type is %s", ErrInvalidInput, encapType)
+		}
+	case models.EncapRequiresIPv6Backend(encapType):
+		if isIPv4 {
+			return fmt.Errorf("%w: backend ip must be IPv6 when encap_type is %s", ErrInvalidInput, encapType)
+		}
+	}
+	return nil
+}
+
+// ValidateBackendFamiliesForVIP validates all existing backends for a VIP.
+func ValidateBackendFamiliesForVIP(vip *models.VIP, backends []models.Backend) error {
+	for i := range backends {
+		if err := ValidateBackendAddressFamilyForVIP(vip, &backends[i]); err != nil {
+			return err
+		}
 	}
 	return nil
 }

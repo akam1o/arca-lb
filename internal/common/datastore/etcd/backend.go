@@ -42,6 +42,13 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 	if err != nil {
 		return fmt.Errorf("failed to marshal backend: %w", err)
 	}
+	parentVIP, parentVIPRevision, err := ds.getVIPWithModRevision(ctx, backend.VIPID)
+	if err != nil {
+		return fmt.Errorf("failed to verify VIP: %w", err)
+	}
+	if err := datastore.ValidateBackendAddressFamilyForVIP(parentVIP, backend); err != nil {
+		return err
+	}
 	if err := ds.checkBackendIPAvailable(ctx, backend); err != nil {
 		return fmt.Errorf("failed to verify backend IP: %w", err)
 	}
@@ -55,6 +62,7 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 		ctx,
 		[]etcdTxnCheck{
 			{cmp: clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.ModRevision(ds.vipKey(backend.VIPID)), "=", parentVIPRevision), err: datastore.ErrConflict},
 			{cmp: clientv3.Compare(clientv3.Version(key), "=", 0), err: datastore.ErrConflict},
 			{cmp: clientv3.Compare(clientv3.Version(indexKey), "=", 0), err: datastore.ErrConflict},
 			{cmp: clientv3.Compare(clientv3.Version(ipIndexKey), "=", 0), err: datastore.ErrConflict},
@@ -258,6 +266,13 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	if err := datastore.ValidateBackendForWrite(backend); err != nil {
 		return err
 	}
+	parentVIP, parentVIPRevision, err := ds.getVIPWithModRevision(ctx, backend.VIPID)
+	if err != nil {
+		return fmt.Errorf("failed to verify VIP: %w", err)
+	}
+	if err := datastore.ValidateBackendAddressFamilyForVIP(parentVIP, backend); err != nil {
+		return err
+	}
 
 	// Serialize backend to JSON
 	data, err := json.Marshal(backend)
@@ -275,6 +290,7 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	newIPIndexKey := ds.backendIPIndexKey(backend.VIPID, backend.IP)
 	checks := []etcdTxnCheck{
 		{cmp: clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0), err: datastore.ErrNotFound},
+		{cmp: clientv3.Compare(clientv3.ModRevision(ds.vipKey(backend.VIPID)), "=", parentVIPRevision), err: datastore.ErrConflict},
 		{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
 		{cmp: clientv3.Compare(clientv3.Version(indexKey), ">", 0), err: datastore.ErrNotFound},
 		{cmp: clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID), err: datastore.ErrNotFound},

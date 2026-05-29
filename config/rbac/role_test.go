@@ -32,12 +32,12 @@ func TestOperatorVirtualIPRBACUsesLeastPrivilegeVerbs(t *testing.T) {
 	docs := decodeRoleManifests(t, data)
 
 	rule := findRule(t, docs, "arca-lb-operator", "arca.io", "virtualips")
-	for _, want := range []string{"get", "list", "watch"} {
+	for _, want := range []string{"get", "list", "watch", "update"} {
 		if !contains(rule.Verbs, want) {
 			t.Fatalf("operator virtualips verbs = %#v, want %q", rule.Verbs, want)
 		}
 	}
-	for _, disallowed := range []string{"create", "update", "patch", "delete"} {
+	for _, disallowed := range []string{"create", "patch", "delete"} {
 		if contains(rule.Verbs, disallowed) {
 			t.Fatalf("operator virtualips verbs = %#v, must not include %q", rule.Verbs, disallowed)
 		}

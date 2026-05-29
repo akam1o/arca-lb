@@ -33,7 +33,7 @@ type VirtualIPReconciler struct {
 	AgentStatusRequeueAfter time.Duration
 }
 
-// +kubebuilder:rbac:groups=arca.io,resources=virtualips,verbs=get;list;watch
+// +kubebuilder:rbac:groups=arca.io,resources=virtualips,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=arca.io,resources=virtualips/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=arca.io,resources=virtualips/finalizers,verbs=update
 

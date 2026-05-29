@@ -160,7 +160,7 @@ The Operator is configured via command-line flags:
 |------|-------------|---------|
 | `--metrics-bind-address` | Address for the metrics endpoint | `127.0.0.1:8080` |
 | `--health-probe-bind-address` | Address for the health probe endpoint | `:8081` |
-| `--enable-webhooks` | Enable admission webhooks | `true` |
+| `--enable-webhooks` | Enable admission webhooks | `false` |
 | `--leader-elect` | Enable leader election | `false` |
 
 ## Controller Secret Files

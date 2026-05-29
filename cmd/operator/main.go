@@ -129,7 +129,7 @@ func runOperator(fs *flag.FlagSet, rt operatorRuntime) int {
 func bindOperatorFlags(fs *flag.FlagSet, opts *operatorOptions, zapOpts *zap.Options) {
 	fs.StringVar(&opts.metricsAddr, "metrics-bind-address", "127.0.0.1:8080", "The address the metrics endpoint binds to.")
 	fs.StringVar(&opts.probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
-	fs.BoolVar(&opts.enableWebhooks, "enable-webhooks", true, "Enable admission webhooks.")
+	fs.BoolVar(&opts.enableWebhooks, "enable-webhooks", false, "Enable admission webhooks.")
 	fs.BoolVar(&opts.enableLeaderElection, "leader-elect", false, "Enable leader election.")
 	fs.DurationVar(&opts.agentStatusTTL, "agent-status-ttl", 0, "Fallback maximum age for per-agent VirtualIP status observations without ttlSeconds. Zero uses the default.")
 	fs.DurationVar(&opts.agentStatusPruneInterval, "agent-status-prune-interval", 0, "How often to recheck VirtualIPs with current per-agent status. Zero uses half of --agent-status-ttl.")

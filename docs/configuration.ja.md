@@ -151,7 +151,7 @@ Operator はコマンドラインフラグで設定します：
 |------|------|-----------|
 | `--metrics-bind-address` | メトリクスエンドポイントのアドレス | `127.0.0.1:8080` |
 | `--health-probe-bind-address` | ヘルスプローブエンドポイントのアドレス | `:8081` |
-| `--enable-webhooks` | Admission Webhook を有効化 | `true` |
+| `--enable-webhooks` | Admission Webhook を有効化 | `false` |
 | `--leader-elect` | Leader Election を有効化 | `false` |
 
 ## Controller Secret ファイル

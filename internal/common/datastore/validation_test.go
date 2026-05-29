@@ -104,6 +104,38 @@ func TestValidateVIPForWriteRejectsEncapAddressFamilyMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateVIPForWriteRejectsZeroDSCPForL3DSR(t *testing.T) {
+	zero := uint8(0)
+	tests := []struct {
+		name      string
+		encapType models.EncapType
+	}{
+		{
+			name:      "explicit l3dsr",
+			encapType: models.EncapTypeL3DSR,
+		},
+		{
+			name: "default l3dsr",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateVIPForWrite(&models.VIP{
+				VIP:       "192.0.2.10",
+				Port:      80,
+				Protocol:  models.ProtocolTCP,
+				LBMethod:  models.LBMethodMaglev,
+				EncapType: tt.encapType,
+				DSCP:      &zero,
+			})
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("error = %v, want %v", err, ErrInvalidInput)
+			}
+		})
+	}
+}
+
 func TestValidateBackendAddressFamilyForVIP(t *testing.T) {
 	tests := []struct {
 		name      string

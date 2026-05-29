@@ -67,11 +67,17 @@ func ValidateVIPForWrite(vip *models.VIP) error {
 	default:
 		return fmt.Errorf("%w: vip encap_type is unsupported", ErrInvalidInput)
 	}
-	if err := validateVIPAddressFamily(vipIP, models.EffectiveEncapType(vip.EncapType)); err != nil {
+	encapType := models.EffectiveEncapType(vip.EncapType)
+	if err := validateVIPAddressFamily(vipIP, encapType); err != nil {
 		return err
 	}
-	if vip.DSCP != nil && *vip.DSCP > 63 {
-		return fmt.Errorf("%w: vip dscp must be between 0 and 63", ErrInvalidInput)
+	if vip.DSCP != nil {
+		if *vip.DSCP > 63 {
+			return fmt.Errorf("%w: vip dscp must be between 0 and 63", ErrInvalidInput)
+		}
+		if encapType == models.EncapTypeL3DSR && *vip.DSCP == 0 {
+			return fmt.Errorf("%w: vip dscp must be between 1 and 63 for L3DSR", ErrInvalidInput)
+		}
 	}
 	if vip.HealthCheck != nil {
 		if err := models.ValidateHealthCheckTiming(vip.HealthCheck); err != nil {

@@ -245,6 +245,12 @@ type AgentStatus struct {
 	// +kubebuilder:validation:MaxItems=1024
 	Backends []BackendStatus `json:"backends,omitempty"`
 
+	// HealthyBackendBitmap encodes healthy backend positions from the observed
+	// spec.backends list so aggregate counts can remain exact when Backends is
+	// capped for status size.
+	// +optional
+	HealthyBackendBitmap string `json:"healthyBackendBitmap,omitempty"`
+
 	// Conditions represent this agent's latest observations.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

@@ -3,6 +3,7 @@ package status
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -145,8 +146,11 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 			TotalBackends:      len(vip.Spec.Backends),
 			HealthyBackends:    healthyCount,
 			Backends:           buildBackendStatuses(vip.Spec.Backends, healthySet),
-			LastUpdateTime:     &now,
-			TTLSeconds:         durationSeconds(statusTTL),
+			HealthyBackendBitmap: buildHealthyBackendBitmap(
+				vip.Spec.Backends, healthySet,
+			),
+			LastUpdateTime: &now,
+			TTLSeconds:     durationSeconds(statusTTL),
 		}
 		for _, condition := range conditions {
 			condition.ObservedGeneration = vip.Generation
@@ -240,6 +244,26 @@ func buildBackendStatuses(backends []v1alpha1.BackendSpec, healthySet map[string
 		})
 	}
 	return statuses
+}
+
+func buildHealthyBackendBitmap(backends []v1alpha1.BackendSpec, healthySet map[string]struct{}) string {
+	if len(backends) == 0 || len(healthySet) == 0 {
+		return ""
+	}
+
+	bitmap := make([]byte, (len(backends)+7)/8)
+	for i, be := range backends {
+		if _, healthy := healthySet[be.Address]; healthy {
+			bitmap[i/8] |= 1 << uint(i%8)
+		}
+	}
+	for len(bitmap) > 0 && bitmap[len(bitmap)-1] == 0 {
+		bitmap = bitmap[:len(bitmap)-1]
+	}
+	if len(bitmap) == 0 {
+		return ""
+	}
+	return hex.EncodeToString(bitmap)
 }
 
 func normalizeAgentID(agentID string) string {
@@ -427,18 +451,11 @@ func agentStatusTTL(status v1alpha1.AgentStatus, fallback time.Duration) time.Du
 }
 
 func applyAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, freshStatuses []v1alpha1.AgentStatus, expiredStatuses []v1alpha1.AgentStatus) {
-	healthySet := make(map[string]struct{})
-	for _, status := range freshStatuses {
-		for _, backend := range status.Backends {
-			if backend.Healthy {
-				healthySet[backend.Address] = struct{}{}
-			}
-		}
-	}
+	healthySet, healthyCount := aggregateHealthyBackends(vip.Spec.Backends, freshStatuses)
 
 	vip.Status.ObservedGeneration = generation
 	vip.Status.TotalBackends = len(vip.Spec.Backends)
-	vip.Status.HealthyBackends = len(healthySet)
+	vip.Status.HealthyBackends = healthyCount
 	vip.Status.Backends = buildBackendStatuses(vip.Spec.Backends, healthySet)
 
 	conditions := preserveNonAgentConditions(vip.Status.Conditions)
@@ -448,6 +465,63 @@ func applyAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, freshStatus
 		meta.SetStatusCondition(&conditions, dataPlane)
 	}
 	vip.Status.Conditions = conditions
+}
+
+func aggregateHealthyBackends(backends []v1alpha1.BackendSpec, statuses []v1alpha1.AgentStatus) (map[string]struct{}, int) {
+	healthySet := make(map[string]struct{})
+	reportedCount := 0
+	for _, status := range statuses {
+		if addHealthyBackendsFromBitmap(healthySet, backends, status.HealthyBackendBitmap) {
+			continue
+		}
+		for _, backend := range status.Backends {
+			if backend.Healthy {
+				healthySet[backend.Address] = struct{}{}
+			}
+		}
+		if status.TotalBackends == len(backends) && status.HealthyBackends >= len(backends) {
+			for _, backend := range backends {
+				healthySet[backend.Address] = struct{}{}
+			}
+		}
+		if count := clampHealthyBackendCount(status.HealthyBackends, len(backends)); count > reportedCount {
+			reportedCount = count
+		}
+	}
+	if len(healthySet) > reportedCount {
+		reportedCount = len(healthySet)
+	}
+	return healthySet, reportedCount
+}
+
+func addHealthyBackendsFromBitmap(healthySet map[string]struct{}, backends []v1alpha1.BackendSpec, bitmap string) bool {
+	if bitmap == "" {
+		return false
+	}
+	decoded, err := hex.DecodeString(bitmap)
+	if err != nil {
+		return false
+	}
+	for i, backend := range backends {
+		byteIndex := i / 8
+		if byteIndex >= len(decoded) {
+			break
+		}
+		if decoded[byteIndex]&(1<<uint(i%8)) != 0 {
+			healthySet[backend.Address] = struct{}{}
+		}
+	}
+	return true
+}
+
+func clampHealthyBackendCount(count, total int) int {
+	if count < 0 {
+		return 0
+	}
+	if count > total {
+		return total
+	}
+	return count
 }
 
 func preserveNonAgentConditions(conditions []metav1.Condition) []metav1.Condition {

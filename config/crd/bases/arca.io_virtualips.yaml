@@ -353,6 +353,12 @@ spec:
                         - type
                         type: object
                       type: array
+                    healthyBackendBitmap:
+                      description: |-
+                        HealthyBackendBitmap encodes healthy backend positions from the observed
+                        spec.backends list so aggregate counts can remain exact when Backends is
+                        capped for status size.
+                      type: string
                     healthyBackends:
                       description: HealthyBackends is the number of healthy backends
                         observed by this agent.

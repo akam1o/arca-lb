@@ -399,6 +399,21 @@ class TestDriverLifecycle(unittest.TestCase):
 
         self.mock_k8s.create_virtualip.assert_not_called()
 
+    def test_listener_create_rejects_vip_family_for_encap(self):
+        listener = FakeObj({
+            "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "loadbalancer_id": "bbbbbbbb-1111-2222-3333-444444444444",
+            "protocol": "TCP",
+            "protocol_port": 80,
+            "vip_address": "2001:db8::10",
+            "project_id": "test-project",
+        })
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.listener_create(listener)
+
+        self.mock_k8s.create_virtualip.assert_not_called()
+
     def test_listener_create_rejects_invalid_protocol_port(self):
         listener = FakeObj({
             "listener_id": "aaaaaaaa-1111-2222-3333-444444444444",
@@ -2344,6 +2359,28 @@ class TestDriverLifecycle(unittest.TestCase):
             "member_id": "member-1111",
             "pool_id": "pool-1111",
             "address": "not-an-ip",
+            "protocol_port": 80,
+            "weight": 100,
+        })
+
+        with self.assertRaises(driver_exc.UnsupportedOptionError):
+            self.driver.member_create(member)
+
+        self.mock_k8s.update_virtualip.assert_not_called()
+
+    def test_member_create_rejects_address_family_for_encap(self):
+        existing_vip = _make_vip(
+            "octavia-bbbbbbbb-aaaaaaaa",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP",
+             "encapType": "L3DSR", "backends": []},
+            annotations={constants.ANNOTATION_POOL_ID: "pool-1111"},
+        )
+        self.mock_k8s.find_by_pool.return_value = existing_vip
+
+        member = FakeObj({
+            "member_id": "member-1111",
+            "pool_id": "pool-1111",
+            "address": "2001:db8::20",
             "protocol_port": 80,
             "weight": 100,
         })

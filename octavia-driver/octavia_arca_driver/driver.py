@@ -293,6 +293,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         self.validate_flavor(flavor)
         encap_type = flavor.get("encap_type", self._default_encap_type)
         dscp = flavor.get("dscp", self._default_dscp)
+        self._validate_vip_address_family(vip_address, encap_type)
 
         name = self._k8s._resource_name(lb_id, listener_id)
         spec = {
@@ -719,6 +720,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         def mutate(current_vip, spec, annotations):
             backends = spec.get("backends", [])
             self._validate_member_dataplane_port(current_vip, m)
+            if not is_draining:
+                self._validate_member_address_family(current_vip, m)
 
             backends = self._backends_with_member_state(
                 backends, address, backend, is_draining
@@ -868,6 +871,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         def mutate(current_vip, spec, annotations):
             self._validate_member_dataplane_port(current_vip, m)
+            if not is_draining:
+                self._validate_member_address_family(current_vip, m)
             backends = self._backends_with_member_state(
                 spec.get("backends", []), address, backend, is_draining
             )
@@ -919,6 +924,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             self._validate_member_supported(m)
             self._validate_member_addresses(m)
             self._validate_member_dataplane_port(vip, m)
+            if not self._member_is_draining(m):
+                self._validate_member_address_family(vip, m)
 
         name = vip["metadata"]["name"]
         deleted_member_ids = []
@@ -934,6 +941,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 self._validate_member_dataplane_port(current_vip, m)
                 is_draining = self._member_is_draining(m)
                 if not is_draining:
+                    self._validate_member_address_family(current_vip, m)
                     backends.append(self._backend_from_member(m))
                 member_id = self._member_id(m)
                 if member_id and m.get("address"):
@@ -1833,6 +1841,9 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     is_draining = self._member_is_draining(member)
                     member_id = self._member_id(member)
                     if not is_draining:
+                        self._validate_member_address_family(
+                            effective_vip, member
+                        )
                         backends.append(self._backend_from_member(member))
                     elif member_id:
                         draining_member_ids.add(member_id)
@@ -2535,6 +2546,62 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             raise driver_exc.UnsupportedOptionError(
                 user_fault_string=f"{field} must be a valid IP address.",
                 operator_fault_string=f"Invalid {field}: {value}",
+            )
+
+    @staticmethod
+    def _is_ipv4_address(value):
+        return isinstance(ipaddress.ip_address(str(value)),
+                          ipaddress.IPv4Address)
+
+    @classmethod
+    def _validate_vip_address_family(cls, address, encap_type):
+        is_ipv4 = cls._is_ipv4_address(address)
+        if encap_type in ("L3DSR", "NAT4") and not is_ipv4:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    f"encap_type {encap_type} requires an IPv4 VIP address."
+                ),
+                operator_fault_string=(
+                    f"encap_type {encap_type} cannot use IPv6 VIP {address}"
+                ),
+            )
+        if encap_type == "NAT6" and is_ipv4:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "encap_type NAT6 requires an IPv6 VIP address."
+                ),
+                operator_fault_string=(
+                    f"encap_type NAT6 cannot use IPv4 VIP {address}"
+                ),
+            )
+
+    @classmethod
+    def _validate_member_address_family(cls, vip, member):
+        member = cls._as_dict(member)
+        address = member.get("address")
+        spec = vip.get("spec", {}) if isinstance(vip, dict) else {}
+        encap_type = spec.get("encapType") or "L3DSR"
+        is_ipv4 = cls._is_ipv4_address(address)
+        member_id = cls._member_id(member) or address
+        if encap_type in ("GRE4", "L3DSR", "NAT4") and not is_ipv4:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    f"encap_type {encap_type} requires IPv4 member addresses."
+                ),
+                operator_fault_string=(
+                    f"Member {member_id} address {address} must be IPv4 for "
+                    f"encap_type {encap_type}"
+                ),
+            )
+        if encap_type in ("GRE6", "NAT6") and is_ipv4:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    f"encap_type {encap_type} requires IPv6 member addresses."
+                ),
+                operator_fault_string=(
+                    f"Member {member_id} address {address} must be IPv6 for "
+                    f"encap_type {encap_type}"
+                ),
             )
 
     @staticmethod

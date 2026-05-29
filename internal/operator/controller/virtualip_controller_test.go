@@ -146,7 +146,7 @@ func TestReconcileAddsFinalizerAndRequeues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if !result.Requeue {
+	if result.RequeueAfter <= 0 {
 		t.Fatalf("Reconcile result = %+v, want requeue after finalizer add", result)
 	}
 

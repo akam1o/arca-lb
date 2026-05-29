@@ -77,8 +77,8 @@ func (r *VirtualIPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.Update(ctx, &vip); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
-		// Requeue to continue reconciliation with the updated object
-		return ctrl.Result{Requeue: true}, nil
+		// Requeue to continue reconciliation with the updated object.
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	// Update status

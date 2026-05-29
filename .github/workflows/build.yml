@@ -31,10 +31,7 @@ jobs:
         run: make deps
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.6
-          args: --timeout=10m
+        run: make lint
 
   test:
     name: Test

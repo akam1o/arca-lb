@@ -226,7 +226,7 @@ jobs:
         run: mkdir -p dist
 
       - name: Build operator image tar (linux/amd64)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile.operator
@@ -262,7 +262,7 @@ jobs:
           done <<< "${{ steps.meta-operator.outputs.tags }}"
 
       - name: Build agent image tar (linux/amd64)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile.agent

@@ -19,7 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
-	runtimescheme "sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
 // EventType distinguishes watch event types.
@@ -246,9 +245,7 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 
 func newScheme() (*runtime.Scheme, error) {
 	scheme := runtime.NewScheme()
-	sb := &runtimescheme.Builder{GroupVersion: v1alpha1.GroupVersion}
-	sb.Register(&v1alpha1.VirtualIP{}, &v1alpha1.VirtualIPList{})
-	if err := sb.AddToScheme(scheme); err != nil {
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
 	return scheme, nil

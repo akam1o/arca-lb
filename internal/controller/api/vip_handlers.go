@@ -130,12 +130,25 @@ func healthCheckSecondsFromRequest(durationValue string, secondsValue *int, dura
 	return int(duration / time.Second), nil
 }
 
+func validateHealthCheckTimingRepresentation(req *HealthCheckRequest) error {
+	usesDurationFields := req.Interval != "" || req.Timeout != ""
+	usesSecondsFields := req.IntervalSeconds != nil || req.TimeoutSeconds != nil
+	if usesDurationFields && usesSecondsFields {
+		return badRequestError("health_check timing must use either interval_seconds/timeout_seconds or interval/timeout")
+	}
+	return nil
+}
+
 func healthCheckFromRequest(req *HealthCheckRequest) (*models.HealthCheck, error) {
 	if req == nil {
 		return nil, nil
 	}
 
 	hcType := models.HCType(strings.ToLower(req.Type))
+
+	if err := validateHealthCheckTimingRepresentation(req); err != nil {
+		return nil, err
+	}
 
 	intervalSec, err := healthCheckSecondsFromRequest(req.Interval, req.IntervalSeconds, "interval", "interval_seconds")
 	if err != nil {

@@ -464,7 +464,7 @@ components:
       required: [id, vip_id, type, interval_sec, timeout_sec, rise_count, fall_count, created_at, updated_at]
     HealthCheckCreate:
       type: object
-      description: Health check settings for VIP creation. Use interval_seconds and timeout_seconds for CRD-compatible whole-second timing. Legacy duration strings are still accepted through interval and timeout, but each timing value must be specified in exactly one representation.
+      description: Health check settings for VIP creation. Use interval_seconds and timeout_seconds for CRD-compatible whole-second timing. Legacy duration strings are still accepted through interval and timeout, but a request must use exactly one timing representation.
       properties:
         type:
           type: string
@@ -501,9 +501,18 @@ components:
           type: object
           description: Prober-specific configuration; required for http/https/tcp/tls-hello.
           additionalProperties: true
+      additionalProperties: false
       oneOf:
         - required: [type, interval_seconds, timeout_seconds]
+          not:
+            anyOf:
+              - required: [interval]
+              - required: [timeout]
         - required: [type, interval, timeout]
+          not:
+            anyOf:
+              - required: [interval_seconds]
+              - required: [timeout_seconds]
     VIPCreateRequest:
       type: object
       properties:
@@ -546,6 +555,10 @@ components:
           type: integer
           minimum: 1
           maximum: 63
+          nullable: true
+        health_check:
+          allOf:
+            - $ref: "#/components/schemas/HealthCheckCreate"
           nullable: true
       additionalProperties: false
     VIPListResponse:

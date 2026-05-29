@@ -320,6 +320,23 @@ func TestCreateVIP(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
+			name: "health check mixed duration and seconds representations",
+			requestBody: map[string]interface{}{
+				"vip":      "192.168.1.101",
+				"port":     443,
+				"protocol": "TCP",
+				"health_check": map[string]interface{}{
+					"type":             "http",
+					"interval_seconds": 10,
+					"timeout":          "1s",
+					"config": map[string]interface{}{
+						"port": 8080,
+					},
+				},
+			},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
 			name: "health check missing timing fields",
 			requestBody: map[string]interface{}{
 				"vip":      "192.168.1.101",

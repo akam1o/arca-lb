@@ -192,7 +192,7 @@ jobs:
 
       - name: Extract metadata for Operator
         id: meta-operator
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ghcr.io/${{ steps.vars.outputs.owner_lc }}/arca-lb-operator
@@ -208,7 +208,7 @@ jobs:
 
       - name: Extract metadata for Agent
         id: meta-agent
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ghcr.io/${{ steps.vars.outputs.owner_lc }}/arca-lb-agent

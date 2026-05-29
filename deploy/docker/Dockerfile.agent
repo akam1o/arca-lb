@@ -23,7 +23,7 @@ RUN if [ -n "$TARGETOS" ]; then export GOOS="$TARGETOS"; fi; \
     -o /build/bin/arcalb-agent \
     ./cmd/arcalb-agent
 
-FROM alpine:3.19
+FROM alpine:3.23
 
 RUN apk add --no-cache ca-certificates frr iputils tzdata
 

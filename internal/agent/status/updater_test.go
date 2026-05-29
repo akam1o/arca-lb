@@ -118,6 +118,35 @@ func TestBuildBackendStatusesCapsStatusDetails(t *testing.T) {
 	}
 }
 
+func TestSanitizeVirtualIPStatusCapsRetainedBackendDetails(t *testing.T) {
+	backends := make([]v1alpha1.BackendStatus, 0, v1alpha1.MaxVirtualIPStatusBackends+1)
+	for i := 0; i <= v1alpha1.MaxVirtualIPStatusBackends; i++ {
+		backends = append(backends, v1alpha1.BackendStatus{
+			Address: fmt.Sprintf("10.0.%d.%d", i/256, i%256),
+			Healthy: true,
+		})
+	}
+	status := v1alpha1.VirtualIPStatus{
+		Backends: backends,
+		AgentStatuses: []v1alpha1.AgentStatus{
+			{
+				AgentID:    "node-a",
+				Backends:   backends,
+				TTLSeconds: int64(DefaultAgentStatusTTL / time.Second),
+			},
+		},
+	}
+
+	got := SanitizeVirtualIPStatus(status)
+
+	if len(got.Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("status backend count = %d, want %d", len(got.Backends), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+	if len(got.AgentStatuses[0].Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("agent backend count = %d, want %d", len(got.AgentStatuses[0].Backends), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+}
+
 func TestSanitizeAgentStatusesCapsNewestObservations(t *testing.T) {
 	base := time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC)
 	statuses := make([]v1alpha1.AgentStatus, 0, v1alpha1.MaxVirtualIPStatusAgentStatuses+2)

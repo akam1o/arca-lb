@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -367,6 +368,64 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 	}
 	if ready.Status != metav1.ConditionTrue {
 		t.Fatalf("Ready status = %s, want True", ready.Status)
+	}
+}
+
+func TestUpdateStatusCapsRetainedOversizedStatusDetails(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	oversizedBackends := make([]v1alpha1.BackendStatus, 0, v1alpha1.MaxVirtualIPStatusBackends+1)
+	for i := 0; i <= v1alpha1.MaxVirtualIPStatusBackends; i++ {
+		oversizedBackends = append(oversizedBackends, v1alpha1.BackendStatus{
+			Address: fmt.Sprintf("10.0.%d.%d", i/256, i%256),
+			Healthy: true,
+		})
+	}
+	vip := newTestVirtualIP("default", "web")
+	vip.Generation = 7
+	vip.Status.ObservedGeneration = 6
+	vip.Status.Backends = oversizedBackends
+	vip.Status.AgentStatuses = []v1alpha1.AgentStatus{
+		{
+			AgentID:            "node-a",
+			ObservedGeneration: 6,
+			HealthyBackends:    len(oversizedBackends),
+			TotalBackends:      len(oversizedBackends),
+			Backends:           oversizedBackends,
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	if err := reconciler.updateStatus(context.Background(), vip); err != nil {
+		t.Fatalf("updateStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	key := types.NamespacedName{Namespace: "default", Name: "web"}
+	if err := k8sClient.Get(context.Background(), key, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.Status.ObservedGeneration != 6 {
+		t.Fatalf("ObservedGeneration = %d, want stale generation preserved", got.Status.ObservedGeneration)
+	}
+	if len(got.Status.Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("Backends = %d, want capped to %d", len(got.Status.Backends), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+	if len(got.Status.AgentStatuses) != 1 || len(got.Status.AgentStatuses[0].Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("AgentStatuses = %#v, want backend details capped", got.Status.AgentStatuses)
 	}
 }
 

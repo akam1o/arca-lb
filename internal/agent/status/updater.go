@@ -157,6 +157,7 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 			current.Status.AgentStatuses, agentStatus, vip.Generation,
 		)
 		RefreshAggregateStatus(&current, vip.Generation, now.Time, statusTTL)
+		current.Status = SanitizeVirtualIPStatus(current.Status)
 
 		return u.client.Status().Update(ctx, &current)
 	})
@@ -196,6 +197,7 @@ func (u *Updater) UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.
 		} else {
 			current.Status.AgentStatuses = SanitizeAgentStatuses(current.Status.AgentStatuses)
 		}
+		current.Status = SanitizeVirtualIPStatus(current.Status)
 
 		return u.client.Status().Update(ctx, &current)
 	})
@@ -278,13 +280,31 @@ func sanitizeAgentStatusTTLSeconds(ttlSeconds int64) int64 {
 	return ttlSeconds
 }
 
+// SanitizeVirtualIPStatus clamps retained status details so existing status
+// values remain accepted by the CRD schema on future status updates.
+func SanitizeVirtualIPStatus(status v1alpha1.VirtualIPStatus) v1alpha1.VirtualIPStatus {
+	status.Backends = SanitizeBackendStatuses(status.Backends)
+	status.AgentStatuses = SanitizeAgentStatuses(status.AgentStatuses)
+	return status
+}
+
+// SanitizeBackendStatuses caps per-backend status details to the CRD schema
+// limit while preserving the existing order.
+func SanitizeBackendStatuses(statuses []v1alpha1.BackendStatus) []v1alpha1.BackendStatus {
+	if len(statuses) <= v1alpha1.MaxVirtualIPStatusBackends {
+		return statuses
+	}
+	return statuses[:v1alpha1.MaxVirtualIPStatusBackends]
+}
+
 // SanitizeAgentStatuses clamps retained per-agent observations so existing
 // status values remain accepted by the CRD schema on future status updates.
 func SanitizeAgentStatuses(statuses []v1alpha1.AgentStatus) []v1alpha1.AgentStatus {
 	var out []v1alpha1.AgentStatus
 	for i, status := range statuses {
 		nextTTL := sanitizeAgentStatusTTLSeconds(status.TTLSeconds)
-		if nextTTL == status.TTLSeconds {
+		nextBackends := SanitizeBackendStatuses(status.Backends)
+		if nextTTL == status.TTLSeconds && len(nextBackends) == len(status.Backends) {
 			if out != nil {
 				out = append(out, status)
 			}
@@ -295,6 +315,7 @@ func SanitizeAgentStatuses(statuses []v1alpha1.AgentStatus) []v1alpha1.AgentStat
 			out = append(out, statuses[:i]...)
 		}
 		status.TTLSeconds = nextTTL
+		status.Backends = nextBackends
 		out = append(out, status)
 	}
 	if out == nil {

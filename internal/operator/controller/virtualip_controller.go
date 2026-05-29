@@ -129,7 +129,7 @@ func (r *VirtualIPReconciler) updateStatus(ctx context.Context, vip *v1alpha1.Vi
 		newStatus = aggregate.Status
 	}
 
-	newStatus.AgentStatuses = agentstatus.SanitizeAgentStatuses(newStatus.AgentStatuses)
+	newStatus = agentstatus.SanitizeVirtualIPStatus(newStatus)
 
 	// Set Ready condition based on configuration validity
 	readyCond := metav1.Condition{

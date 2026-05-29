@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -27,6 +28,9 @@ func NewTCPProber(hc *models.HealthCheck, logger *logrus.Logger) (*TCPProber, er
 	if hc == nil {
 		return nil, fmt.Errorf("health check configuration is nil")
 	}
+	if err := models.ValidateHealthCheckConfig(hc.Type, hc.Config); err != nil {
+		return nil, fmt.Errorf("invalid TCP health check config: %w", err)
+	}
 
 	prober := &TCPProber{
 		logger:  logger,
@@ -48,14 +52,11 @@ func (p *TCPProber) parseConfig(config models.HCConfig) error {
 	if !ok {
 		return fmt.Errorf("port is required in TCP health check config")
 	}
-	switch v := port.(type) {
-	case int:
-		p.port = v
-	case float64:
-		p.port = int(v)
-	default:
+	parsedPort, ok := healthCheckConfigInt(port)
+	if !ok {
 		return fmt.Errorf("port must be an integer, got %T", port)
 	}
+	p.port = parsedPort
 
 	// Send (optional)
 	if send, ok := config["send"].(string); ok {
@@ -73,6 +74,14 @@ func (p *TCPProber) parseConfig(config models.HCConfig) error {
 // Probe performs a TCP health check
 func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	startTime := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return ProbeResult{
+			Success:   false,
+			Latency:   time.Since(startTime),
+			Error:     err,
+			Timestamp: startTime,
+		}
+	}
 
 	address := tcpProbeAddress(target, p.port)
 
@@ -93,8 +102,12 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Set deadline for the entire operation
-	if err := conn.SetDeadline(startTime.Add(p.timeout)); err != nil {
+	// Set deadline for the entire operation.
+	deadline := startTime.Add(p.timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
 		return ProbeResult{
 			Success:   false,
 			Latency:   time.Since(startTime),
@@ -102,6 +115,8 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 			Timestamp: startTime,
 		}
 	}
+	stopCancelWatcher := bindTCPConnCancelToContext(ctx, conn)
+	defer stopCancelWatcher()
 
 	// If no send/expect, just successful connection is enough
 	if p.send == "" && p.expect == "" {
@@ -117,6 +132,7 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 	if p.send != "" {
 		_, err := conn.Write([]byte(p.send))
 		if err != nil {
+			err = tcpProbeContextError(ctx, err)
 			return ProbeResult{
 				Success:   false,
 				Latency:   time.Since(startTime),
@@ -132,6 +148,7 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 		buffer := make([]byte, 4096)
 		n, err := conn.Read(buffer)
 		if err != nil {
+			err = tcpProbeContextError(ctx, err)
 			return ProbeResult{
 				Success:   false,
 				Latency:   time.Since(startTime),
@@ -165,4 +182,31 @@ func (p *TCPProber) Probe(ctx context.Context, target string) ProbeResult {
 func (p *TCPProber) Close() error {
 	// No persistent resources to clean up
 	return nil
+}
+
+func tcpProbeContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return context.DeadlineExceeded
+		}
+	}
+	return err
+}
+
+func bindTCPConnCancelToContext(ctx context.Context, conn net.Conn) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-done:
+		}
+	}()
+
+	return func() { close(done) }
 }

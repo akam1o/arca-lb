@@ -46,7 +46,7 @@ healthCheck:
 
 metrics:
   enabled: true
-  address: ":9090"
+  address: "127.0.0.1:9090"
   path: "/metrics"
 
 telemetry:
@@ -121,8 +121,13 @@ log:
 | パラメータ | 説明 | デフォルト |
 |-----------|------|-----------|
 | `metrics.enabled` | Prometheus メトリクスエンドポイントを有効化 | `false` |
-| `metrics.address` | メトリクスサーバーのリスンアドレス | `:9090` |
+| `metrics.address` | メトリクスサーバーのリスンアドレス | `127.0.0.1:9090` |
 | `metrics.path` | メトリクスエンドポイントの HTTP パス | `/metrics` |
+
+同梱の Agent manifest は metrics と health endpoint を loopback に bind し、
+認証なしの Prometheus auto-scrape annotation は有効化しません。node-local
+loopback listener の外へ metrics を公開する場合は、kube-rbac-proxy、NetworkPolicy
+付き Service、または別の認証済み scrape 経路を使用してください。
 
 ### Telemetry 設定
 
@@ -144,10 +149,22 @@ Operator はコマンドラインフラグで設定します：
 
 | フラグ | 説明 | デフォルト |
 |------|------|-----------|
-| `--metrics-bind-address` | メトリクスエンドポイントのアドレス | `:8080` |
+| `--metrics-bind-address` | メトリクスエンドポイントのアドレス | `127.0.0.1:8080` |
 | `--health-probe-bind-address` | ヘルスプローブエンドポイントのアドレス | `:8081` |
 | `--enable-webhooks` | Admission Webhook を有効化 | `false` |
 | `--leader-elect` | Leader Election を有効化 | `false` |
+
+## Controller Secret ファイル
+
+Controller は機密値をファイルから読み込めます。これにより、Kubernetes
+Secret をマウントし、YAML 設定ファイルに secret material を直接書かずに
+運用できます。直接値と対応する file フィールドは同時に指定しないでください。
+
+| パラメータ | 説明 |
+|-----------|------|
+| `server.api_key_file` | REST API key を含むファイル |
+| `grpc.api_key_file` | gRPC API key を含むファイル |
+| `datastore.mysql.password_file` | MySQL password を含むファイル |
 
 ## VirtualIP CRD 設定
 

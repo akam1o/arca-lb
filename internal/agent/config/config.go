@@ -3,9 +3,11 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/akam1o/arca-lb/internal/common/models"
 )
 
 // Config represents the agent configuration
@@ -41,6 +43,9 @@ type AgentConfig struct {
 type ControllerConfig struct {
 	// Address is the controller gRPC endpoint
 	Address string `yaml:"address"`
+
+	// APIKey is an optional bearer token for controller gRPC authentication
+	APIKey string `yaml:"api_key"`
 
 	// TLS settings
 	TLS TLSConfig `yaml:"tls"`
@@ -185,12 +190,14 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Parse YAML
 	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	if err := decodeStrictYAML(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
 	// Apply environment variable overrides
-	applyEnvOverrides(&config)
+	if err := applyEnvOverrides(&config); err != nil {
+		return nil, fmt.Errorf("invalid environment override: %w", err)
+	}
 
 	// Apply defaults
 	applyDefaults(&config)
@@ -203,8 +210,8 @@ func LoadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-// applyEnvOverrides applies environment variable overrides
-func applyEnvOverrides(cfg *Config) {
+// applyEnvOverrides applies environment variable overrides.
+func applyEnvOverrides(cfg *Config) error {
 	// Agent ID
 	if v := os.Getenv("ARCA_AGENT_ID"); v != "" {
 		cfg.Agent.ID = v
@@ -213,6 +220,9 @@ func applyEnvOverrides(cfg *Config) {
 	// Controller address
 	if v := os.Getenv("ARCA_CONTROLLER_ADDRESS"); v != "" {
 		cfg.Controller.Address = v
+	}
+	if v := os.Getenv("ARCA_CONTROLLER_API_KEY"); v != "" {
+		cfg.Controller.APIKey = v
 	}
 
 	// VPP socket path
@@ -232,7 +242,11 @@ func applyEnvOverrides(cfg *Config) {
 
 	// TLS settings
 	if v := os.Getenv("ARCA_TLS_ENABLED"); v != "" {
-		cfg.Controller.TLS.Enabled = v == "true"
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ARCA_TLS_ENABLED must be a boolean: %w", err)
+		}
+		cfg.Controller.TLS.Enabled = enabled
 	}
 	if v := os.Getenv("ARCA_TLS_CERT"); v != "" {
 		cfg.Controller.TLS.CertFile = v
@@ -243,6 +257,7 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("ARCA_TLS_CA"); v != "" {
 		cfg.Controller.TLS.CAFile = v
 	}
+	return nil
 }
 
 // applyDefaults applies default values to configuration
@@ -334,7 +349,7 @@ func applyDefaults(cfg *Config) {
 
 	// Metrics defaults
 	if cfg.Metrics.ListenAddress == "" {
-		cfg.Metrics.ListenAddress = "0.0.0.0:9090"
+		cfg.Metrics.ListenAddress = "127.0.0.1:9090"
 	}
 	if cfg.Metrics.Path == "" {
 		cfg.Metrics.Path = "/metrics"
@@ -347,13 +362,36 @@ func applyDefaults(cfg *Config) {
 // validate validates the configuration
 func validate(cfg *Config) error {
 	// Validate agent ID
-	if cfg.Agent.ID == "" {
-		return fmt.Errorf("agent.id is required")
+	if err := models.ValidateAgentID("agent.id", cfg.Agent.ID); err != nil {
+		return err
 	}
 
 	// Validate controller address
 	if cfg.Controller.Address == "" {
 		return fmt.Errorf("controller.address is required")
+	}
+	if err := validateAPIKey("controller.api_key", cfg.Controller.APIKey); err != nil {
+		return err
+	}
+	if cfg.Controller.APIKey != "" && !cfg.Controller.TLS.Enabled {
+		return fmt.Errorf("controller.tls.enabled must be enabled when controller.api_key is set")
+	}
+	if cfg.Controller.APIKey != "" && cfg.Controller.TLS.InsecureSkipVerify {
+		return fmt.Errorf("controller.tls.insecure_skip_verify must be false when controller.api_key is set")
+	}
+	if !cfg.Controller.TLS.Enabled {
+		if cfg.Controller.TLS.CAFile != "" {
+			return fmt.Errorf("controller.tls.enabled must be enabled when controller.tls.ca_file is set")
+		}
+		if cfg.Controller.TLS.CertFile != "" {
+			return fmt.Errorf("controller.tls.enabled must be enabled when controller.tls.cert_file is set")
+		}
+		if cfg.Controller.TLS.KeyFile != "" {
+			return fmt.Errorf("controller.tls.enabled must be enabled when controller.tls.key_file is set")
+		}
+		if cfg.Controller.TLS.InsecureSkipVerify {
+			return fmt.Errorf("controller.tls.enabled must be enabled when controller.tls.insecure_skip_verify is set")
+		}
 	}
 
 	// Validate VPP socket path
@@ -379,14 +417,11 @@ func validate(cfg *Config) error {
 
 	// Validate TLS settings
 	if cfg.Controller.TLS.Enabled {
-		if cfg.Controller.TLS.CertFile == "" {
-			return fmt.Errorf("tls.cert_file is required when TLS is enabled")
-		}
-		if cfg.Controller.TLS.KeyFile == "" {
-			return fmt.Errorf("tls.key_file is required when TLS is enabled")
-		}
 		if cfg.Controller.TLS.CAFile == "" {
 			return fmt.Errorf("tls.ca_file is required when TLS is enabled")
+		}
+		if (cfg.Controller.TLS.CertFile == "") != (cfg.Controller.TLS.KeyFile == "") {
+			return fmt.Errorf("tls.cert_file and tls.key_file must both be set when client certificate is configured")
 		}
 	}
 
@@ -464,5 +499,18 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("health_check.max_concurrent_checks must be positive")
 	}
 
+	return nil
+}
+
+func validateAPIKey(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.ContainsAny(value, " \t\r\n") {
+		return fmt.Errorf("%s must not contain whitespace", field)
+	}
+	if len(value) < 16 {
+		return fmt.Errorf("%s must be at least 16 characters when set", field)
+	}
 	return nil
 }

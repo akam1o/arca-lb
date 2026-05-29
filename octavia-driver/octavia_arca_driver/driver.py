@@ -15,6 +15,7 @@ Mapping:
 """
 
 import copy
+import ipaddress
 import json
 import logging
 import threading
@@ -107,6 +108,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 user_fault_string="VIP address is required.",
                 operator_fault_string="loadbalancer_create called without vip_address",
             )
+        self._validate_ip_address(vip_address, "VIP address")
 
         self._remember_loadbalancer_context(
             lb_id,
@@ -169,6 +171,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         lb_id = lb.get("loadbalancer_id")
         admin_state = lb.get("admin_state_up")
         vip_address = lb.get("vip_address")
+        if vip_address:
+            self._validate_ip_address(vip_address, "VIP address")
         self._remember_loadbalancer_context(
             lb_id,
             vip_address=vip_address,
@@ -281,11 +285,15 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     f"No vip_address for listener {listener_id}, lb {lb_id}"
                 ),
             )
+        self._validate_ip_address(vip_address, "VIP address")
+        port = self._validate_required_port(port, "Listener protocol_port")
 
         # Parse flavor metadata for encap settings.
         flavor = self._listener_flavor(lst, lb_id)
+        self.validate_flavor(flavor)
         encap_type = flavor.get("encap_type", self._default_encap_type)
         dscp = flavor.get("dscp", self._default_dscp)
+        self._validate_vip_address_family(vip_address, encap_type)
 
         name = self._k8s._resource_name(lb_id, listener_id)
         spec = {
@@ -416,10 +424,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         port = lst.get("protocol_port")
         old_port = self._valid_port(spec.get("port"))
-        new_port = self._valid_port(port)
-        port_changed = port is not None and new_port != old_port
+        new_port = None
         if port is not None:
-            spec["port"] = port
+            new_port = self._validate_required_port(
+                port, "Listener protocol_port"
+            )
+        port_changed = new_port is not None and new_port != old_port
+        if new_port is not None:
+            spec["port"] = new_port
 
         should_restore_pool = False
         pool_detached = False
@@ -442,8 +454,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         def prepare_restore_update(current_spec, current_annotations):
             if mapped_protocol:
                 current_spec["protocol"] = mapped_protocol
-            if port is not None:
-                current_spec["port"] = port
+            if new_port is not None:
+                current_spec["port"] = new_port
             if pool_id:
                 current_annotations[constants.ANNOTATION_POOL_ID] = pool_id
             self._set_admin_state_annotation(
@@ -497,8 +509,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
             )
             if mapped_protocol:
                 current_spec["protocol"] = mapped_protocol
-            if port is not None:
-                current_spec["port"] = port
+            if new_port is not None:
+                current_spec["port"] = new_port
             if pool_detached:
                 self._clear_pool_association(
                     current_spec, current_annotations
@@ -681,6 +693,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         """Add a backend to the VirtualIP."""
         m = member.to_dict() if hasattr(member, 'to_dict') else member
         self._validate_member_supported(m)
+        self._validate_member_addresses(m)
         pool_id = m.get("pool_id")
         address = m.get("address")
         weight = self._member_weight(m)
@@ -707,6 +720,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         def mutate(current_vip, spec, annotations):
             backends = spec.get("backends", [])
             self._validate_member_dataplane_port(current_vip, m)
+            if not is_draining:
+                self._validate_member_address_family(current_vip, m)
 
             backends = self._backends_with_member_state(
                 backends, address, backend, is_draining
@@ -833,14 +848,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     f"{self._member_id(m) or address}"
                 ),
             )
-        if not address:
-            raise driver_exc.UnsupportedOptionError(
-                user_fault_string="Member address is required.",
-                operator_fault_string=(
-                    "Cannot resolve address for Octavia member update "
-                    f"{self._member_id(m)}"
-                ),
-            )
+        self._validate_member_addresses(m)
         is_draining = self._member_is_draining(m)
         backend = None if is_draining else self._backend_from_member(m)
 
@@ -863,6 +871,8 @@ class ArcaLBDriver(driver_base.ProviderDriver):
 
         def mutate(current_vip, spec, annotations):
             self._validate_member_dataplane_port(current_vip, m)
+            if not is_draining:
+                self._validate_member_address_family(current_vip, m)
             backends = self._backends_with_member_state(
                 spec.get("backends", []), address, backend, is_draining
             )
@@ -894,6 +904,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 ]
                 for m in member_dicts:
                     self._validate_member_supported(m)
+                    self._validate_member_addresses(m)
                 self._push_deferred_member_active_status(
                     pool_id, deferred_context["lb_id"], member_dicts
                 )
@@ -911,7 +922,10 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         ]
         for m in member_dicts:
             self._validate_member_supported(m)
+            self._validate_member_addresses(m)
             self._validate_member_dataplane_port(vip, m)
+            if not self._member_is_draining(m):
+                self._validate_member_address_family(vip, m)
 
         name = vip["metadata"]["name"]
         deleted_member_ids = []
@@ -927,6 +941,7 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 self._validate_member_dataplane_port(current_vip, m)
                 is_draining = self._member_is_draining(m)
                 if not is_draining:
+                    self._validate_member_address_family(current_vip, m)
                     backends.append(self._backend_from_member(m))
                 member_id = self._member_id(m)
                 if member_id and m.get("address"):
@@ -1167,6 +1182,30 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return constants.FLAVOR_METADATA
 
     def validate_flavor(self, flavor_metadata):
+        if not flavor_metadata:
+            return
+        if not hasattr(flavor_metadata, "get"):
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Flavor metadata must be a mapping.",
+                operator_fault_string=(
+                    "Flavor metadata must be a mapping, got "
+                    f"{type(flavor_metadata).__name__}"
+                ),
+            )
+        unknown_keys = sorted(
+            set(flavor_metadata) - set(constants.FLAVOR_METADATA)
+        )
+        if unknown_keys:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "Unsupported flavor metadata key(s): "
+                    f"{', '.join(unknown_keys)}."
+                ),
+                operator_fault_string=(
+                    "Unsupported flavor metadata key(s): "
+                    f"{', '.join(unknown_keys)}"
+                ),
+            )
         encap = flavor_metadata.get("encap_type")
         if encap and encap not in constants.VALID_ENCAP_TYPES:
             raise driver_exc.UnsupportedOptionError(
@@ -1192,8 +1231,18 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return {}
 
     def validate_availability_zone(self, availability_zone_metadata):
-        # No AZ-specific configuration.
-        pass
+        if availability_zone_metadata:
+            unknown_keys = sorted(availability_zone_metadata)
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "Availability zone metadata is not supported by "
+                    "the ArcaLB driver."
+                ),
+                operator_fault_string=(
+                    "Unsupported availability zone metadata key(s): "
+                    f"{', '.join(unknown_keys)}"
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1787,10 +1836,14 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                     if not member.get("address"):
                         continue
                     self._validate_member_supported(member)
+                    self._validate_member_addresses(member)
                     self._validate_member_dataplane_port(effective_vip, member)
                     is_draining = self._member_is_draining(member)
                     member_id = self._member_id(member)
                     if not is_draining:
+                        self._validate_member_address_family(
+                            effective_vip, member
+                        )
                         backends.append(self._backend_from_member(member))
                     elif member_id:
                         draining_member_ids.add(member_id)
@@ -2106,6 +2159,27 @@ class ArcaLBDriver(driver_base.ProviderDriver):
                 f"{cls._member_id(member) or member.get('address')}"
             ),
         )
+
+    @classmethod
+    def _validate_member_addresses(cls, member):
+        member = cls._as_dict(member)
+        address = member.get("address")
+        if not address:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string="Member address is required.",
+                operator_fault_string=(
+                    "Octavia member address is required for member "
+                    f"{cls._member_id(member) or '<unknown>'}"
+                ),
+            )
+
+        cls._validate_ip_address(address, "Member address")
+
+        monitor_address = member.get("monitor_address")
+        if monitor_address:
+            cls._validate_ip_address(
+                monitor_address, "Member monitor_address"
+            )
 
     @classmethod
     def _backends_with_member_state(cls, backends, address, backend,
@@ -2465,6 +2539,72 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         return {}
 
     @staticmethod
+    def _validate_ip_address(value, field):
+        try:
+            ipaddress.ip_address(str(value))
+        except (TypeError, ValueError):
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=f"{field} must be a valid IP address.",
+                operator_fault_string=f"Invalid {field}: {value}",
+            )
+
+    @staticmethod
+    def _is_ipv4_address(value):
+        return isinstance(ipaddress.ip_address(str(value)),
+                          ipaddress.IPv4Address)
+
+    @classmethod
+    def _validate_vip_address_family(cls, address, encap_type):
+        is_ipv4 = cls._is_ipv4_address(address)
+        if encap_type in ("L3DSR", "NAT4") and not is_ipv4:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    f"encap_type {encap_type} requires an IPv4 VIP address."
+                ),
+                operator_fault_string=(
+                    f"encap_type {encap_type} cannot use IPv6 VIP {address}"
+                ),
+            )
+        if encap_type == "NAT6" and is_ipv4:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    "encap_type NAT6 requires an IPv6 VIP address."
+                ),
+                operator_fault_string=(
+                    f"encap_type NAT6 cannot use IPv4 VIP {address}"
+                ),
+            )
+
+    @classmethod
+    def _validate_member_address_family(cls, vip, member):
+        member = cls._as_dict(member)
+        address = member.get("address")
+        spec = vip.get("spec", {}) if isinstance(vip, dict) else {}
+        encap_type = spec.get("encapType") or "L3DSR"
+        is_ipv4 = cls._is_ipv4_address(address)
+        member_id = cls._member_id(member) or address
+        if encap_type in ("GRE4", "L3DSR", "NAT4") and not is_ipv4:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    f"encap_type {encap_type} requires IPv4 member addresses."
+                ),
+                operator_fault_string=(
+                    f"Member {member_id} address {address} must be IPv4 for "
+                    f"encap_type {encap_type}"
+                ),
+            )
+        if encap_type in ("GRE6", "NAT6") and is_ipv4:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=(
+                    f"encap_type {encap_type} requires IPv6 member addresses."
+                ),
+                operator_fault_string=(
+                    f"Member {member_id} address {address} must be IPv6 for "
+                    f"encap_type {encap_type}"
+                ),
+            )
+
+    @staticmethod
     def _valid_port(value):
         try:
             port = int(value)
@@ -2473,6 +2613,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         if 1 <= port <= 65535:
             return port
         return None
+
+    @classmethod
+    def _validate_required_port(cls, value, field):
+        port = cls._valid_port(value)
+        if port is None:
+            raise driver_exc.UnsupportedOptionError(
+                user_fault_string=f"{field} must be between 1 and 65535.",
+                operator_fault_string=f"Invalid {field}: {value}",
+            )
+        return port
 
     @classmethod
     def _vip_port(cls, vip):
@@ -2489,16 +2639,16 @@ class ArcaLBDriver(driver_base.ProviderDriver):
         """
         if codes_str is None or str(codes_str).strip() == "":
             return [200]
-        codes = []
+        codes: list[int] = []
         for part in str(codes_str).split(","):
             part = part.strip()
             if not part:
                 raise ArcaLBDriver._expected_codes_error(codes_str)
             if "-" in part:
                 try:
-                    start, end = part.split("-", 1)
-                    start = int(start)
-                    end = int(end)
+                    start_text, end_text = part.split("-", 1)
+                    start = int(start_text)
+                    end = int(end_text)
                 except (ValueError, TypeError):
                     raise ArcaLBDriver._expected_codes_error(codes_str)
                 if start > end:

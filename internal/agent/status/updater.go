@@ -3,9 +3,11 @@ package status
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
@@ -25,6 +27,10 @@ const (
 	// DefaultAgentStatusTTL is how long a per-agent observation remains valid
 	// without a refresh from the reporting agent.
 	DefaultAgentStatusTTL = 2 * time.Minute
+
+	// MaxAgentStatusTTL caps agent-reported freshness so stale observations
+	// cannot keep aggregate health green for an unbounded amount of time.
+	MaxAgentStatusTTL = time.Hour
 
 	// DefaultExpiredAgentStatusRetention is how long expired per-agent
 	// observations are retained for diagnostics before being pruned.
@@ -111,6 +117,7 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 	for _, be := range healthyBackends {
 		healthySet[be.Address] = struct{}{}
 	}
+	healthyCount := countConfiguredHealthyBackends(vip.Spec.Backends, healthySet)
 
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current v1alpha1.VirtualIP
@@ -137,10 +144,13 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 			AgentID:            agentID,
 			ObservedGeneration: vip.Generation,
 			TotalBackends:      len(vip.Spec.Backends),
-			HealthyBackends:    len(healthyBackends),
+			HealthyBackends:    healthyCount,
 			Backends:           buildBackendStatuses(vip.Spec.Backends, healthySet),
-			LastUpdateTime:     &now,
-			TTLSeconds:         durationSeconds(statusTTL),
+			HealthyBackendBitmap: buildHealthyBackendBitmap(
+				vip.Spec.Backends, healthySet,
+			),
+			LastUpdateTime: &now,
+			TTLSeconds:     durationSeconds(statusTTL),
 		}
 		for _, condition := range conditions {
 			condition.ObservedGeneration = vip.Generation
@@ -151,6 +161,7 @@ func (u *Updater) UpdateVIPStatus(ctx context.Context, vip *v1alpha1.VirtualIP, 
 			current.Status.AgentStatuses, agentStatus, vip.Generation,
 		)
 		RefreshAggregateStatus(&current, vip.Generation, now.Time, statusTTL)
+		current.Status = SanitizeVirtualIPStatus(current.Status)
 
 		return u.client.Status().Update(ctx, &current)
 	})
@@ -187,15 +198,40 @@ func (u *Updater) UpdateHealthCheckCondition(ctx context.Context, vip *v1alpha1.
 		meta.SetStatusCondition(&current.Status.Conditions, condition)
 		if condition.Status == metav1.ConditionFalse {
 			RefreshAggregateStatus(&current, vip.Generation, time.Now(), u.effectiveAgentStatusTTL())
+		} else {
+			current.Status.AgentStatuses = SanitizeAgentStatuses(current.Status.AgentStatuses)
 		}
+		current.Status = SanitizeVirtualIPStatus(current.Status)
 
 		return u.client.Status().Update(ctx, &current)
 	})
 }
 
+func countConfiguredHealthyBackends(backends []v1alpha1.BackendSpec, healthySet map[string]struct{}) int {
+	count := 0
+	seen := make(map[string]struct{}, len(backends))
+	for _, backend := range backends {
+		if _, alreadySeen := seen[backend.Address]; alreadySeen {
+			continue
+		}
+		seen[backend.Address] = struct{}{}
+		if _, healthy := healthySet[backend.Address]; healthy {
+			count++
+		}
+	}
+	return count
+}
+
 func buildBackendStatuses(backends []v1alpha1.BackendSpec, healthySet map[string]struct{}) []v1alpha1.BackendStatus {
-	statuses := make([]v1alpha1.BackendStatus, 0, len(backends))
+	limit := len(backends)
+	if limit > v1alpha1.MaxVirtualIPStatusBackends {
+		limit = v1alpha1.MaxVirtualIPStatusBackends
+	}
+	statuses := make([]v1alpha1.BackendStatus, 0, limit)
 	for _, be := range backends {
+		if len(statuses) == limit {
+			break
+		}
 		_, healthy := healthySet[be.Address]
 		message := "unhealthy"
 		if healthy {
@@ -210,6 +246,26 @@ func buildBackendStatuses(backends []v1alpha1.BackendSpec, healthySet map[string
 	return statuses
 }
 
+func buildHealthyBackendBitmap(backends []v1alpha1.BackendSpec, healthySet map[string]struct{}) string {
+	if len(backends) == 0 || len(healthySet) == 0 {
+		return ""
+	}
+
+	bitmap := make([]byte, (len(backends)+7)/8)
+	for i, be := range backends {
+		if _, healthy := healthySet[be.Address]; healthy {
+			bitmap[i/8] |= 1 << uint(i%8)
+		}
+	}
+	for len(bitmap) > 0 && bitmap[len(bitmap)-1] == 0 {
+		bitmap = bitmap[:len(bitmap)-1]
+	}
+	if len(bitmap) == 0 {
+		return ""
+	}
+	return hex.EncodeToString(bitmap)
+}
+
 func normalizeAgentID(agentID string) string {
 	if agentID != "" {
 		return agentID
@@ -221,10 +277,13 @@ func normalizeAgentID(agentID string) string {
 }
 
 func normalizeAgentStatusTTL(ttl time.Duration) time.Duration {
-	if ttl > 0 {
-		return ttl
+	if ttl <= 0 {
+		return DefaultAgentStatusTTL
 	}
-	return DefaultAgentStatusTTL
+	if ttl > MaxAgentStatusTTL {
+		return MaxAgentStatusTTL
+	}
+	return ttl
 }
 
 func durationSeconds(ttl time.Duration) int64 {
@@ -233,6 +292,84 @@ func durationSeconds(ttl time.Duration) int64 {
 		return int64(ttl / time.Second)
 	}
 	return int64(ttl/time.Second) + 1
+}
+
+func sanitizeAgentStatusTTLSeconds(ttlSeconds int64) int64 {
+	if ttlSeconds <= 0 {
+		return 0
+	}
+	if ttlSeconds > int64(MaxAgentStatusTTL/time.Second) {
+		return int64(MaxAgentStatusTTL / time.Second)
+	}
+	return ttlSeconds
+}
+
+// SanitizeVirtualIPStatus clamps retained status details so existing status
+// values remain accepted by the CRD schema on future status updates.
+func SanitizeVirtualIPStatus(status v1alpha1.VirtualIPStatus) v1alpha1.VirtualIPStatus {
+	status.Backends = SanitizeBackendStatuses(status.Backends)
+	status.AgentStatuses = SanitizeAgentStatuses(status.AgentStatuses)
+	return status
+}
+
+// SanitizeBackendStatuses caps per-backend status details to the CRD schema
+// limit while preserving the existing order.
+func SanitizeBackendStatuses(statuses []v1alpha1.BackendStatus) []v1alpha1.BackendStatus {
+	if len(statuses) <= v1alpha1.MaxVirtualIPStatusBackends {
+		return statuses
+	}
+	return statuses[:v1alpha1.MaxVirtualIPStatusBackends]
+}
+
+// SanitizeAgentStatuses clamps retained per-agent observations so existing
+// status values remain accepted by the CRD schema on future status updates.
+func SanitizeAgentStatuses(statuses []v1alpha1.AgentStatus) []v1alpha1.AgentStatus {
+	var out []v1alpha1.AgentStatus
+	for i, status := range statuses {
+		nextTTL := sanitizeAgentStatusTTLSeconds(status.TTLSeconds)
+		nextBackends := SanitizeBackendStatuses(status.Backends)
+		if nextTTL == status.TTLSeconds && len(nextBackends) == len(status.Backends) {
+			if out != nil {
+				out = append(out, status)
+			}
+			continue
+		}
+		if out == nil {
+			out = make([]v1alpha1.AgentStatus, 0, len(statuses))
+			out = append(out, statuses[:i]...)
+		}
+		status.TTLSeconds = nextTTL
+		status.Backends = nextBackends
+		out = append(out, status)
+	}
+	if out == nil {
+		out = statuses
+	}
+	return capAgentStatuses(out)
+}
+
+func capAgentStatuses(statuses []v1alpha1.AgentStatus) []v1alpha1.AgentStatus {
+	if len(statuses) <= v1alpha1.MaxVirtualIPStatusAgentStatuses {
+		return statuses
+	}
+
+	out := append([]v1alpha1.AgentStatus(nil), statuses...)
+	sort.SliceStable(out, func(i, j int) bool {
+		left := agentStatusUpdateTime(out[i])
+		right := agentStatusUpdateTime(out[j])
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return out[i].AgentID < out[j].AgentID
+	})
+	return out[:v1alpha1.MaxVirtualIPStatusAgentStatuses]
+}
+
+func agentStatusUpdateTime(status v1alpha1.AgentStatus) time.Time {
+	if status.LastUpdateTime == nil {
+		return time.Time{}
+	}
+	return status.LastUpdateTime.Time
 }
 
 func (u *Updater) effectiveAgentStatusTTL() time.Duration {
@@ -268,7 +405,7 @@ func RefreshAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, now time.
 		return
 	}
 	freshStatuses, expiredStatuses := splitAgentStatuses(vip.Status.AgentStatuses, generation, now, ttl)
-	vip.Status.AgentStatuses = append(append([]v1alpha1.AgentStatus{}, freshStatuses...), expiredStatuses...)
+	vip.Status.AgentStatuses = SanitizeAgentStatuses(append(append([]v1alpha1.AgentStatus{}, freshStatuses...), expiredStatuses...))
 	applyAggregateStatus(vip, generation, freshStatuses, expiredStatuses)
 }
 
@@ -305,24 +442,20 @@ func agentStatusExpired(status v1alpha1.AgentStatus, now time.Time, ttl time.Dur
 
 func agentStatusTTL(status v1alpha1.AgentStatus, fallback time.Duration) time.Duration {
 	if status.TTLSeconds > 0 {
-		return time.Duration(status.TTLSeconds) * time.Second
+		if status.TTLSeconds > int64(MaxAgentStatusTTL/time.Second) {
+			return MaxAgentStatusTTL
+		}
+		return normalizeAgentStatusTTL(time.Duration(status.TTLSeconds) * time.Second)
 	}
 	return normalizeAgentStatusTTL(fallback)
 }
 
 func applyAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, freshStatuses []v1alpha1.AgentStatus, expiredStatuses []v1alpha1.AgentStatus) {
-	healthySet := make(map[string]struct{})
-	for _, status := range freshStatuses {
-		for _, backend := range status.Backends {
-			if backend.Healthy {
-				healthySet[backend.Address] = struct{}{}
-			}
-		}
-	}
+	healthySet, healthyCount := aggregateHealthyBackends(vip.Spec.Backends, freshStatuses)
 
 	vip.Status.ObservedGeneration = generation
 	vip.Status.TotalBackends = len(vip.Spec.Backends)
-	vip.Status.HealthyBackends = len(healthySet)
+	vip.Status.HealthyBackends = healthyCount
 	vip.Status.Backends = buildBackendStatuses(vip.Spec.Backends, healthySet)
 
 	conditions := preserveNonAgentConditions(vip.Status.Conditions)
@@ -332,6 +465,63 @@ func applyAggregateStatus(vip *v1alpha1.VirtualIP, generation int64, freshStatus
 		meta.SetStatusCondition(&conditions, dataPlane)
 	}
 	vip.Status.Conditions = conditions
+}
+
+func aggregateHealthyBackends(backends []v1alpha1.BackendSpec, statuses []v1alpha1.AgentStatus) (map[string]struct{}, int) {
+	healthySet := make(map[string]struct{})
+	reportedCount := 0
+	for _, status := range statuses {
+		if addHealthyBackendsFromBitmap(healthySet, backends, status.HealthyBackendBitmap) {
+			continue
+		}
+		for _, backend := range status.Backends {
+			if backend.Healthy {
+				healthySet[backend.Address] = struct{}{}
+			}
+		}
+		if status.TotalBackends == len(backends) && status.HealthyBackends >= len(backends) {
+			for _, backend := range backends {
+				healthySet[backend.Address] = struct{}{}
+			}
+		}
+		if count := clampHealthyBackendCount(status.HealthyBackends, len(backends)); count > reportedCount {
+			reportedCount = count
+		}
+	}
+	if len(healthySet) > reportedCount {
+		reportedCount = len(healthySet)
+	}
+	return healthySet, reportedCount
+}
+
+func addHealthyBackendsFromBitmap(healthySet map[string]struct{}, backends []v1alpha1.BackendSpec, bitmap string) bool {
+	if bitmap == "" {
+		return false
+	}
+	decoded, err := hex.DecodeString(bitmap)
+	if err != nil {
+		return false
+	}
+	for i, backend := range backends {
+		byteIndex := i / 8
+		if byteIndex >= len(decoded) {
+			break
+		}
+		if decoded[byteIndex]&(1<<uint(i%8)) != 0 {
+			healthySet[backend.Address] = struct{}{}
+		}
+	}
+	return true
+}
+
+func clampHealthyBackendCount(count, total int) int {
+	if count < 0 {
+		return 0
+	}
+	if count > total {
+		return total
+	}
+	return count
 }
 
 func preserveNonAgentConditions(conditions []metav1.Condition) []metav1.Condition {

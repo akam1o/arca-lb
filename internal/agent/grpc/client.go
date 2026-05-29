@@ -9,16 +9,20 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/agent/config"
+	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/common/models"
 	pb "github.com/akam1o/arca-lb/pkg/grpc"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // ConfigHandler is called when a new configuration is received
@@ -78,17 +82,14 @@ func (c *Client) Start(ctx context.Context) error {
 
 	// Connect to controller
 	if err := c.connect(); err != nil {
-		// Close doneCh immediately on failure so Stop() won't block
-		close(c.doneCh)
-		c.mu.Lock()
-		c.started = false
-		c.mu.Unlock()
+		c.cleanupFailedStart()
 		return fmt.Errorf("failed to connect to controller: %w", err)
 	}
 
 	// Register agent
 	if err := c.register(); err != nil {
-		c.logger.WithError(err).Warn("Failed to register agent, will retry")
+		c.cleanupFailedStart()
+		return fmt.Errorf("failed to register agent: %w", err)
 	}
 
 	// Start watch loop in background
@@ -106,6 +107,31 @@ func (c *Client) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+func (c *Client) cleanupFailedStart() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn != nil {
+		if err := c.conn.Close(); err != nil {
+			c.logger.WithError(err).Warn("failed to close gRPC connection after start failure")
+		}
+		c.conn = nil
+		c.client = nil
+	}
+	c.started = false
+	c.connected = false
+
+	select {
+	case <-c.doneCh:
+	default:
+		close(c.doneCh)
+	}
 }
 
 // Stop stops the gRPC client
@@ -159,6 +185,13 @@ func (c *Client) Stop() {
 func (c *Client) connect() error {
 	var opts []grpc.DialOption
 
+	if c.config.Controller.APIKey != "" && !c.config.Controller.TLS.Enabled {
+		return fmt.Errorf("controller.tls.enabled must be enabled when controller.api_key is set")
+	}
+	if c.config.Controller.APIKey != "" && c.config.Controller.TLS.InsecureSkipVerify {
+		return fmt.Errorf("controller.tls.insecure_skip_verify must be false when controller.api_key is set")
+	}
+
 	// Configure TLS if enabled
 	if c.config.Controller.TLS.Enabled {
 		tlsConfig, err := c.loadTLSConfig()
@@ -170,10 +203,14 @@ func (c *Client) connect() error {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	// Add timeout
-	opts = append(opts, grpc.WithBlock()) // nolint:staticcheck // WithBlock is required for blocking dial until connection or timeout
 	if c.dialContext != nil {
 		opts = append(opts, grpc.WithContextDialer(c.dialContext))
+	}
+	if c.config.Controller.APIKey != "" {
+		opts = append(opts,
+			grpc.WithUnaryInterceptor(apiKeyUnaryClientInterceptor(c.config.Controller.APIKey)),
+			grpc.WithStreamInterceptor(apiKeyStreamClientInterceptor(c.config.Controller.APIKey)),
+		)
 	}
 
 	c.logger.WithField("address", c.config.Controller.Address).Info("Connecting to controller")
@@ -183,7 +220,15 @@ func (c *Client) connect() error {
 	for attempt := 1; attempt <= c.config.Controller.MaxRetries; attempt++ {
 		// Use c.ctx as parent to support immediate cancellation on Stop()
 		ctx, cancel := context.WithTimeout(c.ctx, c.config.Controller.Timeout)
-		conn, err := grpc.DialContext(ctx, c.config.Controller.Address, opts...) // nolint:staticcheck // DialContext retained for compatibility with grpc 1.x clients
+		conn, err := grpc.NewClient(grpcClientTarget(c.config.Controller.Address), opts...)
+		if err == nil {
+			err = waitForReady(ctx, conn)
+			if err != nil {
+				if closeErr := conn.Close(); closeErr != nil {
+					c.logger.WithError(closeErr).Warn("failed to close unsuccessful gRPC connection")
+				}
+			}
+		}
 		cancel()
 
 		if err == nil {
@@ -200,13 +245,11 @@ func (c *Client) connect() error {
 
 		if attempt < c.config.Controller.MaxRetries {
 			// Sleep with cancellation support
-			select {
-			case <-c.stopCh:
-				return fmt.Errorf("connection cancelled during retry")
-			case <-c.ctx.Done():
+			if !sleepWithStop(c.ctx, c.stopCh, backoff) {
+				if c.ctx.Err() == nil {
+					return fmt.Errorf("connection cancelled during retry")
+				}
 				return fmt.Errorf("connection cancelled: %w", c.ctx.Err())
-			case <-time.After(backoff):
-				// Continue to next attempt
 			}
 
 			backoff *= 2
@@ -217,6 +260,33 @@ func (c *Client) connect() error {
 	}
 
 	return fmt.Errorf("failed to connect after %d attempts", c.config.Controller.MaxRetries)
+}
+
+func grpcClientTarget(address string) string {
+	if strings.Contains(address, "://") {
+		return address
+	}
+	return "passthrough:///" + address
+}
+
+func waitForReady(ctx context.Context, conn *grpc.ClientConn) error {
+	conn.Connect()
+	for {
+		state := conn.GetState()
+		if state == connectivity.Ready {
+			return nil
+		}
+		if state == connectivity.Shutdown {
+			return fmt.Errorf("connection shut down before becoming ready")
+		}
+		if !conn.WaitForStateChange(ctx, state) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("connection did not become ready")
+		}
+		conn.Connect()
+	}
 }
 
 // reconnect attempts to reconnect to the controller
@@ -265,6 +335,9 @@ func (c *Client) register() error {
 	if err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
+	if resp == nil {
+		return fmt.Errorf("registration returned nil response")
+	}
 
 	if !resp.Success {
 		return fmt.Errorf("registration rejected: %s", resp.Message)
@@ -274,13 +347,12 @@ func (c *Client) register() error {
 
 	// Process initial configuration if provided
 	if resp.Config != nil {
-		config := c.convertProtoToConfig(resp.Config)
-		c.setCurrentRevision(config.Revision)
-
-		if c.configHandler != nil {
-			if err := c.configHandler(config); err != nil {
-				c.logger.WithError(err).Error("Failed to apply initial configuration")
-			}
+		config, err := c.convertProtoToConfig(resp.Config)
+		if err != nil {
+			return fmt.Errorf("failed to convert initial configuration: %w", err)
+		}
+		if err := c.applyConfig(config); err != nil {
+			return fmt.Errorf("failed to apply initial configuration: %w", err)
 		}
 	}
 
@@ -314,16 +386,12 @@ func (c *Client) watchLoop(ctx context.Context) {
 				c.logger.Info("Attempting to reconnect...")
 				if err := c.reconnect(); err != nil {
 					c.logger.WithError(err).Error("Reconnection failed, will retry")
+				}
 
-					// Sleep with cancellation support
-					select {
-					case <-c.stopCh:
-						return
-					case <-ctx.Done():
-						return
-					case <-time.After(c.config.Controller.RetryBackoff):
-						// Continue to retry
-					}
+				// Avoid tight retry loops when the server repeatedly closes
+				// the watch stream without a transport-level connection error.
+				if !sleepWithStop(ctx, c.stopCh, c.config.Controller.RetryBackoff) {
+					return
 				}
 			}
 		}
@@ -370,28 +438,28 @@ func (c *Client) watch(ctx context.Context) error {
 			resp, err := stream.Recv()
 			if err == io.EOF {
 				c.logger.Info("Watch stream closed by server")
-				return nil
+				return fmt.Errorf("watch stream closed by server: %w", io.EOF)
 			}
 			if err != nil {
 				return fmt.Errorf("watch stream error: %w", err)
 			}
+			if resp == nil {
+				return fmt.Errorf("watch stream returned nil response")
+			}
 
 			if resp.Config != nil {
-				config := c.convertProtoToConfig(resp.Config)
+				config, err := c.convertProtoToConfig(resp.Config)
+				if err != nil {
+					return fmt.Errorf("failed to convert configuration: %w", err)
+				}
 
 				c.logger.WithFields(logrus.Fields{
 					"revision":  config.Revision,
 					"vip_count": len(config.VIPs),
 				}).Info("Received configuration update")
 
-				// Update current revision
-				c.setCurrentRevision(config.Revision)
-
-				// Call config handler
-				if c.configHandler != nil {
-					if err := c.configHandler(config); err != nil {
-						c.logger.WithError(err).Error("Failed to apply configuration")
-					}
+				if err := c.applyConfig(config); err != nil {
+					return fmt.Errorf("failed to apply configuration: %w", err)
 				}
 			}
 
@@ -399,6 +467,31 @@ func (c *Client) watch(ctx context.Context) error {
 				c.logger.WithField("error", resp.Error).Warn("Received error from controller")
 			}
 		}
+	}
+}
+
+func sleepWithStop(ctx context.Context, stopCh <-chan struct{}, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(d)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+
+	select {
+	case <-stopCh:
+		return false
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -450,6 +543,9 @@ func (c *Client) sendHeartbeat() error {
 	if err != nil {
 		return fmt.Errorf("heartbeat failed: %w", err)
 	}
+	if resp == nil {
+		return fmt.Errorf("heartbeat returned nil response")
+	}
 
 	if !resp.Success {
 		return fmt.Errorf("heartbeat rejected")
@@ -483,6 +579,7 @@ func (c *Client) fetchConfig() error {
 
 	req := &pb.GetConfigRequest{
 		CurrentRevision: c.getCurrentRevision(),
+		AgentId:         c.config.Agent.ID,
 	}
 
 	// Get client with lock
@@ -498,6 +595,9 @@ func (c *Client) fetchConfig() error {
 	if err != nil {
 		return fmt.Errorf("failed to get config: %w", err)
 	}
+	if resp == nil {
+		return fmt.Errorf("get config returned nil response")
+	}
 
 	if resp.Unchanged {
 		c.logger.Debug("Configuration unchanged")
@@ -505,26 +605,34 @@ func (c *Client) fetchConfig() error {
 	}
 
 	if resp.Config != nil {
-		config := c.convertProtoToConfig(resp.Config)
-		c.setCurrentRevision(config.Revision)
-
-		if c.configHandler != nil {
-			if err := c.configHandler(config); err != nil {
-				return fmt.Errorf("failed to apply config: %w", err)
-			}
+		config, err := c.convertProtoToConfig(resp.Config)
+		if err != nil {
+			return fmt.Errorf("failed to convert config: %w", err)
+		}
+		if err := c.applyConfig(config); err != nil {
+			return fmt.Errorf("failed to apply config: %w", err)
 		}
 	}
 
 	return nil
 }
 
-// loadTLSConfig loads TLS configuration
-func (c *Client) loadTLSConfig() (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(c.config.Controller.TLS.CertFile, c.config.Controller.TLS.KeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load client cert: %w", err)
+func (c *Client) applyConfig(config *models.Config) error {
+	if config == nil {
+		return fmt.Errorf("config is required")
+	}
+	if c.configHandler != nil {
+		if err := c.configHandler(config); err != nil {
+			return err
+		}
 	}
 
+	c.setCurrentRevision(config.Revision)
+	return nil
+}
+
+// loadTLSConfig loads TLS configuration
+func (c *Client) loadTLSConfig() (*tls.Config, error) {
 	caData, err := os.ReadFile(c.config.Controller.TLS.CAFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CA cert: %w", err)
@@ -535,27 +643,60 @@ func (c *Client) loadTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to parse CA cert")
 	}
 
-	return &tls.Config{
-		Certificates:       []tls.Certificate{cert},
+	tlsConfig := &tls.Config{
 		RootCAs:            caPool,
 		InsecureSkipVerify: c.config.Controller.TLS.InsecureSkipVerify,
-	}, nil
+		MinVersion:         tls.VersionTLS12,
+	}
+
+	if c.config.Controller.TLS.CertFile != "" || c.config.Controller.TLS.KeyFile != "" {
+		if c.config.Controller.TLS.CertFile == "" || c.config.Controller.TLS.KeyFile == "" {
+			return nil, fmt.Errorf("tls.cert_file and tls.key_file must both be set when client certificate is configured")
+		}
+		cert, err := tls.LoadX509KeyPair(c.config.Controller.TLS.CertFile, c.config.Controller.TLS.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client cert: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsConfig, nil
 }
 
 // convertProtoToConfig converts protobuf config to internal model
-func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Config {
+func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) (*models.Config, error) {
+	if pbConfig == nil {
+		return nil, fmt.Errorf("config snapshot is required")
+	}
+
 	config := &models.Config{
 		Revision: pbConfig.Revision,
 		VIPs:     make([]models.VIPConfig, 0, len(pbConfig.Vips)),
 	}
+	seenVIPIDs := make(map[string]int, len(pbConfig.Vips))
+	seenVIPTuples := make(map[string]int, len(pbConfig.Vips))
+	seenBackendIDs := make(map[string]backendConfigLocation)
 
-	for _, pbVipConfig := range pbConfig.Vips {
-		var dscp *uint8
-		if pbVipConfig.Vip.Dscp != nil {
-			if pbVipConfig.Vip.Dscp.Value <= 63 {
-				v := uint8(pbVipConfig.Vip.Dscp.Value)
-				dscp = &v
-			}
+	for i, pbVipConfig := range pbConfig.Vips {
+		if pbVipConfig == nil {
+			return nil, fmt.Errorf("vip config at index %d is required", i)
+		}
+		if pbVipConfig.Vip == nil {
+			return nil, fmt.Errorf("vip config at index %d is missing vip", i)
+		}
+
+		encapType := c.convertProtoEncapType(pbVipConfig.Vip.EncapType)
+		dscp, err := convertProtoDSCP(i, encapType, pbVipConfig.Vip.Dscp)
+		if err != nil {
+			return nil, err
+		}
+		vipCreatedAt := time.Time{}
+		if pbVipConfig.Vip.CreatedAt != nil {
+			vipCreatedAt = pbVipConfig.Vip.CreatedAt.AsTime()
+		}
+		vipUpdatedAt := time.Time{}
+		if pbVipConfig.Vip.UpdatedAt != nil {
+			vipUpdatedAt = pbVipConfig.Vip.UpdatedAt.AsTime()
 		}
 
 		vipConfig := models.VIPConfig{
@@ -565,16 +706,24 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 				Port:      int(pbVipConfig.Vip.Port),
 				Protocol:  c.convertProtoProtocol(pbVipConfig.Vip.Protocol),
 				LBMethod:  c.convertProtoLBMethod(pbVipConfig.Vip.LbMethod),
-				EncapType: c.convertProtoEncapType(pbVipConfig.Vip.EncapType),
+				EncapType: encapType,
 				DSCP:      dscp,
-				CreatedAt: pbVipConfig.Vip.CreatedAt.AsTime(),
-				UpdatedAt: pbVipConfig.Vip.UpdatedAt.AsTime(),
+				CreatedAt: vipCreatedAt,
+				UpdatedAt: vipUpdatedAt,
 			},
 			Backends: make([]models.Backend, 0, len(pbVipConfig.Backends)),
 		}
 
 		// Convert health check
 		if pbVipConfig.HealthCheck != nil {
+			healthCheckCreatedAt := time.Time{}
+			if pbVipConfig.HealthCheck.CreatedAt != nil {
+				healthCheckCreatedAt = pbVipConfig.HealthCheck.CreatedAt.AsTime()
+			}
+			healthCheckUpdatedAt := time.Time{}
+			if pbVipConfig.HealthCheck.UpdatedAt != nil {
+				healthCheckUpdatedAt = pbVipConfig.HealthCheck.UpdatedAt.AsTime()
+			}
 			vipConfig.HealthCheck = &models.HealthCheck{
 				ID:          pbVipConfig.HealthCheck.Id,
 				VIPID:       pbVipConfig.HealthCheck.VipId,
@@ -583,40 +732,229 @@ func (c *Client) convertProtoToConfig(pbConfig *pb.ConfigSnapshot) *models.Confi
 				TimeoutSec:  int(pbVipConfig.HealthCheck.TimeoutSec),
 				RiseCount:   int(pbVipConfig.HealthCheck.RiseCount),
 				FallCount:   int(pbVipConfig.HealthCheck.FallCount),
-				CreatedAt:   pbVipConfig.HealthCheck.CreatedAt.AsTime(),
-				UpdatedAt:   pbVipConfig.HealthCheck.UpdatedAt.AsTime(),
+				CreatedAt:   healthCheckCreatedAt,
+				UpdatedAt:   healthCheckUpdatedAt,
 			}
 
 			// Parse Config JSON if present
 			if pbVipConfig.HealthCheck.Config != "" {
 				var hcConfig models.HCConfig
 				if err := json.Unmarshal([]byte(pbVipConfig.HealthCheck.Config), &hcConfig); err != nil {
-					c.logger.WithError(err).
-						WithField("vip_id", pbVipConfig.HealthCheck.VipId).
-						Warn("Failed to parse health check config")
-				} else {
-					vipConfig.HealthCheck.Config = hcConfig
+					return nil, fmt.Errorf("health check config at vip index %d is invalid: %w", i, err)
 				}
+				if hcConfig == nil {
+					return nil, fmt.Errorf("health check config at vip index %d must be a JSON object", i)
+				}
+				vipConfig.HealthCheck.Config = hcConfig
+			}
+			if err := models.ValidateHealthCheckConfig(vipConfig.HealthCheck.Type, vipConfig.HealthCheck.Config); err != nil {
+				return nil, fmt.Errorf("health check config at vip index %d is invalid: %w", i, err)
+			}
+			if err := models.ValidateHealthCheckTiming(vipConfig.HealthCheck); err != nil {
+				return nil, fmt.Errorf("health check at vip index %d is invalid: %w", i, err)
 			}
 		}
 
 		// Convert backends
-		for _, pbBackend := range pbVipConfig.Backends {
+		for j, pbBackend := range pbVipConfig.Backends {
+			if pbBackend == nil {
+				return nil, fmt.Errorf("backend at vip index %d backend index %d is required", i, j)
+			}
+			backendCreatedAt := time.Time{}
+			if pbBackend.CreatedAt != nil {
+				backendCreatedAt = pbBackend.CreatedAt.AsTime()
+			}
+			backendUpdatedAt := time.Time{}
+			if pbBackend.UpdatedAt != nil {
+				backendUpdatedAt = pbBackend.UpdatedAt.AsTime()
+			}
 			backend := models.Backend{
 				ID:        pbBackend.Id,
 				VIPID:     pbBackend.VipId,
 				IP:        pbBackend.Ip,
 				Weight:    int(pbBackend.Weight),
-				CreatedAt: pbBackend.CreatedAt.AsTime(),
-				UpdatedAt: pbBackend.UpdatedAt.AsTime(),
+				CreatedAt: backendCreatedAt,
+				UpdatedAt: backendUpdatedAt,
 			}
 			vipConfig.Backends = append(vipConfig.Backends, backend)
+		}
+
+		if err := validateVIPConfigDataPlane(i, &vipConfig); err != nil {
+			return nil, err
+		}
+		if err := validateVIPConfigIdentity(i, &vipConfig, seenVIPIDs, seenVIPTuples, seenBackendIDs); err != nil {
+			return nil, err
 		}
 
 		config.VIPs = append(config.VIPs, vipConfig)
 	}
 
-	return config
+	return config, nil
+}
+
+func validateVIPConfigDataPlane(vipIndex int, vipConfig *models.VIPConfig) error {
+	vipIP := net.ParseIP(vipConfig.VIP.VIP)
+	if vipIP == nil {
+		return fmt.Errorf("vip config at index %d vip %q is not a valid IP address", vipIndex, vipConfig.VIP.VIP)
+	}
+	if vipConfig.VIP.Port < 1 || vipConfig.VIP.Port > 65535 {
+		return fmt.Errorf("vip config at index %d port must be between 1 and 65535, got %d", vipIndex, vipConfig.VIP.Port)
+	}
+
+	encapType := models.EffectiveEncapType(vipConfig.VIP.EncapType)
+	switch vipConfig.VIP.Protocol {
+	case models.ProtocolTCP, models.ProtocolUDP:
+	default:
+		return fmt.Errorf("vip config at index %d protocol must be TCP or UDP", vipIndex)
+	}
+	switch vipConfig.VIP.LBMethod {
+	case models.LBMethodMaglev:
+	default:
+		return fmt.Errorf("vip config at index %d lb_method must be maglev", vipIndex)
+	}
+	if vipConfig.VIP.EncapType != "" && !models.IsValidEncapType(vipConfig.VIP.EncapType) {
+		return fmt.Errorf("vip config at index %d encap_type %q is not valid", vipIndex, vipConfig.VIP.EncapType)
+	}
+	if err := validateVIPAddressFamily(vipIndex, vipIP, encapType); err != nil {
+		return err
+	}
+
+	for backendIndex, backend := range vipConfig.Backends {
+		backendIP := net.ParseIP(backend.IP)
+		if backendIP == nil {
+			return fmt.Errorf("backend at vip index %d backend index %d ip %q is not a valid IP address", vipIndex, backendIndex, backend.IP)
+		}
+		if err := validateBackendAddressFamily(vipIndex, backendIndex, backend.IP, backendIP, encapType); err != nil {
+			return err
+		}
+		if backend.Weight < 1 || backend.Weight > 100 {
+			return fmt.Errorf("backend at vip index %d backend index %d weight must be between 1 and 100, got %d", vipIndex, backendIndex, backend.Weight)
+		}
+	}
+
+	return nil
+}
+
+type backendConfigLocation struct {
+	vipIndex     int
+	backendIndex int
+}
+
+func validateVIPConfigIdentity(vipIndex int, vipConfig *models.VIPConfig, seenVIPIDs, seenVIPTuples map[string]int, seenBackendIDs map[string]backendConfigLocation) error {
+	if err := datastore.ValidateResourceID(fmt.Sprintf("vip config at index %d id", vipIndex), vipConfig.VIP.ID); err != nil {
+		return err
+	}
+	if firstIndex, ok := seenVIPIDs[vipConfig.VIP.ID]; ok {
+		return fmt.Errorf("vip config at index %d duplicates vip id %q first seen at index %d", vipIndex, vipConfig.VIP.ID, firstIndex)
+	}
+	seenVIPIDs[vipConfig.VIP.ID] = vipIndex
+
+	tupleKey := vipTupleKey(vipConfig.VIP)
+	if firstIndex, ok := seenVIPTuples[tupleKey]; ok {
+		return fmt.Errorf("vip config at index %d duplicates vip tuple %s first seen at index %d", vipIndex, tupleKey, firstIndex)
+	}
+	seenVIPTuples[tupleKey] = vipIndex
+
+	if vipConfig.HealthCheck != nil {
+		if vipConfig.HealthCheck.ID != "" {
+			if err := datastore.ValidateResourceID(fmt.Sprintf("health check at vip index %d id", vipIndex), vipConfig.HealthCheck.ID); err != nil {
+				return err
+			}
+		}
+		if err := datastore.ValidateResourceID(fmt.Sprintf("health check at vip index %d vip_id", vipIndex), vipConfig.HealthCheck.VIPID); err != nil {
+			return err
+		}
+		if vipConfig.HealthCheck.VIPID != vipConfig.VIP.ID {
+			return fmt.Errorf("health check at vip index %d vip_id %q does not match vip id %q", vipIndex, vipConfig.HealthCheck.VIPID, vipConfig.VIP.ID)
+		}
+	}
+
+	seenBackendIPs := make(map[string]int, len(vipConfig.Backends))
+	for backendIndex, backend := range vipConfig.Backends {
+		if err := datastore.ValidateResourceID(fmt.Sprintf("backend at vip index %d backend index %d id", vipIndex, backendIndex), backend.ID); err != nil {
+			return err
+		}
+		if err := datastore.ValidateResourceID(fmt.Sprintf("backend at vip index %d backend index %d vip_id", vipIndex, backendIndex), backend.VIPID); err != nil {
+			return err
+		}
+		if backend.VIPID != vipConfig.VIP.ID {
+			return fmt.Errorf("backend at vip index %d backend index %d vip_id %q does not match vip id %q", vipIndex, backendIndex, backend.VIPID, vipConfig.VIP.ID)
+		}
+		if firstLocation, ok := seenBackendIDs[backend.ID]; ok {
+			return fmt.Errorf("backend at vip index %d backend index %d duplicates backend id %q first seen at vip index %d backend index %d", vipIndex, backendIndex, backend.ID, firstLocation.vipIndex, firstLocation.backendIndex)
+		}
+		seenBackendIDs[backend.ID] = backendConfigLocation{
+			vipIndex:     vipIndex,
+			backendIndex: backendIndex,
+		}
+
+		backendIP := net.ParseIP(backend.IP)
+		if backendIP == nil {
+			continue
+		}
+		backendIPKey := backendIP.String()
+		if firstIndex, ok := seenBackendIPs[backendIPKey]; ok {
+			return fmt.Errorf("backend at vip index %d backend index %d duplicates backend ip %q first seen at backend index %d", vipIndex, backendIndex, backendIPKey, firstIndex)
+		}
+		seenBackendIPs[backendIPKey] = backendIndex
+	}
+
+	return nil
+}
+
+func vipTupleKey(vip models.VIP) string {
+	vipIP := net.ParseIP(vip.VIP)
+	if vipIP != nil {
+		return fmt.Sprintf("%s/%d/%s", vipIP.String(), vip.Port, vip.Protocol)
+	}
+	return fmt.Sprintf("%s/%d/%s", vip.VIP, vip.Port, vip.Protocol)
+}
+
+func validateVIPAddressFamily(vipIndex int, vipIP net.IP, encapType models.EncapType) error {
+	isIPv4 := vipIP.To4() != nil
+	switch {
+	case models.EncapRequiresIPv4VIP(encapType):
+		if !isIPv4 {
+			return fmt.Errorf("vip config at index %d encap_type %s requires an IPv4 vip", vipIndex, encapType)
+		}
+	case models.EncapRequiresIPv6VIP(encapType):
+		if isIPv4 {
+			return fmt.Errorf("vip config at index %d encap_type NAT6 requires an IPv6 vip", vipIndex)
+		}
+	}
+
+	return nil
+}
+
+func validateBackendAddressFamily(vipIndex, backendIndex int, address string, backendIP net.IP, encapType models.EncapType) error {
+	isIPv4 := backendIP.To4() != nil
+	switch {
+	case models.EncapRequiresIPv4Backend(encapType):
+		if !isIPv4 {
+			return fmt.Errorf("backend at vip index %d backend index %d ip %q must be IPv4 for encap_type %s", vipIndex, backendIndex, address, encapType)
+		}
+	case models.EncapRequiresIPv6Backend(encapType):
+		if isIPv4 {
+			return fmt.Errorf("backend at vip index %d backend index %d ip %q must be IPv6 for encap_type %s", vipIndex, backendIndex, address, encapType)
+		}
+	}
+
+	return nil
+}
+
+func convertProtoDSCP(vipIndex int, encapType models.EncapType, dscp *wrapperspb.UInt32Value) (*uint8, error) {
+	if dscp == nil {
+		return nil, nil
+	}
+	if dscp.Value > 63 {
+		return nil, fmt.Errorf("vip config at index %d dscp must be between 0 and 63, got %d", vipIndex, dscp.Value)
+	}
+	if models.EffectiveEncapType(encapType) == models.EncapTypeL3DSR && dscp.Value == 0 {
+		return nil, fmt.Errorf("vip config at index %d dscp must be 1-63 when encap_type is L3DSR", vipIndex)
+	}
+
+	value := uint8(dscp.Value)
+	return &value, nil
 }
 
 // convertProtoProtocol converts protobuf protocol to internal model
@@ -627,17 +965,17 @@ func (c *Client) convertProtoProtocol(protocol pb.Protocol) models.Protocol {
 	case pb.Protocol_PROTOCOL_UDP:
 		return models.ProtocolUDP
 	default:
-		return models.ProtocolTCP
+		return ""
 	}
 }
 
 // convertProtoLBMethod converts protobuf LB method to internal model
 func (c *Client) convertProtoLBMethod(method pb.LBMethod) models.LBMethod {
 	switch method {
-	case pb.LBMethod_LB_METHOD_MAGLEV:
+	case pb.LBMethod_LB_METHOD_UNSPECIFIED, pb.LBMethod_LB_METHOD_MAGLEV:
 		return models.LBMethodMaglev
 	default:
-		return models.LBMethodMaglev
+		return models.LBMethod("invalid")
 	}
 }
 
@@ -654,8 +992,10 @@ func (c *Client) convertProtoEncapType(encapType pb.EncapType) models.EncapType 
 		return models.EncapTypeNAT4
 	case pb.EncapType_ENCAP_TYPE_NAT6:
 		return models.EncapTypeNAT6
-	default:
+	case pb.EncapType_ENCAP_TYPE_UNSPECIFIED:
 		return ""
+	default:
+		return models.EncapType("invalid")
 	}
 }
 
@@ -673,7 +1013,7 @@ func (c *Client) convertProtoHCType(hcType pb.HCType) models.HCType {
 	case pb.HCType_HC_TYPE_TLS_HELLO:
 		return models.HCTypeTLSHello
 	default:
-		return models.HCTypeTCP
+		return ""
 	}
 }
 

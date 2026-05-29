@@ -2,16 +2,20 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	agentstatus "github.com/akam1o/arca-lb/internal/agent/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 func validVirtualIPSpec() v1alpha1.VirtualIPSpec {
@@ -23,6 +27,28 @@ func validVirtualIPSpec() v1alpha1.VirtualIPSpec {
 		Backends: []v1alpha1.BackendSpec{
 			{Address: "10.0.1.1", Weight: 100},
 		},
+	}
+}
+
+func newTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	return scheme
+}
+
+func newTestVirtualIP(namespace, name string) *v1alpha1.VirtualIP {
+	return &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  namespace,
+			Name:       name,
+			UID:        types.UID(name + "-uid"),
+			Generation: 1,
+		},
+		Spec: validVirtualIPSpec(),
 	}
 }
 
@@ -102,23 +128,150 @@ func TestValidateSpecRejectsInvalidHTTPExpectedCodes(t *testing.T) {
 	}
 }
 
-func TestApplyDefaultsUsesBackendWeightOne(t *testing.T) {
-	vip := &v1alpha1.VirtualIP{
-		Spec: v1alpha1.VirtualIPSpec{
-			Address:  "203.0.113.10",
-			Port:     80,
-			Protocol: v1alpha1.ProtocolTCP,
-			Backends: []v1alpha1.BackendSpec{
-				{Address: "10.0.1.1"},
+func TestReconcileAddsFinalizerAndRequeues(t *testing.T) {
+	scheme := newTestScheme(t)
+	vip := newTestVirtualIP("default", "web")
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "web"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("Reconcile result = %+v, want requeue after finalizer add", result)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(&got, finalizerName) {
+		t.Fatalf("finalizers = %#v, want %q", got.Finalizers, finalizerName)
+	}
+}
+
+func TestReconcileUpdatesStatusAndSchedulesAgentStatusPrune(t *testing.T) {
+	scheme := newTestScheme(t)
+	updated := metav1.NewTime(time.Now())
+	vip := newTestVirtualIP("default", "web")
+	vip.Generation = 3
+	vip.Finalizers = []string{finalizerName}
+	vip.Status.ObservedGeneration = 3
+	vip.Status.AgentStatuses = []v1alpha1.AgentStatus{
+		{
+			AgentID:            "node-a",
+			ObservedGeneration: 3,
+			HealthyBackends:    1,
+			TotalBackends:      1,
+			LastUpdateTime:     &updated,
+			TTLSeconds:         60,
+			Backends: []v1alpha1.BackendStatus{
+				{Address: "10.0.1.1", Healthy: true},
 			},
 		},
 	}
-
-	if changed := applyDefaults(vip); !changed {
-		t.Fatal("expected defaults to be applied")
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client:                  k8sClient,
+		Scheme:                  scheme,
+		AgentStatusTTL:          time.Minute,
+		AgentStatusRequeueAfter: 15 * time.Second,
 	}
-	if got := vip.Spec.Backends[0].Weight; got != v1alpha1.DefaultBackendWeight {
-		t.Fatalf("backend weight default = %d, want %d", got, v1alpha1.DefaultBackendWeight)
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "web"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result.RequeueAfter != 15*time.Second {
+		t.Fatalf("Reconcile result = %+v, want 15s prune requeue", result)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status.TotalBackends != 1 {
+		t.Fatalf("TotalBackends = %d, want 1", got.Status.TotalBackends)
+	}
+	ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != 3 {
+		t.Fatalf("Ready = %+v, want current generation True", ready)
+	}
+}
+
+func TestReconcileRemovesFinalizerOnDelete(t *testing.T) {
+	scheme := newTestScheme(t)
+	now := metav1.NewTime(time.Now())
+	vip := newTestVirtualIP("default", "web")
+	vip.Finalizers = []string{finalizerName}
+	vip.DeletionTimestamp = &now
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "web"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result != (ctrl.Result{}) {
+		t.Fatalf("Reconcile result = %+v, want empty", result)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		t.Fatalf("Get: %v", err)
+	}
+	if controllerutil.ContainsFinalizer(&got, finalizerName) {
+		t.Fatalf("finalizers = %#v, want finalizer removed", got.Finalizers)
+	}
+}
+
+func TestReconcileIgnoresDeletedVirtualIP(t *testing.T) {
+	scheme := newTestScheme(t)
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "missing"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result != (ctrl.Result{}) {
+		t.Fatalf("Reconcile result = %+v, want empty", result)
 	}
 }
 
@@ -158,6 +311,7 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 					ObservedGeneration: 6,
 					HealthyBackends:    1,
 					TotalBackends:      1,
+					TTLSeconds:         int64((24 * time.Hour) / time.Second),
 					Backends: []v1alpha1.BackendStatus{
 						{Address: "10.0.1.1", Healthy: true},
 					},
@@ -198,6 +352,9 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 	if len(got.Status.AgentStatuses) != 1 || got.Status.AgentStatuses[0].AgentID != "node-a" {
 		t.Fatalf("AgentStatuses = %#v, want preserved per-agent status", got.Status.AgentStatuses)
 	}
+	if gotTTL, want := got.Status.AgentStatuses[0].TTLSeconds, int64(agentstatus.MaxAgentStatusTTL/time.Second); gotTTL != want {
+		t.Fatalf("AgentStatuses[0].TTLSeconds = %d, want sanitized %d", gotTTL, want)
+	}
 	if got.Status.TotalBackends != 2 {
 		t.Fatalf("TotalBackends = %d, want current spec count 2", got.Status.TotalBackends)
 	}
@@ -211,6 +368,64 @@ func TestUpdateStatusDoesNotAdvanceAgentObservedGeneration(t *testing.T) {
 	}
 	if ready.Status != metav1.ConditionTrue {
 		t.Fatalf("Ready status = %s, want True", ready.Status)
+	}
+}
+
+func TestUpdateStatusCapsRetainedOversizedStatusDetails(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	oversizedBackends := make([]v1alpha1.BackendStatus, 0, v1alpha1.MaxVirtualIPStatusBackends+1)
+	for i := 0; i <= v1alpha1.MaxVirtualIPStatusBackends; i++ {
+		oversizedBackends = append(oversizedBackends, v1alpha1.BackendStatus{
+			Address: fmt.Sprintf("10.0.%d.%d", i/256, i%256),
+			Healthy: true,
+		})
+	}
+	vip := newTestVirtualIP("default", "web")
+	vip.Generation = 7
+	vip.Status.ObservedGeneration = 6
+	vip.Status.Backends = oversizedBackends
+	vip.Status.AgentStatuses = []v1alpha1.AgentStatus{
+		{
+			AgentID:            "node-a",
+			ObservedGeneration: 6,
+			HealthyBackends:    len(oversizedBackends),
+			TotalBackends:      len(oversizedBackends),
+			Backends:           oversizedBackends,
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	reconciler := &VirtualIPReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	if err := reconciler.updateStatus(context.Background(), vip); err != nil {
+		t.Fatalf("updateStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	key := types.NamespacedName{Namespace: "default", Name: "web"}
+	if err := k8sClient.Get(context.Background(), key, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.Status.ObservedGeneration != 6 {
+		t.Fatalf("ObservedGeneration = %d, want stale generation preserved", got.Status.ObservedGeneration)
+	}
+	if len(got.Status.Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("Backends = %d, want capped to %d", len(got.Status.Backends), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+	if len(got.Status.AgentStatuses) != 1 || len(got.Status.AgentStatuses[0].Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("AgentStatuses = %#v, want backend details capped", got.Status.AgentStatuses)
 	}
 }
 

@@ -2,27 +2,34 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/datastore"
+	controllerauth "github.com/akam1o/arca-lb/internal/controller/auth"
 	"github.com/akam1o/arca-lb/internal/controller/config"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
+
+const requestIDHeader = "X-Request-ID"
 
 // Server represents the REST API server
 type Server struct {
 	config     *config.Config
 	router     *gin.Engine
 	httpServer *http.Server
-	datastore  datastore.DataStore
+	datastore  datastore.ControllerStore
 	logger     *logrus.Logger
 }
 
 // NewServer creates a new REST API server instance
-func NewServer(cfg *config.Config, ds datastore.DataStore, logger *logrus.Logger) *Server {
+func NewServer(cfg *config.Config, ds datastore.ControllerStore, logger *logrus.Logger) *Server {
 	// Set Gin mode based on log level
 	if cfg.Log.Level == "debug" {
 		gin.SetMode(gin.DebugMode)
@@ -30,9 +37,14 @@ func NewServer(cfg *config.Config, ds datastore.DataStore, logger *logrus.Logger
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	router := gin.New()
+	if err := router.SetTrustedProxies(nil); err != nil {
+		logger.WithError(err).Warn("Failed to disable trusted proxies")
+	}
+
 	server := &Server{
 		config:    cfg,
-		router:    gin.New(),
+		router:    router,
 		datastore: ds,
 		logger:    logger,
 	}
@@ -51,11 +63,39 @@ func (s *Server) setupMiddleware() {
 	// Recovery middleware
 	s.router.Use(gin.Recovery())
 
+	// Request body size limit
+	s.router.Use(s.bodyLimitMiddleware())
+
 	// Logging middleware
 	s.router.Use(s.loggingMiddleware())
 
 	// CORS middleware
 	s.router.Use(s.corsMiddleware())
+}
+
+func (s *Server) bodyLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limit := s.config.Server.MaxBodyBytes
+		if limit <= 0 || c.Request.Body == nil {
+			c.Next()
+			return
+		}
+		if c.Request.ContentLength > limit {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		c.Next()
+	}
+}
+
+func handleBindError(c *gin.Context, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+		return
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 }
 
 // loggingMiddleware returns a Gin middleware for request logging
@@ -64,6 +104,12 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 		start := time.Now()
 		path := c.Request.URL.Path
 		method := c.Request.Method
+		requestID := strings.TrimSpace(c.GetHeader(requestIDHeader))
+		if requestID == "" {
+			requestID = uuid.NewString()
+		}
+		c.Set("request_id", requestID)
+		c.Writer.Header().Set(requestIDHeader, requestID)
 
 		c.Next()
 
@@ -77,6 +123,7 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 			"path":       path,
 			"ip":         clientIP,
 			"latency_ms": latency.Milliseconds(),
+			"request_id": requestID,
 		}).Info("HTTP request")
 	}
 }
@@ -127,7 +174,7 @@ func (s *Server) corsMiddleware() gin.HandlerFunc {
 		if allowed {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+			c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Key, accept, origin, Cache-Control, X-Requested-With")
 			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 		}
 
@@ -164,6 +211,7 @@ func (s *Server) setupRoutes() {
 
 	// API v1 routes
 	v1 := s.router.Group("/api/v1")
+	v1.Use(s.authMiddleware())
 	{
 		// VIP endpoints (to be implemented in Phase 3.2)
 		vips := v1.Group("/vips")
@@ -188,6 +236,37 @@ func (s *Server) setupRoutes() {
 		// Revision endpoint (to be implemented in Phase 3.4)
 		v1.GET("/revision", s.getRevision)
 	}
+}
+
+func (s *Server) authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		expectedKey := s.config.Server.APIKey
+		if expectedKey == "" {
+			c.Next()
+			return
+		}
+
+		if !controllerauth.APIKeyMatches(extractAPIKey(c.Request), expectedKey) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func extractAPIKey(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	return controllerauth.ExtractAPIKey(
+		req.Header.Values("Authorization"),
+		req.Header.Values("X-API-Key"),
+	)
+}
+
+func (s *Server) datastoreContext(c *gin.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(c.Request.Context(), s.config.Server.DataStoreTimeout)
 }
 
 // healthCheck handles health check requests
@@ -223,7 +302,7 @@ func (s *Server) readinessCheck(c *gin.Context) {
 
 // getRevision handles GET /api/v1/revision
 func (s *Server) getRevision(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	revision, err := s.datastore.GetRevision(ctx)
@@ -242,7 +321,29 @@ func (s *Server) getRevision(c *gin.Context) {
 func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Server.Host, s.config.Server.Port)
 
-	s.httpServer = &http.Server{
+	if s.config.Server.APIKey != "" && !s.config.Server.TLS {
+		return fmt.Errorf("server.tls must be enabled when server.api_key is set")
+	}
+
+	s.httpServer = s.newHTTPServer(addr)
+
+	s.logger.WithField("addr", addr).Info("Starting REST API server")
+
+	var err error
+	if s.config.Server.TLS {
+		err = s.httpServer.ListenAndServeTLS(s.config.Server.CertFile, s.config.Server.KeyFile)
+	} else {
+		err = s.httpServer.ListenAndServe()
+	}
+	if err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("failed to start server: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Server) newHTTPServer(addr string) *http.Server {
+	server := &http.Server{
 		Addr:              addr,
 		Handler:           s.router,
 		ReadTimeout:       s.config.Server.ReadTimeout,
@@ -251,14 +352,13 @@ func (s *Server) Start() error {
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		MaxHeaderBytes:    s.config.Server.MaxHeaderBytes,
 	}
-
-	s.logger.WithField("addr", addr).Info("Starting REST API server")
-
-	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("failed to start server: %w", err)
+	if s.config.Server.TLS {
+		server.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
 	}
 
-	return nil
+	return server
 }
 
 // Shutdown gracefully shuts down the HTTP server

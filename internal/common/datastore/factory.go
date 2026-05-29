@@ -11,11 +11,20 @@ type Config struct {
 	Type string // "mysql" or "etcd"
 
 	// MySQL settings.
-	MySQLHost     string
-	MySQLPort     int
-	MySQLUser     string
-	MySQLPassword string
-	MySQLDatabase string
+	MySQLHost              string
+	MySQLPort              int
+	MySQLUser              string
+	MySQLPassword          string
+	MySQLDatabase          string
+	MySQLTLSMode           string
+	MySQLTLSCAFile         string
+	MySQLTLSCertFile       string
+	MySQLTLSKeyFile        string
+	MySQLTLSServerName     string
+	MySQLMaxOpenConns      int
+	MySQLMaxIdleConns      int
+	MySQLConnMaxLifetime   time.Duration
+	MySQLWatchPollInterval time.Duration
 
 	// etcd settings.
 	EtcdEndpoints      []string
@@ -41,6 +50,9 @@ func Register(name string, factory DataStoreFactory) {
 
 // NewDataStore is the datastore factory function.
 func NewDataStore(ctx context.Context, cfg *Config) (DataStore, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("datastore config is required")
+	}
 	factory, ok := registry[cfg.Type]
 	if !ok {
 		return nil, fmt.Errorf("unsupported datastore type: %s", cfg.Type)

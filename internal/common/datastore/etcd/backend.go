@@ -15,6 +15,13 @@ import (
 
 // AddBackend adds a new backend to etcd
 func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
@@ -35,6 +42,13 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 	if err != nil {
 		return fmt.Errorf("failed to marshal backend: %w", err)
 	}
+	parentVIP, parentVIPRevision, err := ds.getVIPWithModRevision(ctx, backend.VIPID)
+	if err != nil {
+		return fmt.Errorf("failed to verify VIP: %w", err)
+	}
+	if err := datastore.ValidateBackendAddressFamilyForVIP(parentVIP, backend); err != nil {
+		return err
+	}
 	if err := ds.checkBackendIPAvailable(ctx, backend); err != nil {
 		return fmt.Errorf("failed to verify backend IP: %w", err)
 	}
@@ -48,6 +62,7 @@ func (ds *EtcdDataStore) AddBackend(ctx context.Context, backend *models.Backend
 		ctx,
 		[]etcdTxnCheck{
 			{cmp: clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0), err: datastore.ErrNotFound},
+			{cmp: clientv3.Compare(clientv3.ModRevision(ds.vipKey(backend.VIPID)), "=", parentVIPRevision), err: datastore.ErrConflict},
 			{cmp: clientv3.Compare(clientv3.Version(key), "=", 0), err: datastore.ErrConflict},
 			{cmp: clientv3.Compare(clientv3.Version(indexKey), "=", 0), err: datastore.ErrConflict},
 			{cmp: clientv3.Compare(clientv3.Version(ipIndexKey), "=", 0), err: datastore.ErrConflict},
@@ -151,6 +166,10 @@ func (ds *EtcdDataStore) deleteBackendIPIndexesForVIP(ctx context.Context, vipID
 
 // GetBackend retrieves a backend by ID from etcd using the index
 func (ds *EtcdDataStore) GetBackend(ctx context.Context, id string) (*models.Backend, error) {
+	if err := datastore.ValidateResourceID("backend id", id); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
@@ -189,6 +208,10 @@ func (ds *EtcdDataStore) GetBackend(ctx context.Context, id string) (*models.Bac
 
 // ListBackends retrieves all backends for a VIP from etcd
 func (ds *EtcdDataStore) ListBackends(ctx context.Context, vipID string) ([]models.Backend, error) {
+	if err := datastore.ValidateResourceID("backend vip_id", vipID); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
@@ -212,11 +235,18 @@ func (ds *EtcdDataStore) ListBackends(ctx context.Context, vipID string) ([]mode
 
 // UpdateBackend updates an existing backend in etcd
 func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
-	if backend.ID == "" {
-		return fmt.Errorf("backend ID is required")
+	if err := datastore.ValidateResourceID("backend id", backend.ID); err != nil {
+		return err
+	}
+	if err := datastore.ValidateBackendFieldsForWrite(backend); err != nil {
+		return err
 	}
 
 	// Check if backend exists
@@ -233,6 +263,16 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	backend.CreatedAt = existing.CreatedAt
 	backend.VIPID = existing.VIPID
 	backend.UpdatedAt = time.Now()
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
+	}
+	parentVIP, parentVIPRevision, err := ds.getVIPWithModRevision(ctx, backend.VIPID)
+	if err != nil {
+		return fmt.Errorf("failed to verify VIP: %w", err)
+	}
+	if err := datastore.ValidateBackendAddressFamilyForVIP(parentVIP, backend); err != nil {
+		return err
+	}
 
 	// Serialize backend to JSON
 	data, err := json.Marshal(backend)
@@ -250,6 +290,7 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 	newIPIndexKey := ds.backendIPIndexKey(backend.VIPID, backend.IP)
 	checks := []etcdTxnCheck{
 		{cmp: clientv3.Compare(clientv3.Version(ds.vipKey(backend.VIPID)), ">", 0), err: datastore.ErrNotFound},
+		{cmp: clientv3.Compare(clientv3.ModRevision(ds.vipKey(backend.VIPID)), "=", parentVIPRevision), err: datastore.ErrConflict},
 		{cmp: clientv3.Compare(clientv3.Version(key), ">", 0), err: datastore.ErrNotFound},
 		{cmp: clientv3.Compare(clientv3.Version(indexKey), ">", 0), err: datastore.ErrNotFound},
 		{cmp: clientv3.Compare(clientv3.Value(indexKey), "=", backend.VIPID), err: datastore.ErrNotFound},
@@ -296,6 +337,10 @@ func (ds *EtcdDataStore) UpdateBackend(ctx context.Context, backend *models.Back
 
 // DeleteBackend deletes a backend and its index from etcd
 func (ds *EtcdDataStore) DeleteBackend(ctx context.Context, id string) error {
+	if err := datastore.ValidateResourceID("backend id", id); err != nil {
+		return err
+	}
+
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 

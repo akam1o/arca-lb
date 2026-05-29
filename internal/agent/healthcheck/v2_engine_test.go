@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -315,6 +316,176 @@ func TestEngineProbeJobsUseMonitorAddress(t *testing.T) {
 	}
 }
 
+func TestEngineBackpressuresProbeJobs(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{MaxConcurrentChecks: 1}, nil, nil, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine.ctx = ctx
+	engine.jobCh = make(chan *probeJob, 1)
+
+	vs := &vipHealthState{
+		vipKey: "default/vip-1",
+		epoch:  3,
+		spec: &v1alpha1.HealthCheckSpec{
+			TimeoutSeconds: 2,
+		},
+		backends: map[string]*backendHealthState{
+			"10.0.0.1": {address: "10.0.0.1", state: V2StateUnknown},
+			"10.0.0.2": {address: "10.0.0.2", state: V2StateUnknown},
+		},
+		prober: &recordingV2Prober{},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		engine.emitProbeJobs(vs)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("emitProbeJobs returned while job queue was still full")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := engine.droppedProbeJobs(); got != 0 {
+		t.Fatalf("dropped probe jobs = %d, want 0 while context is active", got)
+	}
+
+	first := <-engine.jobCh
+	if first == nil {
+		t.Fatal("first queued job is nil")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for probe job enqueue to resume")
+	}
+	if got := len(engine.jobCh); got != 1 {
+		t.Fatalf("queued jobs after draining = %d, want 1", got)
+	}
+	if got := engine.droppedProbeJobs(); got != 0 {
+		t.Fatalf("dropped probe jobs = %d, want 0", got)
+	}
+}
+
+func TestEngineBackpressuresProbeResults(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{WorkerCount: 1, MaxConcurrentChecks: 1}, nil, nil, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine.ctx = ctx
+	engine.jobCh = make(chan *probeJob, 1)
+	engine.resultCh = make(chan *probeResult, 1)
+	engine.resultCh <- &probeResult{}
+
+	engine.workerWG.Add(1)
+	go engine.worker(0)
+	engine.jobCh <- &probeJob{
+		vipKey:      "default/vip-1",
+		backendAddr: "10.0.0.1",
+		targetAddr:  "10.0.0.1",
+		prober:      &recordingV2Prober{},
+		timeout:     time.Second,
+	}
+	close(engine.jobCh)
+
+	done := make(chan struct{})
+	go func() {
+		engine.workerWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("worker returned while result queue was still full")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	<-engine.resultCh
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker")
+	}
+
+	if got := engine.droppedProbeResults(); got != 0 {
+		t.Fatalf("dropped probe results = %d, want 0", got)
+	}
+	select {
+	case result := <-engine.resultCh:
+		if result.backendAddr != "10.0.0.1" {
+			t.Fatalf("result backendAddr = %q, want 10.0.0.1", result.backendAddr)
+		}
+	default:
+		t.Fatal("expected queued probe result after result queue was drained")
+	}
+}
+
+func TestEngineMaxConcurrentChecksLimitsActiveProbes(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(EngineConfig{WorkerCount: 4, MaxConcurrentChecks: 2}, nil, nil, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine.ctx = ctx
+	engine.jobCh = make(chan *probeJob, 4)
+	engine.resultCh = make(chan *probeResult, 4)
+	engine.probeSlots = make(chan struct{}, engine.config.MaxConcurrentChecks)
+
+	prober := newBlockingV2Prober()
+	var unblockOnce sync.Once
+	unblock := func() {
+		unblockOnce.Do(func() {
+			close(prober.unblock)
+		})
+	}
+
+	for i := 0; i < engine.config.WorkerCount; i++ {
+		engine.workerWG.Add(1)
+		go engine.worker(i)
+	}
+	defer func() {
+		unblock()
+		close(engine.jobCh)
+		engine.workerWG.Wait()
+	}()
+
+	for _, backend := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"} {
+		engine.jobCh <- &probeJob{
+			vipKey:      "default/vip-1",
+			backendAddr: backend,
+			targetAddr:  backend,
+			prober:      prober,
+			timeout:     time.Second,
+		}
+	}
+
+	prober.waitForActive(t, engine.config.MaxConcurrentChecks)
+	time.Sleep(50 * time.Millisecond)
+
+	if got := prober.maxActive(); got != engine.config.MaxConcurrentChecks {
+		t.Fatalf("max active probes = %d, want %d", got, engine.config.MaxConcurrentChecks)
+	}
+	if got := prober.activeCount(); got != engine.config.MaxConcurrentChecks {
+		t.Fatalf("active probes before unblock = %d, want %d", got, engine.config.MaxConcurrentChecks)
+	}
+
+	unblock()
+
+	for i := 0; i < 4; i++ {
+		select {
+		case <-engine.resultCh:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for probe result")
+		}
+	}
+	if got := prober.maxActive(); got != engine.config.MaxConcurrentChecks {
+		t.Fatalf("max active probes after completion = %d, want %d", got, engine.config.MaxConcurrentChecks)
+	}
+}
+
 func TestKeyForVIP(t *testing.T) {
 	vip := &v1alpha1.VirtualIP{
 		ObjectMeta: metav1.ObjectMeta{
@@ -339,4 +510,68 @@ func (p *recordingV2Prober) Probe(context.Context, string) V2ProbeResult {
 func (p *recordingV2Prober) Close() error {
 	p.closed = true
 	return nil
+}
+
+type blockingV2Prober struct {
+	unblock chan struct{}
+
+	mu      sync.Mutex
+	active  int
+	max     int
+	entered chan struct{}
+}
+
+func newBlockingV2Prober() *blockingV2Prober {
+	return &blockingV2Prober{
+		unblock: make(chan struct{}),
+		entered: make(chan struct{}, 4),
+	}
+}
+
+func (p *blockingV2Prober) Probe(ctx context.Context, _ string) V2ProbeResult {
+	p.mu.Lock()
+	p.active++
+	if p.active > p.max {
+		p.max = p.active
+	}
+	p.mu.Unlock()
+
+	p.entered <- struct{}{}
+
+	select {
+	case <-p.unblock:
+	case <-ctx.Done():
+	}
+
+	p.mu.Lock()
+	p.active--
+	p.mu.Unlock()
+	return V2ProbeResult{Success: true, Timestamp: time.Now()}
+}
+
+func (p *blockingV2Prober) Close() error {
+	return nil
+}
+
+func (p *blockingV2Prober) waitForActive(t *testing.T, want int) {
+	t.Helper()
+	for i := 0; i < want; i++ {
+		select {
+		case <-p.entered:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %d active probes", want)
+		}
+	}
+}
+
+func (p *blockingV2Prober) activeCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.active
+}
+
+func (p *blockingV2Prober) maxActive() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.max
 }

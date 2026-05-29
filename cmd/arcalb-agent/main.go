@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,6 +34,13 @@ import (
 	otelsetup "github.com/akam1o/arca-lb/internal/pkg/otel"
 	vipvalidation "github.com/akam1o/arca-lb/internal/virtualip/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+const (
+	agentHTTPReadTimeout       = 5 * time.Second
+	agentHTTPReadHeaderTimeout = 5 * time.Second
+	agentHTTPWriteTimeout      = 10 * time.Second
+	agentHTTPIdleTimeout       = 60 * time.Second
 )
 
 func main() {
@@ -102,7 +111,7 @@ func run() int {
 	}()
 
 	// Create data plane
-	dp, err := dataplane.New(cfg.DataPlane.Type, cfg.DataPlane.VPP)
+	dp, err := dataplane.New(cfg.DataPlane.Type, dataplane.Config{VPP: cfg.DataPlane.VPPConfig})
 	if err != nil {
 		logger.Error("failed to create data plane", "error", err)
 		return 1
@@ -173,7 +182,7 @@ func run() int {
 	// Create reconciler manager
 	reconMgr := reconciler.NewManager(dp, router, st, hcEngine, cfg.Agent.ReconcileInterval, logger)
 	reconMgr.SetStatusUpdater(statusUpdater)
-	reconMgr.SetTuningDriftConfig(retainedVIPTuningDriftConfig(cfg.DataPlane.VPP, logger))
+	reconMgr.SetTuningDriftConfig(retainedVIPTuningDriftConfig(cfg.DataPlane.VPPConfig))
 	reconMgr.SetRolloutCoordinator(rolloutCoordinator)
 
 	// Wire health change callback: when health changes, trigger reconcile
@@ -232,15 +241,12 @@ func run() int {
 		return 1
 	}
 
+	healthState := newAgentHTTPHealthState()
+
 	// Start HTTP server for the container healthcheck and optional metrics before
 	// initial sync so liveness does not depend on stale dataplane cleanup time.
-	metricsServer := newAgentHTTPServer(cfg.Metrics, logger)
-	go func() {
-		logger.Info("agent HTTP server starting", "address", cfg.Metrics.Address, "metrics_enabled", cfg.Metrics.Enabled)
-		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("agent HTTP server error", "error", err)
-		}
-	}()
+	metricsServer := newAgentHTTPServer(cfg.Metrics, logger, healthState)
+	metricsErrCh := startAgentHTTPServer(metricsServer, cfg.Metrics, logger)
 
 	watcherErrCh := make(chan error, 1)
 	watcherSyncedCh := make(chan struct{})
@@ -249,6 +255,7 @@ func run() int {
 			if err := cleanupStaleLastConfigs(syncCtx, st, dp, router, rolloutCoordinator, currentVIPs, logger); err != nil {
 				return fmt.Errorf("stale dataplane cleanup failed: %w", err)
 			}
+			healthState.SetReady(true)
 			close(watcherSyncedCh)
 			return nil
 		})
@@ -259,6 +266,10 @@ func run() int {
 		if err != nil {
 			logger.Error("watcher exited before initial sync", "error", err)
 		}
+		shutdownAgent(metricsServer)
+		return 1
+	case err := <-metricsErrCh:
+		logger.Error("agent HTTP server exited before initial sync", "error", err)
 		shutdownAgent(metricsServer)
 		return 1
 	case <-watcherSyncedCh:
@@ -277,30 +288,78 @@ func run() int {
 			logger.Error("watcher exited with error", "error", err)
 			exitCode = 1
 		}
+	case err := <-metricsErrCh:
+		logger.Error("agent HTTP server exited with error", "error", err)
+		exitCode = 1
 	}
 
 	shutdownAgent(metricsServer)
 	return exitCode
 }
 
-func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger) *http.Server {
+func startAgentHTTPServer(server *http.Server, cfg agentconfig.MetricsSettings, logger *slog.Logger) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("agent HTTP server starting", "address", cfg.Address, "metrics_enabled", cfg.Enabled)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("agent HTTP server error", "error", err)
+			errCh <- err
+		}
+	}()
+	return errCh
+}
+
+func newAgentHTTPServer(cfg agentconfig.MetricsSettings, logger *slog.Logger, healthState *agentHTTPHealthState) *http.Server {
 	return &http.Server{
-		Addr:         cfg.Address,
-		Handler:      newAgentHTTPMux(cfg, logger),
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Addr:              cfg.Address,
+		Handler:           newAgentHTTPMux(cfg, logger, healthState),
+		ReadTimeout:       agentHTTPReadTimeout,
+		ReadHeaderTimeout: agentHTTPReadHeaderTimeout,
+		WriteTimeout:      agentHTTPWriteTimeout,
+		IdleTimeout:       agentHTTPIdleTimeout,
 	}
 }
 
-func newAgentHTTPMux(cfg agentconfig.MetricsSettings, logger *slog.Logger) http.Handler {
+type agentHTTPHealthState struct {
+	ready atomic.Bool
+}
+
+func newAgentHTTPHealthState() *agentHTTPHealthState {
+	return &agentHTTPHealthState{}
+}
+
+func (s *agentHTTPHealthState) SetReady(ready bool) {
+	s.ready.Store(ready)
+}
+
+func (s *agentHTTPHealthState) Ready() bool {
+	return s != nil && s.ready.Load()
+}
+
+func newAgentHTTPMux(cfg agentconfig.MetricsSettings, logger *slog.Logger, healthState *agentHTTPHealthState) http.Handler {
 	mux := http.NewServeMux()
 	if cfg.Enabled {
 		mux.Handle(cfg.Path, promhttp.Handler())
 	}
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+	livenessHandler := func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("ok")); err != nil {
 			logger.Error("failed to write health response", "error", err)
+		}
+	}
+	mux.HandleFunc("/health", livenessHandler)
+	mux.HandleFunc("/livez", livenessHandler)
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !healthState.Ready() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			if _, err := w.Write([]byte("not ready")); err != nil {
+				logger.Error("failed to write readiness response", "error", err)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("ok")); err != nil {
+			logger.Error("failed to write readiness response", "error", err)
 		}
 	})
 	return mux
@@ -593,55 +652,16 @@ func uint8PtrEqual(a, b *uint8) bool {
 	return *a == *b
 }
 
-func retainedVIPTuningDriftConfig(vpp map[string]interface{}, logger *slog.Logger) reconciler.TuningDriftConfig {
-	cfg := reconciler.TuningDriftConfig{}
-	if vpp == nil {
-		return cfg
+func retainedVIPTuningDriftConfig(vpp agentconfig.VPPDataPlaneConfig) reconciler.TuningDriftConfig {
+	cfg := reconciler.TuningDriftConfig{
+		Policy: vpp.RetainedVIPTuningDriftPolicy,
 	}
-
-	if policy, ok := vpp["retained_vip_tuning_drift_policy"].(string); ok && policy != "" {
-		cfg.Policy = policy
+	if vpp.RetainedVIPTuningDriftDrain > 0 {
+		cfg.DrainDuration = vpp.RetainedVIPTuningDriftDrain
+	} else if vpp.RollingRecreateDrain > 0 {
+		cfg.DrainDuration = vpp.RollingRecreateDrain
 	}
-
-	for _, key := range []string{"retained_vip_tuning_drift_drain", "rolling_recreate_drain"} {
-		value, ok := vpp[key]
-		if !ok {
-			continue
-		}
-		drain, err := durationSetting(value)
-		if err != nil {
-			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", err)
-			continue
-		}
-		if drain <= 0 {
-			logger.Warn("invalid retained VIP tuning drift drain setting", "key", key, "value", value, "error", "must be positive")
-			continue
-		}
-		cfg.DrainDuration = drain
-		break
-	}
-
 	return cfg
-}
-
-func durationSetting(value interface{}) (time.Duration, error) {
-	switch v := value.(type) {
-	case time.Duration:
-		return v, nil
-	case string:
-		if v == "" {
-			return 0, nil
-		}
-		return time.ParseDuration(v)
-	case int:
-		return time.Duration(v) * time.Second, nil
-	case int64:
-		return time.Duration(v) * time.Second, nil
-	case float64:
-		return time.Duration(v * float64(time.Second)), nil
-	default:
-		return 0, fmt.Errorf("unsupported duration type %T", value)
-	}
 }
 
 func setupLogger(cfg agentconfig.LogSettings) *slog.Logger {

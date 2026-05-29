@@ -2,13 +2,14 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"math"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -20,12 +21,14 @@ func (e badRequestError) Error() string { return string(e) }
 
 // HealthCheckRequest represents the request body for an optional health check when creating a VIP.
 type HealthCheckRequest struct {
-	Type      string          `json:"type" binding:"required"`
-	Interval  string          `json:"interval" binding:"required"`
-	Timeout   string          `json:"timeout" binding:"required"`
-	RiseCount int             `json:"rise_count" binding:"omitempty,min=1"`
-	FallCount int             `json:"fall_count" binding:"omitempty,min=1"`
-	Config    models.HCConfig `json:"config,omitempty"`
+	Type            string          `json:"type" binding:"required"`
+	Interval        string          `json:"interval" binding:"omitempty"`
+	Timeout         string          `json:"timeout" binding:"omitempty"`
+	IntervalSeconds *int            `json:"interval_seconds" binding:"omitempty,min=1,max=2147483647"`
+	TimeoutSeconds  *int            `json:"timeout_seconds" binding:"omitempty,min=1,max=2147483647"`
+	RiseCount       int             `json:"rise_count" binding:"omitempty,min=1,max=2147483647"`
+	FallCount       int             `json:"fall_count" binding:"omitempty,min=1,max=2147483647"`
+	Config          models.HCConfig `json:"config,omitempty"`
 }
 
 // CreateVIPRequest represents the request body for creating a VIP
@@ -41,26 +44,20 @@ type CreateVIPRequest struct {
 
 // UpdateVIPRequest represents the request body for updating a VIP
 type UpdateVIPRequest struct {
-	VIP       string           `json:"vip" binding:"omitempty,ip"`
-	Port      int              `json:"port" binding:"omitempty,min=1,max=65535"`
-	Protocol  models.Protocol  `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
-	LBMethod  models.LBMethod  `json:"lb_method" binding:"omitempty,oneof=maglev"`
-	EncapType models.EncapType `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
-	DSCP      *uint8           `json:"dscp" binding:"omitempty,min=0,max=63"`
+	VIP         *string             `json:"vip" binding:"omitempty,ip"`
+	Port        *int                `json:"port" binding:"omitempty,min=1,max=65535"`
+	Protocol    *models.Protocol    `json:"protocol" binding:"omitempty,oneof=TCP UDP"`
+	LBMethod    *models.LBMethod    `json:"lb_method" binding:"omitempty,oneof=maglev"`
+	EncapType   *models.EncapType   `json:"encap_type" binding:"omitempty,oneof=GRE4 GRE6 L3DSR NAT4 NAT6"`
+	DSCP        *uint8              `json:"dscp" binding:"omitempty,min=0,max=63"`
+	HealthCheck *HealthCheckRequest `json:"health_check,omitempty"`
 }
 
-func parseOptionalInt(v any) (int, bool) {
-	switch typed := v.(type) {
-	case int:
-		return typed, true
-	case float64:
-		if math.IsNaN(typed) || math.IsInf(typed, 0) || typed != math.Trunc(typed) {
-			return 0, false
-		}
-		return int(typed), true
-	default:
-		return 0, false
+func validateResourceID(field, value string) error {
+	if err := datastore.ValidateResourceID(field, value); err != nil {
+		return badRequestError(err.Error())
 	}
+	return nil
 }
 
 func validateHealthCheckRequest(req *HealthCheckRequest) error {
@@ -75,63 +72,22 @@ func validateHealthCheckRequest(req *HealthCheckRequest) error {
 		return badRequestError("invalid health check type")
 	}
 
-	switch hcType {
-	case models.HCTypeHTTP, models.HCTypeHTTPS, models.HCTypeTCP, models.HCTypeTLSHello:
-		if req.Config == nil {
-			return badRequestError("health_check.config is required for this type")
-		}
-		portRaw, ok := req.Config["port"]
-		if !ok {
-			return badRequestError("health_check.config.port is required")
-		}
-		port, ok := parseOptionalInt(portRaw)
-		if !ok || port < 1 || port > 65535 {
-			return badRequestError("health_check.config.port must be an integer between 1 and 65535")
-		}
-
-		if hcType == models.HCTypeHTTP || hcType == models.HCTypeHTTPS {
-			if path, ok := req.Config["path"]; ok && path != nil {
-				if _, ok := path.(string); !ok {
-					return badRequestError("health_check.config.path must be a string")
-				}
-			}
-			if expectedCodes, ok := req.Config["expected_codes"]; ok && expectedCodes != nil {
-				arr, ok := expectedCodes.([]interface{})
-				if !ok {
-					return badRequestError("health_check.config.expected_codes must be an array of integers")
-				}
-				for _, code := range arr {
-					parsedCode, ok := parseOptionalInt(code)
-					if !ok || parsedCode < 100 || parsedCode > 599 {
-						return badRequestError("health_check.config.expected_codes must be integers between 100 and 599")
-					}
-				}
-			}
-			if headers, ok := req.Config["headers"]; ok && headers != nil {
-				hm, ok := headers.(map[string]interface{})
-				if !ok {
-					return badRequestError("health_check.config.headers must be an object")
-				}
-				for _, v := range hm {
-					if v == nil {
-						continue
-					}
-					if _, ok := v.(string); !ok {
-						return badRequestError("health_check.config.headers values must be strings")
-					}
-				}
-			}
-			if tlsSkipVerify, ok := req.Config["tls_skip_verify"]; ok && tlsSkipVerify != nil {
-				if _, ok := tlsSkipVerify.(bool); !ok {
-					return badRequestError("health_check.config.tls_skip_verify must be a boolean")
-				}
-			}
-		}
-	case models.HCTypePing:
-		// No config required.
+	if err := models.ValidateHealthCheckConfig(hcType, req.Config); err != nil {
+		return healthCheckConfigBadRequest(err)
 	}
 
 	return nil
+}
+
+func healthCheckConfigBadRequest(err error) error {
+	msg := err.Error()
+	if strings.HasPrefix(msg, "config is required") {
+		return badRequestError("health_check.config is required for this type")
+	}
+	if strings.HasPrefix(msg, "unsupported health check type") {
+		return badRequestError("invalid health check type")
+	}
+	return badRequestError("health_check.config." + msg)
 }
 
 func parseHealthCheckDuration(value, field string) (time.Duration, error) {
@@ -142,31 +98,283 @@ func parseHealthCheckDuration(value, field string) (time.Duration, error) {
 	if duration%time.Second != 0 {
 		return 0, badRequestError("health check " + field + " must be a whole number of seconds")
 	}
+	if duration/time.Second > time.Duration(models.MaxHealthCheckSeconds) {
+		return 0, badRequestError("health check " + field + " must be at most 2147483647 seconds")
+	}
 	return duration, nil
 }
 
-func effectiveEncapType(encapType models.EncapType) models.EncapType {
-	if encapType == "" {
-		return models.EncapTypeL3DSR
+func healthCheckSecondsFromRequest(durationValue string, secondsValue *int, durationField, secondsField string) (int, error) {
+	if durationValue != "" && secondsValue != nil {
+		return 0, badRequestError("health_check." + durationField + " and health_check." + secondsField + " must not both be set")
 	}
-	return encapType
+
+	if secondsValue != nil {
+		if *secondsValue <= 0 {
+			return 0, badRequestError("health check " + secondsField + " must be positive")
+		}
+		if *secondsValue > models.MaxHealthCheckSeconds {
+			return 0, badRequestError("health check " + secondsField + " must be at most 2147483647 seconds")
+		}
+		return *secondsValue, nil
+	}
+
+	if durationValue == "" {
+		return 0, badRequestError("health_check." + secondsField + " or health_check." + durationField + " is required")
+	}
+
+	duration, err := parseHealthCheckDuration(durationValue, durationField)
+	if err != nil {
+		return 0, err
+	}
+	return int(duration / time.Second), nil
+}
+
+func validateHealthCheckTimingRepresentation(req *HealthCheckRequest) error {
+	usesDurationFields := req.Interval != "" || req.Timeout != ""
+	usesSecondsFields := req.IntervalSeconds != nil || req.TimeoutSeconds != nil
+	if usesDurationFields && usesSecondsFields {
+		return badRequestError("health_check timing must use either interval_seconds/timeout_seconds or interval/timeout")
+	}
+	return nil
+}
+
+func healthCheckFromRequest(req *HealthCheckRequest) (*models.HealthCheck, error) {
+	if req == nil {
+		return nil, nil
+	}
+
+	hcType := models.HCType(strings.ToLower(req.Type))
+
+	if err := validateHealthCheckTimingRepresentation(req); err != nil {
+		return nil, err
+	}
+
+	intervalSec, err := healthCheckSecondsFromRequest(req.Interval, req.IntervalSeconds, "interval", "interval_seconds")
+	if err != nil {
+		return nil, err
+	}
+
+	timeoutSec, err := healthCheckSecondsFromRequest(req.Timeout, req.TimeoutSeconds, "timeout", "timeout_seconds")
+	if err != nil {
+		return nil, err
+	}
+	if timeoutSec >= intervalSec {
+		return nil, badRequestError("health check timeout must be less than interval")
+	}
+
+	riseCount := req.RiseCount
+	if riseCount == 0 {
+		riseCount = 3
+	}
+	fallCount := req.FallCount
+	if fallCount == 0 {
+		fallCount = 2
+	}
+
+	return &models.HealthCheck{
+		Type:        hcType,
+		IntervalSec: intervalSec,
+		TimeoutSec:  timeoutSec,
+		RiseCount:   riseCount,
+		FallCount:   fallCount,
+		Config:      req.Config,
+	}, nil
 }
 
 func validateDSCPForEncap(encapType models.EncapType, dscp *uint8) error {
-	if effectiveEncapType(encapType) == models.EncapTypeL3DSR && dscp != nil && *dscp == 0 {
+	if models.EffectiveEncapType(encapType) == models.EncapTypeL3DSR && dscp != nil && *dscp == 0 {
 		return badRequestError("dscp must be 1-63 when encap_type is L3DSR (DSCP mode)")
 	}
 	return nil
 }
 
+func rawJSONIsNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+func validateNonNullJSONFields(fields map[string]json.RawMessage, names ...string) error {
+	if fields == nil {
+		return badRequestError("request body must be a JSON object")
+	}
+	for _, name := range names {
+		if raw, ok := fields[name]; ok && rawJSONIsNull(raw) {
+			return badRequestError(name + " must not be null")
+		}
+	}
+	return nil
+}
+
+func validateNoDuplicateJSONFields(c *gin.Context) error {
+	raw, ok := c.Get(gin.BodyBytesKey)
+	if !ok {
+		return nil
+	}
+	body, ok := raw.([]byte)
+	if !ok {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	return validateNoDuplicateJSONValue(decoder, "")
+}
+
+func validateNoDuplicateJSONValue(decoder *json.Decoder, path string) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return badRequestError("invalid JSON object key")
+			}
+
+			fieldPath := key
+			if path != "" {
+				fieldPath = path + "." + key
+			}
+			if _, exists := seen[key]; exists {
+				return badRequestError("duplicate field " + strconv.Quote(fieldPath))
+			}
+			seen[key] = struct{}{}
+
+			if err := validateNoDuplicateJSONValue(decoder, fieldPath); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			if err := validateNoDuplicateJSONValue(decoder, path); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	default:
+		return nil
+	}
+}
+
+func validateKnownJSONFields(fields map[string]json.RawMessage, names ...string) error {
+	return validateKnownJSONFieldsWithPrefix(fields, "", names...)
+}
+
+func validateKnownNestedJSONFields(fields map[string]json.RawMessage, field string, names ...string) error {
+	raw, ok := fields[field]
+	if !ok || rawJSONIsNull(raw) {
+		return nil
+	}
+
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &nested); err != nil || nested == nil {
+		return badRequestError(field + " must be a JSON object")
+	}
+
+	return validateKnownJSONFieldsWithPrefix(nested, field, names...)
+}
+
+func validateKnownJSONFieldsWithPrefix(fields map[string]json.RawMessage, prefix string, names ...string) error {
+	if fields == nil {
+		return badRequestError("request body must be a JSON object")
+	}
+
+	allowed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		allowed[name] = struct{}{}
+	}
+
+	for name := range fields {
+		if _, ok := allowed[name]; ok {
+			continue
+		}
+		fieldName := name
+		if prefix != "" {
+			fieldName = prefix + "." + name
+		}
+		return badRequestError("unknown field " + strconv.Quote(fieldName))
+	}
+
+	return nil
+}
+
+func validateEncapAddressFamily(vip string, encapType models.EncapType) error {
+	ip := net.ParseIP(vip)
+	if ip == nil {
+		return nil
+	}
+
+	effectiveEncap := models.EffectiveEncapType(encapType)
+	isIPv4 := ip.To4() != nil
+	switch {
+	case models.EncapRequiresIPv4VIP(effectiveEncap):
+		if !isIPv4 {
+			return badRequestError("encap_type " + string(effectiveEncap) + " requires an IPv4 vip")
+		}
+	case models.EncapRequiresIPv6VIP(effectiveEncap):
+		if isIPv4 {
+			return badRequestError("encap_type NAT6 requires an IPv6 vip")
+		}
+	}
+
+	return nil
+}
+
+func validateExistingBackendAddressFamilies(backends []models.Backend, vip *models.VIP) error {
+	for _, backend := range backends {
+		if err := validateBackendAddressFamily(vip, backend.IP); err != nil {
+			return badRequestError("existing backend " + backend.ID + ": " + err.Error())
+		}
+	}
+
+	return nil
+}
+
 // createVIP handles POST /api/v1/vips
 func (s *Server) createVIP(c *gin.Context) {
-	var req CreateVIPRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var requestFields map[string]json.RawMessage
+	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+	if err := validateNoDuplicateJSONFields(c); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := validateKnownJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type", "dscp", "health_check"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownNestedJSONFields(requestFields, "health_check", "type", "interval", "timeout", "interval_seconds", "timeout_seconds", "rise_count", "fall_count", "config"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req CreateVIPRequest
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
 	if err := validateHealthCheckRequest(req.HealthCheck); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validateEncapAddressFamily(req.VIP, req.EncapType); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -193,45 +401,15 @@ func (s *Server) createVIP(c *gin.Context) {
 
 	// Set health check if provided
 	if req.HealthCheck != nil {
-		hcType := models.HCType(strings.ToLower(req.HealthCheck.Type))
-
-		interval, err := parseHealthCheckDuration(req.HealthCheck.Interval, "interval")
+		healthCheck, err := healthCheckFromRequest(req.HealthCheck)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-
-		timeout, err := parseHealthCheckDuration(req.HealthCheck.Timeout, "timeout")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if timeout >= interval {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "health check timeout must be less than interval"})
-			return
-		}
-
-		riseCount := req.HealthCheck.RiseCount
-		if riseCount == 0 {
-			riseCount = 3
-		}
-		fallCount := req.HealthCheck.FallCount
-		if fallCount == 0 {
-			fallCount = 2
-		}
-
-		vip.HealthCheck = &models.HealthCheck{
-			Type:        hcType,
-			IntervalSec: int(interval / time.Second),
-			TimeoutSec:  int(timeout / time.Second),
-			RiseCount:   riseCount,
-			FallCount:   fallCount,
-			Config:      req.HealthCheck.Config,
-		}
+		vip.HealthCheck = healthCheck
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	// Create VIP in datastore
@@ -251,7 +429,7 @@ func (s *Server) createVIP(c *gin.Context) {
 
 // listVIPs handles GET /api/v1/vips
 func (s *Server) listVIPs(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	vips, err := s.datastore.ListVIPs(ctx)
@@ -270,8 +448,12 @@ func (s *Server) listVIPs(c *gin.Context) {
 // getVIP handles GET /api/v1/vips/:id
 func (s *Server) getVIP(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	vip, err := s.datastore.GetVIP(ctx, id)
@@ -287,20 +469,40 @@ func (s *Server) getVIP(c *gin.Context) {
 // updateVIP handles PUT /api/v1/vips/:id
 func (s *Server) updateVIP(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	var requestFields map[string]json.RawMessage
 	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+	if err := validateNoDuplicateJSONFields(c); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateNonNullJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownJSONFields(requestFields, "vip", "port", "protocol", "lb_method", "encap_type", "dscp", "health_check"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownNestedJSONFields(requestFields, "health_check", "type", "interval", "timeout", "interval_seconds", "timeout_seconds", "rise_count", "fall_count", "config"); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	var req UpdateVIPRequest
 	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		handleBindError(c, err)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	// Get existing VIP
@@ -312,30 +514,62 @@ func (s *Server) updateVIP(c *gin.Context) {
 	}
 
 	// Update fields if provided
-	if req.VIP != "" {
-		vip.VIP = req.VIP
+	if req.VIP != nil {
+		vip.VIP = *req.VIP
 	}
-	if req.Port != 0 {
-		vip.Port = req.Port
+	if req.Port != nil {
+		vip.Port = *req.Port
 	}
-	if req.Protocol != "" {
-		vip.Protocol = req.Protocol
+	if req.Protocol != nil {
+		vip.Protocol = *req.Protocol
 	}
-	if req.LBMethod != "" {
-		vip.LBMethod = req.LBMethod
+	if req.LBMethod != nil {
+		vip.LBMethod = *req.LBMethod
 	}
-	if req.EncapType != "" {
-		vip.EncapType = req.EncapType
+	if req.EncapType != nil {
+		vip.EncapType = *req.EncapType
 	}
 	if rawDSCP, ok := requestFields["dscp"]; ok {
-		if bytes.Equal(bytes.TrimSpace(rawDSCP), []byte("null")) {
+		if rawJSONIsNull(rawDSCP) {
 			vip.DSCP = nil
 		} else {
 			vip.DSCP = req.DSCP
 		}
 	}
+	if rawHealthCheck, ok := requestFields["health_check"]; ok {
+		if rawJSONIsNull(rawHealthCheck) {
+			vip.HealthCheck = nil
+		} else {
+			if err := validateHealthCheckRequest(req.HealthCheck); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			healthCheck, err := healthCheckFromRequest(req.HealthCheck)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			vip.HealthCheck = healthCheck
+		}
+	}
+
+	if err := validateEncapAddressFamily(vip.VIP, vip.EncapType); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := validateDSCPForEncap(vip.EncapType, vip.DSCP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	backends, err := s.datastore.ListBackends(ctx, id)
+	if err != nil {
+		s.logger.WithError(err).WithField("vip_id", id).Error("Failed to list backends for VIP update validation")
+		handleDataStoreError(c, err, "Backend")
+		return
+	}
+	if err := validateExistingBackendAddressFamilies(backends, vip); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -354,8 +588,12 @@ func (s *Server) updateVIP(c *gin.Context) {
 // deleteVIP handles DELETE /api/v1/vips/:id
 func (s *Server) deleteVIP(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	if err := s.datastore.DeleteVIP(ctx, id); err != nil {
@@ -365,5 +603,5 @@ func (s *Server) deleteVIP(c *gin.Context) {
 	}
 
 	s.logger.WithField("vip_id", id).Info("VIP deleted successfully")
-	c.JSON(http.StatusOK, gin.H{"message": "VIP deleted successfully"})
+	c.Status(http.StatusNoContent)
 }

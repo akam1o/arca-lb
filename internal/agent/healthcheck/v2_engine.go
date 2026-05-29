@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
@@ -36,9 +37,12 @@ type V2StateChangeCallback func(vipKey, backendAddr string, oldState, newState V
 
 // EngineConfig configures the health check engine.
 type EngineConfig struct {
-	WorkerCount         int
+	// WorkerCount is the number of worker goroutines allowed to process queued probe jobs.
+	WorkerCount int
+	// MaxConcurrentChecks limits active probe executions and sizes the internal job/result queues.
 	MaxConcurrentChecks int
-	DefaultTimeout      time.Duration
+	// DefaultTimeout is the fallback timeout for health checks that do not set one.
+	DefaultTimeout time.Duration
 }
 
 // Engine manages health checks for all VIPs.
@@ -62,13 +66,19 @@ type Engine struct {
 	// Worker pool
 	jobCh       chan *probeJob
 	resultCh    chan *probeResult
+	probeSlots  chan struct{}
 	schedulerWG sync.WaitGroup
 	workerWG    sync.WaitGroup
 	resultWG    sync.WaitGroup
 
 	// Metrics
-	probeCounter  metric.Int64Counter
-	probeDuration metric.Float64Histogram
+	probeCounter       metric.Int64Counter
+	probeDuration      metric.Float64Histogram
+	probeDroppedJobs   metric.Int64Counter
+	probeDroppedResult metric.Int64Counter
+
+	droppedJobs    atomic.Uint64
+	droppedResults atomic.Uint64
 }
 
 type vipHealthState struct {
@@ -133,15 +143,21 @@ func NewEngine(cfg EngineConfig, st *store.Store, callback V2StateChangeCallback
 		metric.WithDescription("Total number of health check probes"))
 	probeDuration, _ := meter.Float64Histogram("arca_healthcheck_probe_duration_seconds",
 		metric.WithDescription("Duration of health check probes"))
+	probeDroppedJobs, _ := meter.Int64Counter("arca_healthcheck_probe_jobs_dropped_total",
+		metric.WithDescription("Total number of health check probe jobs dropped before they could be queued"))
+	probeDroppedResult, _ := meter.Int64Counter("arca_healthcheck_probe_results_dropped_total",
+		metric.WithDescription("Total number of health check probe results dropped before they could be queued"))
 
 	return &Engine{
-		config:        cfg,
-		store:         st,
-		callback:      callback,
-		logger:        logger.With("component", "healthcheck"),
-		vips:          make(map[string]*vipHealthState),
-		probeCounter:  probeCounter,
-		probeDuration: probeDuration,
+		config:             cfg,
+		store:              st,
+		callback:           callback,
+		logger:             logger.With("component", "healthcheck"),
+		vips:               make(map[string]*vipHealthState),
+		probeCounter:       probeCounter,
+		probeDuration:      probeDuration,
+		probeDroppedJobs:   probeDroppedJobs,
+		probeDroppedResult: probeDroppedResult,
 	}
 }
 
@@ -164,6 +180,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.ctx, e.cancel = context.WithCancel(ctx)
 	e.jobCh = make(chan *probeJob, e.config.MaxConcurrentChecks)
 	e.resultCh = make(chan *probeResult, e.config.MaxConcurrentChecks)
+	e.probeSlots = make(chan struct{}, e.config.MaxConcurrentChecks)
 
 	// Start workers
 	for i := 0; i < e.config.WorkerCount; i++ {
@@ -434,29 +451,50 @@ func (e *Engine) scheduleProbes(ctx context.Context, vs *vipHealthState) {
 }
 
 func (e *Engine) emitProbeJobs(vs *vipHealthState) {
+	jobs := e.probeJobs(vs)
+	for _, job := range jobs {
+		if !e.enqueueProbeJob(job) {
+			dropped := e.recordDroppedProbeJob(job.vipKey)
+			e.logger.Warn("health check engine stopped before probe job could be queued",
+				"vip", job.vipKey, "backend", job.backendAddr, "dropped_jobs_total", dropped)
+			return
+		}
+	}
+}
+
+func (e *Engine) probeJobs(vs *vipHealthState) []*probeJob {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	timeout := time.Duration(vs.spec.TimeoutSeconds) * time.Second
+	jobs := make([]*probeJob, 0, len(vs.backends))
 	for addr, bhs := range vs.backends {
 		targetAddr := bhs.targetAddress
 		if targetAddr == "" {
 			targetAddr = addr
 		}
-		job := &probeJob{
+		jobs = append(jobs, &probeJob{
 			vipKey:      vs.vipKey,
 			epoch:       vs.epoch,
 			backendAddr: addr,
 			targetAddr:  targetAddr,
 			prober:      vs.prober,
 			timeout:     timeout,
-		}
-		select {
-		case e.jobCh <- job:
-		default:
-			e.logger.Warn("job channel full, skipping probe",
-				"vip", vs.vipKey, "backend", addr)
-		}
+		})
+	}
+	return jobs
+}
+
+func (e *Engine) enqueueProbeJob(job *probeJob) bool {
+	var done <-chan struct{}
+	if e.ctx != nil {
+		done = e.ctx.Done()
+	}
+	select {
+	case e.jobCh <- job:
+		return true
+	case <-done:
+		return false
 	}
 }
 
@@ -464,6 +502,9 @@ func (e *Engine) worker(id int) {
 	defer e.workerWG.Done()
 
 	for job := range e.jobCh {
+		if !e.acquireProbeSlot() {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(e.ctx, job.timeout)
 		start := time.Now()
 		targetAddr := job.targetAddr
@@ -473,6 +514,7 @@ func (e *Engine) worker(id int) {
 		result := job.prober.Probe(ctx, targetAddr)
 		latency := time.Since(start)
 		cancel()
+		e.releaseProbeSlot()
 
 		pr := &probeResult{
 			vipKey:      job.vipKey,
@@ -495,12 +537,66 @@ func (e *Engine) worker(id int) {
 				attribute.String("vip", job.vipKey),
 			))
 
-		select {
-		case e.resultCh <- pr:
-		default:
-			e.logger.Warn("result channel full", "vip", job.vipKey, "backend", job.backendAddr)
+		if !e.enqueueProbeResult(pr) {
+			dropped := e.recordDroppedProbeResult(job.vipKey)
+			e.logger.Warn("health check engine stopped before probe result could be queued",
+				"vip", job.vipKey, "backend", job.backendAddr, "dropped_results_total", dropped)
 		}
 	}
+}
+
+func (e *Engine) enqueueProbeResult(result *probeResult) bool {
+	var done <-chan struct{}
+	if e.ctx != nil {
+		done = e.ctx.Done()
+	}
+	select {
+	case e.resultCh <- result:
+		return true
+	case <-done:
+		return false
+	}
+}
+
+func (e *Engine) recordDroppedProbeJob(vipKey string) uint64 {
+	dropped := e.droppedJobs.Add(1)
+	e.probeDroppedJobs.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("vip", vipKey)))
+	return dropped
+}
+
+func (e *Engine) recordDroppedProbeResult(vipKey string) uint64 {
+	dropped := e.droppedResults.Add(1)
+	e.probeDroppedResult.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("vip", vipKey)))
+	return dropped
+}
+
+func (e *Engine) droppedProbeJobs() uint64 {
+	return e.droppedJobs.Load()
+}
+
+func (e *Engine) droppedProbeResults() uint64 {
+	return e.droppedResults.Load()
+}
+
+func (e *Engine) acquireProbeSlot() bool {
+	if e.probeSlots == nil {
+		return true
+	}
+	select {
+	case e.probeSlots <- struct{}{}:
+		return true
+	case <-e.ctx.Done():
+		return false
+	}
+}
+
+func (e *Engine) releaseProbeSlot() {
+	if e.probeSlots == nil {
+		return
+	}
+	<-e.probeSlots
 }
 
 func (e *Engine) processResults() {

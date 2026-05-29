@@ -1,12 +1,13 @@
 package api
 
 import (
-	"context"
+	"encoding/json"
+	"net"
 	"net/http"
-	"time"
 
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 // CreateBackendRequest represents the request body for creating a backend
@@ -18,26 +19,74 @@ type CreateBackendRequest struct {
 
 // UpdateBackendRequest represents the request body for updating a backend
 type UpdateBackendRequest struct {
-	IP     string `json:"ip" binding:"omitempty,ip"`
-	Weight int    `json:"weight" binding:"omitempty,min=1,max=100"`
+	IP     *string `json:"ip" binding:"omitempty,ip"`
+	Weight *int    `json:"weight" binding:"omitempty,min=1,max=100"`
+}
+
+func validateBackendAddressFamily(vip *models.VIP, backendIP string) error {
+	if vip == nil {
+		return nil
+	}
+
+	ip := net.ParseIP(backendIP)
+	if ip == nil {
+		return nil
+	}
+
+	encapType := models.EffectiveEncapType(vip.EncapType)
+	isIPv4 := ip.To4() != nil
+	switch {
+	case models.EncapRequiresIPv4Backend(encapType):
+		if !isIPv4 {
+			return badRequestError("backend ip must be IPv4 when encap_type is " + string(encapType))
+		}
+	case models.EncapRequiresIPv6Backend(encapType):
+		if isIPv4 {
+			return badRequestError("backend ip must be IPv6 when encap_type is " + string(encapType))
+		}
+	}
+
+	return nil
 }
 
 // createBackend handles POST /api/v1/backends
 func (s *Server) createBackend(c *gin.Context) {
-	var req CreateBackendRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var requestFields map[string]json.RawMessage
+	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+	if err := validateNoDuplicateJSONFields(c); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownJSONFields(requestFields, "vip_id", "ip", "weight"); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	var req CreateBackendRequest
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+	if err := validateResourceID("vip_id", req.VIPID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	// Verify VIP exists
-	_, err := s.datastore.GetVIP(ctx, req.VIPID)
+	vip, err := s.datastore.GetVIP(ctx, req.VIPID)
 	if err != nil {
 		s.logger.WithError(err).WithField("vip_id", req.VIPID).Error("VIP not found")
 		handleDataStoreError(c, err, "VIP")
+		return
+	}
+	if err := validateBackendAddressFamily(vip, req.IP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -67,12 +116,12 @@ func (s *Server) createBackend(c *gin.Context) {
 // listBackends handles GET /api/v1/backends?vip_id=xxx
 func (s *Server) listBackends(c *gin.Context) {
 	vipID := c.Query("vip_id")
-	if vipID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vip_id query parameter is required"})
+	if err := validateResourceID("vip_id", vipID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	backends, err := s.datastore.ListBackends(ctx, vipID)
@@ -91,8 +140,12 @@ func (s *Server) listBackends(c *gin.Context) {
 // getBackend handles GET /api/v1/backends/:id
 func (s *Server) getBackend(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	backend, err := s.datastore.GetBackend(ctx, id)
@@ -108,14 +161,36 @@ func (s *Server) getBackend(c *gin.Context) {
 // updateBackend handles PUT /api/v1/backends/:id
 func (s *Server) updateBackend(c *gin.Context) {
 	id := c.Param("id")
-
-	var req UpdateBackendRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := validateResourceID("id", id); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	var requestFields map[string]json.RawMessage
+	if err := c.ShouldBindBodyWith(&requestFields, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+	if err := validateNoDuplicateJSONFields(c); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateNonNullJSONFields(requestFields, "ip", "weight"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKnownJSONFields(requestFields, "ip", "weight"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req UpdateBackendRequest
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
+		handleBindError(c, err)
+		return
+	}
+
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	// Get existing backend
@@ -127,11 +202,22 @@ func (s *Server) updateBackend(c *gin.Context) {
 	}
 
 	// Update fields if provided
-	if req.IP != "" {
-		backend.IP = req.IP
+	if req.IP != nil {
+		backend.IP = *req.IP
 	}
-	if req.Weight != 0 {
-		backend.Weight = req.Weight
+	if req.Weight != nil {
+		backend.Weight = *req.Weight
+	}
+
+	vip, err := s.datastore.GetVIP(ctx, backend.VIPID)
+	if err != nil {
+		s.logger.WithError(err).WithField("vip_id", backend.VIPID).Error("VIP not found for backend")
+		handleDataStoreError(c, err, "VIP")
+		return
+	}
+	if err := validateBackendAddressFamily(vip, backend.IP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	// Update backend in datastore
@@ -148,8 +234,12 @@ func (s *Server) updateBackend(c *gin.Context) {
 // deleteBackend handles DELETE /api/v1/backends/:id
 func (s *Server) deleteBackend(c *gin.Context) {
 	id := c.Param("id")
+	if err := validateResourceID("id", id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := s.datastoreContext(c)
 	defer cancel()
 
 	if err := s.datastore.DeleteBackend(ctx, id); err != nil {
@@ -159,5 +249,5 @@ func (s *Server) deleteBackend(c *gin.Context) {
 	}
 
 	s.logger.WithField("backend_id", id).Info("Backend deleted successfully")
-	c.JSON(http.StatusOK, gin.H{"message": "backend deleted successfully"})
+	c.Status(http.StatusNoContent)
 }

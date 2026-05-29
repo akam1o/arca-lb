@@ -37,22 +37,30 @@ func (ds *EtcdDataStore) GetRevision(ctx context.Context) (int64, error) {
 	ctx, cancel := ds.contextWithRequestTimeout(ctx)
 	defer cancel()
 
-	key := ds.revisionKey()
-	resp, err := ds.client.Get(ctx, key)
+	currentValue, err := ds.getRevisionValue(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get revision from etcd: %w", err)
+		return 0, err
 	}
-
-	if len(resp.Kvs) == 0 {
-		return 0, fmt.Errorf("revision not found")
-	}
-
-	revision, err := strconv.ParseInt(string(resp.Kvs[0].Value), 10, 64)
+	revision, err := strconv.ParseInt(currentValue, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse revision: %w", err)
 	}
 
 	return revision, nil
+}
+
+func (ds *EtcdDataStore) getRevisionValue(ctx context.Context) (string, error) {
+	key := ds.revisionKey()
+	resp, err := ds.client.Get(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("failed to get revision from etcd: %w", err)
+	}
+
+	if len(resp.Kvs) == 0 {
+		return "", fmt.Errorf("revision not found")
+	}
+
+	return string(resp.Kvs[0].Value), nil
 }
 
 // IncrementRevision atomically increments the revision number using Compare-and-Swap

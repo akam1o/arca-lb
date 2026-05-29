@@ -1,5 +1,5 @@
 // Package dataplane defines the abstraction layer for data-plane backends.
-// Implementations include VPP (production), IPVS (lightweight), and Noop (testing).
+// Implementations include VPP (production) and Noop (testing).
 package dataplane
 
 import (
@@ -131,11 +131,16 @@ type RetainedVIPDrainChecker interface {
 	NeedsDrainForRetainedVIP(ctx context.Context, vip *v1alpha1.VirtualIP) (bool, error)
 }
 
+// Config holds typed configuration for data-plane implementations.
+type Config struct {
+	VPP VPPConfig
+}
+
 // New creates a DataPlane from a type name and config.
-func New(dpType string, cfg map[string]interface{}) (DataPlane, error) {
+func New(dpType string, cfg Config) (DataPlane, error) {
 	switch dpType {
 	case "vpp":
-		return NewVPP(cfg)
+		return NewVPP(cfg.VPP)
 	case "noop":
 		return NewNoop(), nil
 	default:

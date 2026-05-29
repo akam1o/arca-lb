@@ -2,6 +2,9 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"net"
@@ -17,7 +20,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -57,6 +62,23 @@ func setupTestServer(t *testing.T, mockDS *testutil.MockDataStore) (*bufconn.Lis
 	})
 
 	return lis, client
+}
+
+func TestValidateAgentIDRejectsWhitespaceOrControl(t *testing.T) {
+	tests := []string{
+		"agent one",
+		"agent\tone",
+		"agent\none",
+	}
+
+	for _, agentID := range tests {
+		t.Run(agentID, func(t *testing.T) {
+			err := validateAgentID(agentID)
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("validateAgentID(%q) error = %v, want InvalidArgument", agentID, err)
+			}
+		})
+	}
 }
 
 func TestConfigSyncService_GetConfig(t *testing.T) {
@@ -185,12 +207,55 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 				mock.SetGetConfigError(errors.New("GetConfig should not be called"))
 			},
 			request: &pb.GetConfigRequest{
+				AgentId:         "agent-1",
 				CurrentRevision: 7,
 			},
 			validate: func(t *testing.T, resp *pb.GetConfigResponse) {
 				assert.True(t, resp.Unchanged)
 				assert.Nil(t, resp.Config)
 			},
+		},
+		{
+			name: "rejects health check value outside protobuf int32 range",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{
+					Revision: 8,
+					VIPs: []models.VIPConfig{
+						{
+							VIP: models.VIP{
+								ID:       "vip-1",
+								VIP:      "192.168.1.100",
+								Port:     80,
+								Protocol: models.ProtocolTCP,
+								LBMethod: models.LBMethodMaglev,
+							},
+							HealthCheck: &models.HealthCheck{
+								ID:          "hc-1",
+								VIPID:       "vip-1",
+								Type:        models.HCTypeHTTP,
+								IntervalSec: models.MaxHealthCheckSeconds + 1,
+								TimeoutSec:  1,
+								RiseCount:   1,
+								FallCount:   1,
+								Config: map[string]interface{}{
+									"port": 8080,
+								},
+							},
+						},
+					},
+				})
+			},
+			expectedError: codes.Internal,
+		},
+		{
+			name: "missing agent id",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{Revision: 1})
+			},
+			request: &pb.GetConfigRequest{
+				AgentId: " ",
+			},
+			expectedError: codes.InvalidArgument,
 		},
 		{
 			name: "datastore error",
@@ -213,7 +278,7 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 
 			req := tt.request
 			if req == nil {
-				req = &pb.GetConfigRequest{}
+				req = &pb.GetConfigRequest{AgentId: "agent-1"}
 			}
 
 			resp, err := client.GetConfig(ctx, req)
@@ -231,6 +296,329 @@ func TestConfigSyncService_GetConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigSyncService_GetConfigRejectsNilRequest(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+
+	service := NewConfigSyncService(testutil.NewMockDataStore(), logger)
+
+	resp, err := service.GetConfig(context.Background(), nil)
+	require.Error(t, err)
+	assert.Nil(t, resp)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.InvalidArgument, st.Code())
+}
+
+func TestConvertConfigToProtoRejectsInvalidIdentity(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	service := NewConfigSyncService(testutil.NewMockDataStore(), logger)
+
+	validVIP := func(id, vip string) models.VIP {
+		return models.VIP{
+			ID:       id,
+			VIP:      vip,
+			Port:     80,
+			Protocol: models.ProtocolTCP,
+			LBMethod: models.LBMethodMaglev,
+		}
+	}
+	healthCheck := func(id, vipID string) *models.HealthCheck {
+		return &models.HealthCheck{
+			ID:          id,
+			VIPID:       vipID,
+			Type:        models.HCTypeTCP,
+			IntervalSec: 5,
+			TimeoutSec:  3,
+			RiseCount:   1,
+			FallCount:   1,
+			Config: map[string]interface{}{
+				"port": 8080,
+			},
+		}
+	}
+	validHealthCheck := func(vipID string) *models.HealthCheck {
+		return healthCheck("hc-1", vipID)
+	}
+	validBackend := func(id, vipID, ip string) models.Backend {
+		return models.Backend{
+			ID:     id,
+			VIPID:  vipID,
+			IP:     ip,
+			Weight: 1,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		config  *models.Config
+		wantErr string
+	}{
+		{
+			name:    "nil config",
+			config:  nil,
+			wantErr: "config is required",
+		},
+		{
+			name: "missing VIP id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("", "192.0.2.10"),
+					},
+				},
+			},
+			wantErr: "vip config at index 0 id is required",
+		},
+		{
+			name: "malformed VIP id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip/1", "192.0.2.10"),
+					},
+				},
+			},
+			wantErr: "vip config at index 0 id must not contain '/'",
+		},
+		{
+			name: "duplicate VIP id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{VIP: validVIP("vip-1", "192.0.2.10")},
+					{VIP: validVIP("vip-1", "192.0.2.11")},
+				},
+			},
+			wantErr: `vip config at index 1 duplicates vip id "vip-1" first seen at index 0`,
+		},
+		{
+			name: "duplicate VIP tuple",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{VIP: validVIP("vip-1", "192.0.2.10")},
+					{VIP: validVIP("vip-2", "192.0.2.10")},
+				},
+			},
+			wantErr: "vip config at index 1 duplicates vip tuple 192.0.2.10/80/TCP first seen at index 0",
+		},
+		{
+			name: "missing health check vip id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck(""),
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 vip_id is required",
+		},
+		{
+			name: "malformed health check id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: healthCheck("hc 1", "vip-1"),
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 id must not contain whitespace",
+		},
+		{
+			name: "malformed health check vip id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck("vip 1"),
+					},
+				},
+			},
+			wantErr: "health check at vip index 0 vip_id must not contain whitespace",
+		},
+		{
+			name: "health check vip id mismatch",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP:         validVIP("vip-1", "192.0.2.10"),
+						HealthCheck: validHealthCheck("vip-2"),
+					},
+				},
+			},
+			wantErr: `health check at vip index 0 vip_id "vip-2" does not match vip id "vip-1"`,
+		},
+		{
+			name: "missing backend id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("", "vip-1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 id is required",
+		},
+		{
+			name: "malformed backend id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend/1", "vip-1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 id must not contain '/'",
+		},
+		{
+			name: "missing backend vip id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 vip_id is required",
+		},
+		{
+			name: "malformed backend vip id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip 1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: "backend at vip index 0 backend index 0 vip_id must not contain whitespace",
+		},
+		{
+			name: "backend vip id mismatch",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-2", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 0 vip_id "vip-2" does not match vip id "vip-1"`,
+		},
+		{
+			name: "duplicate backend id",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+							validBackend("backend-1", "vip-1", "10.0.0.2"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 1 duplicates backend id "backend-1" first seen at vip index 0 backend index 0`,
+		},
+		{
+			name: "duplicate backend id across VIPs",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+						},
+					},
+					{
+						VIP: validVIP("vip-2", "192.0.2.11"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-2", "10.0.0.2"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 1 backend index 0 duplicates backend id "backend-1" first seen at vip index 0 backend index 0`,
+		},
+		{
+			name: "duplicate backend IP",
+			config: &models.Config{
+				VIPs: []models.VIPConfig{
+					{
+						VIP: validVIP("vip-1", "192.0.2.10"),
+						Backends: []models.Backend{
+							validBackend("backend-1", "vip-1", "10.0.0.1"),
+							validBackend("backend-2", "vip-1", "10.0.0.1"),
+						},
+					},
+				},
+			},
+			wantErr: `backend at vip index 0 backend index 1 duplicates backend ip "10.0.0.1" first seen at backend index 0`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.convertConfigToProto(tt.config)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestConvertConfigToProtoRejectsUnmarshalableHealthCheckConfig(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	service := NewConfigSyncService(testutil.NewMockDataStore(), logger)
+
+	_, err := service.convertConfigToProto(&models.Config{
+		Revision: 1,
+		VIPs: []models.VIPConfig{
+			{
+				VIP: models.VIP{
+					ID:       "vip-1",
+					VIP:      "192.0.2.10",
+					Port:     80,
+					Protocol: models.ProtocolTCP,
+					LBMethod: models.LBMethodMaglev,
+				},
+				HealthCheck: &models.HealthCheck{
+					ID:          "hc-1",
+					VIPID:       "vip-1",
+					Type:        models.HCTypeTCP,
+					IntervalSec: 5,
+					TimeoutSec:  3,
+					RiseCount:   1,
+					FallCount:   1,
+					Config: models.HCConfig{
+						"send": func() {},
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "health check config at vip index 0 is invalid")
+	assert.Contains(t, err.Error(), "unsupported type")
 }
 
 func TestConfigSyncService_WatchConfig(t *testing.T) {
@@ -356,6 +744,40 @@ func TestConfigSyncService_WatchConfig(t *testing.T) {
 			},
 			expectedError: codes.Internal,
 		},
+		{
+			name: "datastore watch error closes stream",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{
+					Revision: 5,
+					VIPs:     []models.VIPConfig{},
+				})
+				watchCh := make(chan datastore.WatchEvent, 1)
+				mock.SetWatchChannel(watchCh)
+				go func() {
+					time.Sleep(50 * time.Millisecond)
+					watchCh <- datastore.WatchEvent{
+						Type:  datastore.EventTypeError,
+						Error: errors.New("watch backend unavailable"),
+					}
+				}()
+			},
+			request: &pb.WatchConfigRequest{
+				AgentId:         "agent-1",
+				CurrentRevision: 5,
+			},
+			expectedError: codes.Internal,
+		},
+		{
+			name: "missing agent id",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{Revision: 5})
+			},
+			request: &pb.WatchConfigRequest{
+				AgentId:         "  ",
+				CurrentRevision: 1,
+			},
+			expectedError: codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
@@ -384,6 +806,55 @@ func TestConfigSyncService_WatchConfig(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConfigSyncServiceWatchConfigCoalescesBurstEvents(t *testing.T) {
+	mockDS := testutil.NewMockDataStore()
+	mockDS.SetConfig(&models.Config{
+		Revision: 5,
+		VIPs:     []models.VIPConfig{},
+	})
+	watchCh := make(chan datastore.WatchEvent, 2)
+	watchCh <- datastore.WatchEvent{Type: datastore.EventTypeVIPUpdated}
+	watchCh <- datastore.WatchEvent{Type: datastore.EventTypeBackendUpdated}
+	mockDS.SetWatchChannel(watchCh)
+
+	_, client := setupTestServer(t, mockDS)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	stream, err := client.WatchConfig(ctx, &pb.WatchConfigRequest{
+		AgentId:         "agent-1",
+		CurrentRevision: 5,
+	})
+	require.NoError(t, err)
+
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, resp.Config)
+
+	time.Sleep(2 * watchConfigCoalesceWindow)
+	require.Equal(t, 2, mockDS.GetConfigCallCount(), "initial config read plus one coalesced update read")
+
+	secondRespCh := make(chan *pb.WatchConfigResponse, 1)
+	secondErrCh := make(chan error, 1)
+	go func() {
+		resp, err := stream.Recv()
+		if err != nil {
+			secondErrCh <- err
+			return
+		}
+		secondRespCh <- resp
+	}()
+
+	select {
+	case resp := <-secondRespCh:
+		t.Fatalf("received unexpected second coalesced response: %#v", resp)
+	case err := <-secondErrCh:
+		t.Fatalf("received unexpected stream error: %v", err)
+	case <-time.After(2 * watchConfigCoalesceWindow):
 	}
 }
 
@@ -436,6 +907,17 @@ func TestConfigSyncService_Heartbeat(t *testing.T) {
 			},
 			expectedError: codes.Internal,
 		},
+		{
+			name: "missing agent id",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetRevision(5)
+			},
+			request: &pb.HeartbeatRequest{
+				AgentId:         " ",
+				CurrentRevision: 5,
+			},
+			expectedError: codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
@@ -467,10 +949,11 @@ func TestConfigSyncService_Heartbeat(t *testing.T) {
 
 func TestConfigSyncService_RegisterAgent(t *testing.T) {
 	tests := []struct {
-		name      string
-		setupMock func(*testutil.MockDataStore)
-		request   *pb.RegisterAgentRequest
-		validate  func(*testing.T, *pb.RegisterAgentResponse)
+		name          string
+		setupMock     func(*testutil.MockDataStore)
+		request       *pb.RegisterAgentRequest
+		expectedError codes.Code
+		validate      func(*testing.T, *pb.RegisterAgentResponse)
 	}{
 		{
 			name: "success",
@@ -508,6 +991,17 @@ func TestConfigSyncService_RegisterAgent(t *testing.T) {
 				assert.Contains(t, resp.Message, "Failed")
 			},
 		},
+		{
+			name: "missing agent id",
+			setupMock: func(mock *testutil.MockDataStore) {
+				mock.SetConfig(&models.Config{Revision: 1})
+			},
+			request: &pb.RegisterAgentRequest{
+				AgentId: " ",
+				Version: "1.0.0",
+			},
+			expectedError: codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
@@ -521,12 +1015,85 @@ func TestConfigSyncService_RegisterAgent(t *testing.T) {
 			defer cancel()
 
 			resp, err := client.RegisterAgent(ctx, tt.request)
-			require.NoError(t, err)
-			if tt.validate != nil {
-				tt.validate(t, resp)
+			if tt.expectedError != codes.OK {
+				require.Error(t, err)
+				st, ok := status.FromError(err)
+				require.True(t, ok)
+				assert.Equal(t, tt.expectedError, st.Code())
+			} else {
+				require.NoError(t, err)
+				if tt.validate != nil {
+					tt.validate(t, resp)
+				}
 			}
 		})
 	}
+}
+
+func TestConfigSyncServiceAuthorizesAgentIDWithClientCert(t *testing.T) {
+	mockDS := testutil.NewMockDataStore()
+	mockDS.SetConfig(&models.Config{
+		Revision: 1,
+		VIPs:     []models.VIPConfig{},
+	})
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	service := NewConfigSyncService(mockDS, logger, WithAgentIDClientCertAuthorization(true))
+
+	ctx := contextWithClientCertificateIdentity(context.Background(), "agent-1")
+	getResp, err := service.GetConfig(ctx, &pb.GetConfigRequest{AgentId: "agent-1"})
+	if err != nil {
+		t.Fatalf("GetConfig with matching certificate identity: %v", err)
+	}
+	if getResp == nil || getResp.Config == nil {
+		t.Fatalf("GetConfig response = %#v, want config", getResp)
+	}
+
+	resp, err := service.RegisterAgent(ctx, &pb.RegisterAgentRequest{AgentId: "agent-1"})
+	if err != nil {
+		t.Fatalf("RegisterAgent with matching certificate identity: %v", err)
+	}
+	if resp == nil || !resp.Success {
+		t.Fatalf("RegisterAgent response = %#v, want success", resp)
+	}
+
+	_, err = service.Heartbeat(ctx, &pb.HeartbeatRequest{AgentId: "agent-2"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("Heartbeat with mismatched certificate identity error = %v, want permission denied", err)
+	}
+
+	_, err = service.GetConfig(ctx, &pb.GetConfigRequest{AgentId: "agent-2"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("GetConfig with mismatched certificate identity error = %v, want permission denied", err)
+	}
+
+	_, err = service.GetConfig(ctx, &pb.GetConfigRequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("GetConfig without agent_id error = %v, want invalid argument", err)
+	}
+
+	_, err = service.RegisterAgent(context.Background(), &pb.RegisterAgentRequest{AgentId: "agent-1"})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("RegisterAgent without certificate identity error = %v, want unauthenticated", err)
+	}
+}
+
+func contextWithClientCertificateIdentity(ctx context.Context, commonName string) context.Context {
+	return peer.NewContext(ctx, &peer.Peer{
+		AuthInfo: credentials.TLSInfo{
+			State: tls.ConnectionState{
+				PeerCertificates: []*x509.Certificate{
+					{
+						Subject: pkix.Name{
+							CommonName: commonName,
+						},
+						DNSNames: []string{commonName},
+					},
+				},
+			},
+		},
+	})
 }
 
 func TestConfigSyncService_ConvertHCType(t *testing.T) {

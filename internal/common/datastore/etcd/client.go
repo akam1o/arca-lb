@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -91,11 +92,6 @@ func NewEtcdDataStore(ctx context.Context, cfg *datastore.Config) (datastore.Dat
 
 // loadTLSConfig loads TLS configuration from files
 func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load key pair: %w", err)
-	}
-
 	caCert, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CA file: %w", err)
@@ -106,10 +102,23 @@ func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 		return nil, fmt.Errorf("failed to append CA cert")
 	}
 
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caCertPool,
-	}, nil
+	tlsConfig := &tls.Config{
+		RootCAs:    caCertPool,
+		MinVersion: tls.VersionTLS12,
+	}
+
+	if certFile != "" || keyFile != "" {
+		if certFile == "" || keyFile == "" {
+			return nil, fmt.Errorf("datastore.etcd.cert_file and datastore.etcd.key_file must both be set when client certificate is configured")
+		}
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load key pair: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsConfig, nil
 }
 
 // Close closes the etcd client connection
@@ -153,10 +162,23 @@ func (ds *EtcdDataStore) GetConfig(ctx context.Context) (*models.Config, error) 
 		VIPs:     make([]models.VIPConfig, 0, len(vips)),
 	}
 
+	backendsByVIPID := make(map[string][]models.Backend, len(vips))
+	backendsResp, err := ds.client.Get(ctx, fmt.Sprintf("%s/backends/", ds.keyPrefix), clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("failed to list backends from etcd: %w", err)
+	}
+	for _, kv := range backendsResp.Kvs {
+		var backend models.Backend
+		if err := json.Unmarshal(kv.Value, &backend); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal backend: %w", err)
+		}
+		backendsByVIPID[backend.VIPID] = append(backendsByVIPID[backend.VIPID], backend)
+	}
+
 	for _, vip := range vips {
-		backends, err := ds.ListBackends(ctx, vip.ID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list backends for VIP %s: %w", vip.ID, err)
+		backends := backendsByVIPID[vip.ID]
+		if backends == nil {
+			backends = []models.Backend{}
 		}
 
 		vipConfig := models.VIPConfig{

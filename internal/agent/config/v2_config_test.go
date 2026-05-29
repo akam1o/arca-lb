@@ -18,6 +18,8 @@ agent:
   id: test-agent
 dataplane:
   type: noop
+routing:
+  type: noop
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -41,8 +43,8 @@ dataplane:
 	if cfg.HealthCheck.WorkerCount != 4 {
 		t.Errorf("HealthCheck.WorkerCount = %d, want 4", cfg.HealthCheck.WorkerCount)
 	}
-	if cfg.Metrics.Address != ":9090" {
-		t.Errorf("Metrics.Address = %q, want :9090", cfg.Metrics.Address)
+	if cfg.Metrics.Address != "127.0.0.1:9090" {
+		t.Errorf("Metrics.Address = %q, want 127.0.0.1:9090", cfg.Metrics.Address)
 	}
 	if cfg.Rollout.LeaseDuration == 0 {
 		t.Error("Rollout.LeaseDuration should default")
@@ -64,6 +66,73 @@ dataplane:
 	}
 }
 
+func TestLoadV2ConfigRejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+  status_ttl_seconds: 120
+dataplane:
+  type: noop
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadV2Config(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), "field status_ttl_seconds not found") {
+		t.Fatalf("LoadV2Config error = %v, want unknown field error", err)
+	}
+}
+
+func TestLoadV2ConfigRejectsDuplicateYAMLKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: vpp
+  vpp:
+    encap_type: L3DSR
+    encap_type: GRE4
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadV2Config(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), `duplicate yaml key "dataplane.vpp.encap_type"`) {
+		t.Fatalf("LoadV2Config error = %v, want duplicate yaml key error", err)
+	}
+}
+
+func TestLoadV2ConfigRejectsMultipleYAMLDocuments(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: noop
+---
+dataplane:
+  type: vpp
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadV2Config(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), "multiple yaml documents are not supported") {
+		t.Fatalf("LoadV2Config error = %v, want multiple yaml document error", err)
+	}
+}
+
 func TestLoadV2Config_EnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")
@@ -72,6 +141,8 @@ func TestLoadV2Config_EnvOverride(t *testing.T) {
 agent:
   id: original-id
 dataplane:
+  type: noop
+routing:
   type: noop
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
@@ -114,6 +185,172 @@ dataplane:
 	}
 }
 
+func TestLoadV2ConfigParsesTypedVPPConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: vpp
+  vpp:
+    socket_path: /tmp/vpp.sock
+    connect_timeout: 2s
+    reconnect_interval: 3
+    encap_type: GRE4
+    dscp: 12
+    service_type: NODEPORT
+    new_flows_table_length: 131072
+    fail_on_all_backends_down: true
+    state_verification_interval: 45s
+    retained_vip_tuning_drift_policy: preserve
+    retained_vip_tuning_drift_drain: 11s
+    rolling_recreate_drain: 12s
+routing:
+  type: noop
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadV2Config(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadV2Config: %v", err)
+	}
+
+	vpp := cfg.DataPlane.VPPConfig
+	if vpp.SocketPath != "/tmp/vpp.sock" {
+		t.Fatalf("SocketPath = %q, want /tmp/vpp.sock", vpp.SocketPath)
+	}
+	if vpp.ConnectTimeout != 2*time.Second {
+		t.Fatalf("ConnectTimeout = %s, want 2s", vpp.ConnectTimeout)
+	}
+	if vpp.ReconnectInterval != 3*time.Second {
+		t.Fatalf("ReconnectInterval = %s, want 3s", vpp.ReconnectInterval)
+	}
+	if vpp.EncapType != "GRE4" {
+		t.Fatalf("EncapType = %q, want GRE4", vpp.EncapType)
+	}
+	if vpp.DSCP != 12 {
+		t.Fatalf("DSCP = %d, want 12", vpp.DSCP)
+	}
+	if vpp.ServiceType != "NODEPORT" {
+		t.Fatalf("ServiceType = %q, want NODEPORT", vpp.ServiceType)
+	}
+	if vpp.NewFlowsTableLength != 131072 {
+		t.Fatalf("NewFlowsTableLength = %d, want 131072", vpp.NewFlowsTableLength)
+	}
+	if !vpp.FailOnAllBackendsDown {
+		t.Fatal("FailOnAllBackendsDown = false, want true")
+	}
+	if vpp.StateVerificationInterval != 45*time.Second {
+		t.Fatalf("StateVerificationInterval = %s, want 45s", vpp.StateVerificationInterval)
+	}
+	if vpp.RetainedVIPTuningDriftPolicy != "preserve" {
+		t.Fatalf("RetainedVIPTuningDriftPolicy = %q, want preserve", vpp.RetainedVIPTuningDriftPolicy)
+	}
+	if vpp.RetainedVIPTuningDriftDrain != 11*time.Second {
+		t.Fatalf("RetainedVIPTuningDriftDrain = %s, want 11s", vpp.RetainedVIPTuningDriftDrain)
+	}
+	if vpp.RollingRecreateDrain != 12*time.Second {
+		t.Fatalf("RollingRecreateDrain = %s, want 12s", vpp.RollingRecreateDrain)
+	}
+}
+
+func TestLoadV2ConfigTracksUnsetVPPSettingsSeparatelyFromDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	content := `
+agent:
+  id: test-agent
+dataplane:
+  type: vpp
+  vpp:
+    socket_path: /tmp/vpp.sock
+routing:
+  type: noop
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadV2Config(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadV2Config: %v", err)
+	}
+
+	if cfg.DataPlane.VPP == nil {
+		t.Fatal("DataPlane.VPP = nil, want parsed VPP settings")
+	}
+	if cfg.DataPlane.VPP.SocketPath == nil || *cfg.DataPlane.VPP.SocketPath != "/tmp/vpp.sock" {
+		t.Fatalf("DataPlane.VPP.SocketPath = %v, want /tmp/vpp.sock", cfg.DataPlane.VPP.SocketPath)
+	}
+	if cfg.DataPlane.VPP.DSCP != nil {
+		t.Fatalf("DataPlane.VPP.DSCP = %v, want nil for unset field", *cfg.DataPlane.VPP.DSCP)
+	}
+	if cfg.DataPlane.VPP.ConnectTimeout != nil {
+		t.Fatalf("DataPlane.VPP.ConnectTimeout = %s, want nil for unset field", *cfg.DataPlane.VPP.ConnectTimeout)
+	}
+	if cfg.DataPlane.VPPConfig.SocketPath != "/tmp/vpp.sock" {
+		t.Fatalf("VPPConfig.SocketPath = %q, want /tmp/vpp.sock", cfg.DataPlane.VPPConfig.SocketPath)
+	}
+	if cfg.DataPlane.VPPConfig.DSCP != 10 {
+		t.Fatalf("VPPConfig.DSCP = %d, want default 10", cfg.DataPlane.VPPConfig.DSCP)
+	}
+	if cfg.DataPlane.VPPConfig.ConnectTimeout != 10*time.Second {
+		t.Fatalf("VPPConfig.ConnectTimeout = %s, want default 10s", cfg.DataPlane.VPPConfig.ConnectTimeout)
+	}
+}
+
+func TestLoadV2ConfigRejectsInvalidEnvOverrides(t *testing.T) {
+	tests := []struct {
+		name    string
+		envName string
+		value   string
+	}{
+		{
+			name:    "agent status ttl",
+			envName: "ARCA_AGENT_STATUS_TTL",
+			value:   "later",
+		},
+		{
+			name:    "otlp insecure",
+			envName: "ARCA_OTLP_INSECURE",
+			value:   "definitely",
+		},
+		{
+			name:    "rollout enabled",
+			envName: "ARCA_ROLLOUT_ENABLED",
+			value:   "sometimes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+
+			content := `
+agent:
+  id: test-agent
+dataplane:
+  type: noop
+`
+			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(tt.envName, tt.value)
+
+			_, err := LoadV2Config(cfgPath)
+			if err == nil || !strings.Contains(err.Error(), tt.envName) {
+				t.Fatalf("LoadV2Config error = %v, want %s validation error", err, tt.envName)
+			}
+		})
+	}
+}
+
 func TestLoadV2Config_TelemetryInsecureYAML(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")
@@ -126,6 +363,8 @@ dataplane:
 telemetry:
   otlpEndpoint: collector.example.com:4317
   otlpInsecure: true
+routing:
+  type: noop
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -159,6 +398,98 @@ dataplane:
 	_, err := LoadV2Config(cfgPath)
 	if err == nil {
 		t.Fatal("expected validation error for invalid dataplane type")
+	}
+}
+
+func TestLoadV2ConfigRequiresExplicitRuntimeBackendTypes(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "missing dataplane type",
+			yaml: `
+agent:
+  id: test-agent
+routing:
+  type: noop
+`,
+			wantErr: "dataplane.type is required",
+		},
+		{
+			name: "missing routing type",
+			yaml: `
+agent:
+  id: test-agent
+dataplane:
+  type: noop
+`,
+			wantErr: "routing.type is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+			if err := os.WriteFile(cfgPath, []byte(tt.yaml), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadV2Config(cfgPath)
+			if err == nil {
+				t.Fatalf("expected validation error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("LoadV2Config error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadV2Config_InvalidAgentID(t *testing.T) {
+	tests := []struct {
+		name    string
+		agentID string
+	}{
+		{
+			name:    "blank",
+			agentID: "  ",
+		},
+		{
+			name:    "whitespace",
+			agentID: "agent one",
+		},
+		{
+			name:    "control character",
+			agentID: "agent\none",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "agent.yaml")
+
+			content := `
+agent:
+  id: "` + tt.agentID + `"
+dataplane:
+  type: noop
+`
+			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadV2Config(cfgPath)
+			if err == nil {
+				t.Fatal("expected validation error for invalid agent id")
+			}
+			if !strings.Contains(err.Error(), "agent.id") {
+				t.Fatalf("LoadV2Config error = %q, want it to contain agent.id", err)
+			}
+		})
 	}
 }
 
@@ -225,13 +556,23 @@ func TestLoadV2Config_InvalidMetricsPath(t *testing.T) {
 			metricsYAML: "enabled: true\npath: /health\n",
 			wantErr:     "metrics.path",
 		},
+		{
+			name:        "liveness path conflict",
+			metricsYAML: "enabled: true\npath: /livez\n",
+			wantErr:     "metrics.path",
+		},
+		{
+			name:        "readiness path conflict",
+			metricsYAML: "enabled: true\npath: /readyz\n",
+			wantErr:     "metrics.path",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			cfgPath := filepath.Join(dir, "agent.yaml")
-			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\nmetrics:\n"
+			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\nrouting:\n  type: noop\nmetrics:\n"
 			for _, line := range strings.Split(strings.TrimSuffix(tt.metricsYAML, "\n"), "\n") {
 				content += "  " + line + "\n"
 			}
@@ -269,6 +610,7 @@ kubernetes:
 			name: "negative routing command timeout",
 			yaml: `
 routing:
+  type: noop
   cmdTimeout: -1s
 `,
 			wantErr: "routing.cmdTimeout",
@@ -295,7 +637,11 @@ rollout:
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			cfgPath := filepath.Join(dir, "agent.yaml")
-			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\n" + tt.yaml
+			content := "agent:\n  id: test-agent\ndataplane:\n  type: noop\n"
+			if !strings.Contains(tt.yaml, "\nrouting:") {
+				content += "routing:\n  type: noop\n"
+			}
+			content += tt.yaml
 
 			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 				t.Fatal(err)
@@ -318,6 +664,11 @@ func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 		vppYAML string
 		wantErr string
 	}{
+		{
+			name:    "unknown setting",
+			vppYAML: "socketPath: /run/vpp/api.sock\n",
+			wantErr: "dataplane.vpp.socketPath",
+		},
 		{
 			name:    "invalid encap type",
 			vppYAML: "encap_type: L3dsr\n",
@@ -347,6 +698,21 @@ func TestLoadV2Config_InvalidVPPSettings(t *testing.T) {
 			name:    "flow table length is not power of two",
 			vppYAML: "new_flows_table_length: 65537\n",
 			wantErr: "dataplane.vpp.new_flows_table_length",
+		},
+		{
+			name:    "invalid fail on all backends down",
+			vppYAML: "fail_on_all_backends_down: eventually\n",
+			wantErr: "dataplane.vpp.fail_on_all_backends_down",
+		},
+		{
+			name:    "invalid connect timeout",
+			vppYAML: "connect_timeout: eventually\n",
+			wantErr: "dataplane.vpp.connect_timeout",
+		},
+		{
+			name:    "zero reconnect interval",
+			vppYAML: "reconnect_interval: 0s\n",
+			wantErr: "dataplane.vpp.reconnect_interval",
 		},
 		{
 			name:    "invalid retained tuning drift policy",

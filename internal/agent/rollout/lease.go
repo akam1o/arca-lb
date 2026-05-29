@@ -165,11 +165,16 @@ func (c *Coordinator) RunExclusive(ctx context.Context, key string, fn func(cont
 
 	done := make(chan struct{})
 	renewErrCh := make(chan error, 1)
-	go c.renewLoop(opCtx, key, held, done, renewErrCh, cancelOp)
+	renewDoneCh := make(chan struct{})
+	go func() {
+		defer close(renewDoneCh)
+		c.renewLoop(opCtx, key, held, done, renewErrCh, cancelOp)
+	}()
 
 	err = fn(opCtx)
 	close(done)
 
+	<-renewDoneCh
 	select {
 	case renewErr := <-renewErrCh:
 		if err == nil {

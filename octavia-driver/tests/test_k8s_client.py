@@ -14,18 +14,28 @@ from octavia_arca_driver.k8s_client import (
 
 
 class FakeCustomObjectsApi:
-    def __init__(self, current=None, items=None):
+    def __init__(self, current=None, items=None, list_results=None):
         self.current = current
         self.items = items or []
+        self.list_results = list(list_results) if list_results else None
+        self.create_body = None
         self.patch_body = None
         self.list_kwargs = None
+        self.list_calls = []
 
     def get_namespaced_custom_object(self, **_kwargs):
         return self.current
 
     def list_namespaced_custom_object(self, **kwargs):
         self.list_kwargs = kwargs
+        self.list_calls.append(kwargs)
+        if self.list_results is not None:
+            return self.list_results.pop(0)
         return {"items": self.items}
+
+    def create_namespaced_custom_object(self, **kwargs):
+        self.create_body = kwargs["body"]
+        return self.create_body
 
     def patch_namespaced_custom_object(self, **kwargs):
         self.patch_body = kwargs["body"]
@@ -53,6 +63,40 @@ class FakeThread:
 
 
 class TestVirtualIPClient(unittest.TestCase):
+    def test_create_virtualip_adds_octavia_identity_hash_labels(self):
+        api = FakeCustomObjectsApi()
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+
+        client.create_virtualip(
+            "vip-1",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={
+                constants.ANNOTATION_LB_ID: "lb-1111",
+                constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                constants.ANNOTATION_POOL_ID: "pool-1111",
+            },
+        )
+
+        labels = api.create_body["metadata"]["labels"]
+        self.assertEqual(
+            labels[constants.LABEL_MANAGED_BY],
+            constants.LABEL_MANAGED_BY_VALUE,
+        )
+        self.assertEqual(
+            labels[constants.LABEL_OCTAVIA_LB_ID_HASH],
+            client._identity_label_value("lb-1111"),
+        )
+        self.assertEqual(
+            labels[constants.LABEL_OCTAVIA_LISTENER_ID_HASH],
+            client._identity_label_value("listener-1111"),
+        )
+        self.assertEqual(
+            labels[constants.LABEL_OCTAVIA_POOL_ID_HASH],
+            client._identity_label_value("pool-1111"),
+        )
+
     def test_update_virtualip_sets_null_for_removed_managed_annotations(self):
         api = FakeCustomObjectsApi({
             "metadata": {
@@ -88,6 +132,38 @@ class TestVirtualIPClient(unittest.TestCase):
             annotations[constants.ANNOTATION_DRAINING_MEMBER_IDS]
         )
         self.assertNotIn("example.com/keep-out-of-scope", annotations)
+
+    def test_update_virtualip_updates_octavia_identity_hash_labels(self):
+        api = FakeCustomObjectsApi({
+            "metadata": {
+                "labels": {
+                    constants.LABEL_OCTAVIA_LB_ID_HASH: "stale-lb",
+                    constants.LABEL_OCTAVIA_POOL_ID_HASH: "stale-pool",
+                    "example.com/keep": "value",
+                },
+                "annotations": {
+                    constants.ANNOTATION_LB_ID: "old-lb",
+                    constants.ANNOTATION_POOL_ID: "old-pool",
+                },
+            },
+        })
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+
+        client.update_virtualip(
+            "vip-1",
+            {"address": "203.0.113.10", "port": 80, "protocol": "TCP"},
+            annotations={constants.ANNOTATION_LB_ID: "lb-1111"},
+        )
+
+        labels = api.patch_body["metadata"]["labels"]
+        self.assertEqual(
+            labels[constants.LABEL_OCTAVIA_LB_ID_HASH],
+            client._identity_label_value("lb-1111"),
+        )
+        self.assertIsNone(labels[constants.LABEL_OCTAVIA_POOL_ID_HASH])
+        self.assertNotIn("example.com/keep", labels)
 
     def test_update_virtualip_sets_null_for_removed_health_check(self):
         api = FakeCustomObjectsApi({
@@ -149,6 +225,95 @@ class TestVirtualIPClient(unittest.TestCase):
         self.assertTrue(first.startswith("octavia-"))
         self.assertLessEqual(len(first), 63)
 
+    def test_find_by_pool_uses_octavia_identity_label_selector(self):
+        item = {
+            "metadata": {
+                "annotations": {
+                    constants.ANNOTATION_POOL_ID: "pool-1111",
+                },
+            },
+        }
+        api = FakeCustomObjectsApi(items=[item])
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+
+        self.assertIs(client.find_by_pool("pool-1111"), item)
+
+        selector = api.list_calls[0]["label_selector"]
+        self.assertIn(
+            f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
+            selector,
+        )
+        self.assertIn(
+            constants.LABEL_OCTAVIA_POOL_ID_HASH + "=" +
+            client._identity_label_value("pool-1111"),
+            selector,
+        )
+        self.assertEqual(len(api.list_calls), 1)
+
+    def test_find_by_listener_falls_back_to_annotation_scan(self):
+        item = {
+            "metadata": {
+                "annotations": {
+                    constants.ANNOTATION_LISTENER_ID: "listener-1111",
+                },
+            },
+        }
+        api = FakeCustomObjectsApi(list_results=[
+            {"items": []},
+            {"items": [item]},
+        ])
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+
+        self.assertIs(client.find_by_listener("listener-1111"), item)
+
+        self.assertEqual(len(api.list_calls), 2)
+        self.assertEqual(
+            api.list_calls[1]["label_selector"],
+            f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
+        )
+
+    def test_find_by_loadbalancer_merges_label_and_annotation_matches(self):
+        labeled = {
+            "metadata": {
+                "name": "vip-new",
+                "namespace": "arca-lb-system",
+                "annotations": {
+                    constants.ANNOTATION_LB_ID: "lb-1111",
+                },
+            },
+        }
+        legacy = {
+            "metadata": {
+                "name": "vip-legacy",
+                "namespace": "arca-lb-system",
+                "annotations": {
+                    constants.ANNOTATION_LB_ID: "lb-1111",
+                },
+            },
+        }
+        api = FakeCustomObjectsApi(list_results=[
+            {"items": [labeled]},
+            {"items": [labeled, legacy]},
+        ])
+        client = VirtualIPClient.__new__(VirtualIPClient)
+        client._namespace = "arca-lb-system"
+        client._api = api
+
+        self.assertEqual(
+            client.find_by_loadbalancer("lb-1111"),
+            [labeled, legacy],
+        )
+
+        self.assertEqual(len(api.list_calls), 2)
+        self.assertEqual(
+            api.list_calls[1]["label_selector"],
+            f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
+        )
+
 
 class TestVirtualIPStatusWatcher(unittest.TestCase):
     def _watcher_with_thread(self, thread):
@@ -159,6 +324,9 @@ class TestVirtualIPStatusWatcher(unittest.TestCase):
         watcher._watch_lock = threading.Lock()
         watcher._namespace = "arca-lb-system"
         watcher._sync_interval = 10
+        watcher._callback_retry_delays = []
+        watcher._callback_failures_total = 0
+        watcher._callback_failure_streak = 0
         return watcher
 
     def test_stop_stops_active_watch_and_keeps_live_thread(self):
@@ -197,6 +365,63 @@ class TestVirtualIPStatusWatcher(unittest.TestCase):
         self.assertEqual(
             api.list_kwargs["label_selector"],
             f"{constants.LABEL_MANAGED_BY}={constants.LABEL_MANAGED_BY_VALUE}",
+        )
+
+    def test_sync_current_retries_callback_failures(self):
+        obj = {"metadata": {"name": "vip-1"}}
+        api = FakeCustomObjectsApi(items=[obj])
+        watcher = self._watcher_with_thread(FakeThread(alive=False))
+        watcher._api = api
+        watcher._callback_retry_delays = [0]
+        calls = []
+
+        def callback(event_type, event_obj):
+            calls.append((event_type, event_obj))
+            if len(calls) == 1:
+                raise RuntimeError("transient callback failure")
+
+        watcher._sync_current(callback)
+
+        self.assertEqual(calls, [("SYNC", obj), ("SYNC", obj)])
+        self.assertEqual(watcher._callback_failures_total, 1)
+        self.assertEqual(watcher._callback_failure_streak, 0)
+
+    def test_sync_current_tracks_repeated_callback_failures(self):
+        obj = {"metadata": {"name": "vip-1"}}
+        api = FakeCustomObjectsApi(items=[obj])
+        watcher = self._watcher_with_thread(FakeThread(alive=False))
+        watcher._api = api
+        watcher._callback_retry_delays = [0, 0]
+        calls = []
+
+        def callback(event_type, event_obj):
+            calls.append((event_type, event_obj))
+            raise RuntimeError("persistent callback failure")
+
+        watcher._sync_current(callback)
+
+        self.assertEqual(
+            calls,
+            [("SYNC", obj), ("SYNC", obj), ("SYNC", obj)],
+        )
+        self.assertEqual(watcher._callback_failures_total, 3)
+        self.assertEqual(watcher._callback_failure_streak, 3)
+
+    def test_health_exports_callback_failure_state(self):
+        watcher = self._watcher_with_thread(FakeThread(alive=True))
+        watcher._callback_failures_total = 4
+        watcher._callback_failure_streak = 2
+
+        self.assertEqual(watcher.callback_failures_total, 4)
+        self.assertEqual(watcher.callback_failure_streak, 2)
+        self.assertEqual(
+            watcher.health(),
+            {
+                "healthy": False,
+                "running": True,
+                "callback_failures_total": 4,
+                "callback_failure_streak": 2,
+            },
         )
 
     def test_watch_timeout_tracks_sync_interval(self):

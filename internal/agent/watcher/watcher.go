@@ -266,6 +266,7 @@ type initialSyncEventGate struct {
 
 	mu             sync.Mutex
 	released       bool
+	releasing      bool
 	pendingOrder   []string
 	pendingByKey   map[string]pendingSyncEvent
 	pendingUnkeyed []pendingSyncEvent
@@ -280,46 +281,68 @@ func newInitialSyncEventGate(handler k8scache.ResourceEventHandler) *initialSync
 
 func (h *initialSyncEventGate) Release() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.released {
+	if h.released || h.releasing {
+		h.mu.Unlock()
 		return
 	}
-	h.released = true
-	// Hold the lock while replaying so post-sync events cannot overtake
-	// buffered initial-list events.
-	for _, key := range h.pendingOrder {
-		event, ok := h.pendingByKey[key]
-		if !ok {
-			continue
+	h.releasing = true
+	events := h.takePendingLocked()
+	h.mu.Unlock()
+
+	for {
+		for _, event := range events {
+			event.deliver(h.handler)
 		}
-		event.deliver(h.handler)
-		delete(h.pendingByKey, key)
+
+		h.mu.Lock()
+		events = h.takePendingLocked()
+		if len(events) == 0 {
+			h.released = true
+			h.releasing = false
+			h.pendingOrder = nil
+			h.pendingByKey = nil
+			h.pendingUnkeyed = nil
+			h.mu.Unlock()
+			return
+		}
+		h.mu.Unlock()
 	}
-	for _, event := range h.pendingUnkeyed {
-		event.deliver(h.handler)
-	}
-	h.pendingOrder = nil
-	h.pendingByKey = nil
-	h.pendingUnkeyed = nil
 }
 
 func (h *initialSyncEventGate) enqueue(event pendingSyncEvent) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	if h.released {
+		h.mu.Unlock()
 		event.deliver(h.handler)
 		return
 	}
 	if event.key == "" {
 		h.pendingUnkeyed = append(h.pendingUnkeyed, event)
+		h.mu.Unlock()
 		return
 	}
 	if _, ok := h.pendingByKey[event.key]; !ok {
 		h.pendingOrder = append(h.pendingOrder, event.key)
 	}
 	h.pendingByKey[event.key] = coalescePendingEvent(h.pendingByKey[event.key], event)
+	h.mu.Unlock()
+}
+
+func (h *initialSyncEventGate) takePendingLocked() []pendingSyncEvent {
+	events := make([]pendingSyncEvent, 0, len(h.pendingOrder)+len(h.pendingUnkeyed))
+	for _, key := range h.pendingOrder {
+		event, ok := h.pendingByKey[key]
+		if !ok {
+			continue
+		}
+		events = append(events, event)
+	}
+	events = append(events, h.pendingUnkeyed...)
+	h.pendingOrder = nil
+	h.pendingByKey = make(map[string]pendingSyncEvent)
+	h.pendingUnkeyed = nil
+	return events
 }
 
 func (h *initialSyncEventGate) OnAdd(obj interface{}, isInInitialList bool) {

@@ -14,6 +14,35 @@ This document is the API reference for arca-lb.
 | Short Name | `vip` |
 | Scope | Namespaced |
 
+### API Versioning and Storage Migration
+
+The current CRD exposes only `arca.io/v1alpha1`, and that version is both
+served and used as the Kubernetes storage version. Treat `v1alpha1` as the
+current storage contract until a successor version is introduced.
+
+Version evolution must follow this policy before a beta or stable API is
+released:
+
+- Keep `v1alpha1` served while any supported cluster may still contain
+  `v1alpha1` objects.
+- Add the next API version as `served: true` with explicit conversion tests
+  before making it the storage version.
+- Use a conversion webhook when a schema or semantic change cannot be handled
+  by lossless defaulting between versions.
+- Do not remove or rename existing fields without a deprecation period,
+  conversion coverage, and release notes that describe the migration impact.
+- Change `storage: true` only after the conversion path is deployed and the
+  storage migration procedure has been documented and tested.
+
+### Terminology
+
+`VirtualIP` is the canonical Kubernetes resource name. In this API,
+`spec.address` is the virtual IP address, while backend `address` fields are
+real server addresses. The `vip` kubectl short name, REST/legacy surfaces, and
+Octavia `vip_address` all refer to the same virtual IP address concept.
+`monitorAddress` is separate and is used only as the backend health-check
+target.
+
 ### kubectl Examples
 
 ```bash

@@ -145,8 +145,10 @@ This document covers common arca-lb issues and how to resolve them.
    - Ensure `metrics.enabled: true` in Agent config.
 
 2. **Port issues**
-   - Verify the metrics port (default: `:9090`).
-   - Check firewall rules.
+   - Verify the metrics port (default: `127.0.0.1:9090` for the Agent).
+   - The bundled manifests keep metrics on loopback and do not enable
+     unauthenticated Prometheus auto-scrape annotations. Use an authenticated
+     proxy or a NetworkPolicy-restricted scrape path before exposing metrics.
 
 3. **Metrics server not running**
    - Check Agent logs for metrics server errors.

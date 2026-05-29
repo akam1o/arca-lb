@@ -40,6 +40,17 @@ const (
 // DefaultBackendWeight is the appliance-compatible default backend weight.
 const DefaultBackendWeight = 1
 
+const (
+	// MaxVirtualIPStatusBackends caps per-backend status details retained on a
+	// VirtualIP status object. Aggregate backend counts continue to report the
+	// full configured backend set.
+	MaxVirtualIPStatusBackends = 1024
+
+	// MaxVirtualIPStatusAgentStatuses caps per-agent observations retained on a
+	// VirtualIP status object.
+	MaxVirtualIPStatusAgentStatuses = 256
+)
+
 // BackendSpec defines a real server backing a VIP.
 type BackendSpec struct {
 	// Address is the IP address of the backend server.
@@ -74,21 +85,25 @@ type HealthCheckSpec struct {
 
 	// IntervalSeconds is the time between probes.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +kubebuilder:default=5
 	IntervalSeconds int `json:"intervalSeconds,omitempty"`
 
 	// TimeoutSeconds is the maximum time to wait for a probe response.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +kubebuilder:default=3
 	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 
 	// RiseCount is the number of consecutive successes to mark a backend healthy.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +kubebuilder:default=3
 	RiseCount int `json:"riseCount,omitempty"`
 
 	// FallCount is the number of consecutive failures to mark a backend unhealthy.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
 	// +kubebuilder:default=2
 	FallCount int `json:"fallCount,omitempty"`
 
@@ -110,6 +125,7 @@ type HTTPHealthCheck struct {
 	Port int `json:"port"`
 
 	// Path is the HTTP path to probe.
+	// +kubebuilder:validation:Pattern=`^/($|[^/].*)`
 	// +kubebuilder:default="/"
 	Path string `json:"path,omitempty"`
 
@@ -155,6 +171,10 @@ type TCPHealthCheck struct {
 }
 
 // VirtualIPSpec defines the desired state of a VirtualIP.
+// +kubebuilder:validation:XValidation:rule="!has(self.encapType) || (self.encapType != 'L3DSR' && self.encapType != 'NAT4') || self.address.matches('^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')",message="spec.encapType L3DSR/NAT4 requires an IPv4 spec.address"
+// +kubebuilder:validation:XValidation:rule="!has(self.encapType) || self.encapType != 'NAT6' || !self.address.matches('^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')",message="spec.encapType NAT6 requires an IPv6 spec.address"
+// +kubebuilder:validation:XValidation:rule="!has(self.encapType) || (self.encapType != 'GRE4' && self.encapType != 'L3DSR' && self.encapType != 'NAT4') || !has(self.backends) || self.backends.all(be, be.address.matches('^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$'))",message="spec.backends addresses must be IPv4 for GRE4/L3DSR/NAT4 encapType"
+// +kubebuilder:validation:XValidation:rule="!has(self.encapType) || (self.encapType != 'GRE6' && self.encapType != 'NAT6') || !has(self.backends) || self.backends.all(be, !be.address.matches('^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$'))",message="spec.backends addresses must be IPv6 for GRE6/NAT6 encapType"
 type VirtualIPSpec struct {
 	// Address is the virtual IP address.
 	// +kubebuilder:validation:Required
@@ -222,7 +242,14 @@ type AgentStatus struct {
 
 	// Backends reports per-backend health status observed by this agent.
 	// +optional
+	// +kubebuilder:validation:MaxItems=1024
 	Backends []BackendStatus `json:"backends,omitempty"`
+
+	// HealthyBackendBitmap encodes healthy backend positions from the observed
+	// spec.backends list so aggregate counts can remain exact when Backends is
+	// capped for status size.
+	// +optional
+	HealthyBackendBitmap string `json:"healthyBackendBitmap,omitempty"`
 
 	// Conditions represent this agent's latest observations.
 	// +optional
@@ -234,6 +261,8 @@ type AgentStatus struct {
 
 	// TTLSeconds is how long this observation should remain valid.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
 	TTLSeconds int64 `json:"ttlSeconds,omitempty"`
 }
 
@@ -251,10 +280,12 @@ type VirtualIPStatus struct {
 
 	// Backends reports per-backend health status.
 	// +optional
+	// +kubebuilder:validation:MaxItems=1024
 	Backends []BackendStatus `json:"backends,omitempty"`
 
 	// AgentStatuses contains per-agent observations used to build the aggregate status.
 	// +optional
+	// +kubebuilder:validation:MaxItems=256
 	// +listType=map
 	// +listMapKey=agentID
 	AgentStatuses []AgentStatus `json:"agentStatuses,omitempty"`

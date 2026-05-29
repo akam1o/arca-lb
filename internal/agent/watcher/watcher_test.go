@@ -3,7 +3,9 @@ package watcher
 import (
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +23,54 @@ func (h *recordingHandler) OnVIPUpdate(vip *v1alpha1.VirtualIP) {
 
 func (h *recordingHandler) OnVIPDelete(vip *v1alpha1.VirtualIP) {
 	h.deleted = append(h.deleted, vip)
+}
+
+type blockingAddResourceHandler struct {
+	firstName      string
+	firstStarted   chan struct{}
+	unblockFirst   chan struct{}
+	startFirstOnce sync.Once
+
+	mu    sync.Mutex
+	added []string
+}
+
+func newBlockingAddResourceHandler(firstName string) *blockingAddResourceHandler {
+	return &blockingAddResourceHandler{
+		firstName:    firstName,
+		firstStarted: make(chan struct{}),
+		unblockFirst: make(chan struct{}),
+	}
+}
+
+func (h *blockingAddResourceHandler) OnAdd(obj interface{}, _ bool) {
+	vip, _ := obj.(*v1alpha1.VirtualIP)
+	name := ""
+	if vip != nil {
+		name = vip.Name
+	}
+	if name == h.firstName {
+		h.startFirstOnce.Do(func() {
+			close(h.firstStarted)
+		})
+		<-h.unblockFirst
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.added = append(h.added, name)
+}
+
+func (h *blockingAddResourceHandler) OnUpdate(_, _ interface{}) {}
+
+func (h *blockingAddResourceHandler) OnDelete(interface{}) {}
+
+func (h *blockingAddResourceHandler) addedNames() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	names := make([]string, len(h.added))
+	copy(names, h.added)
+	return names
 }
 
 func newTestLogger() *slog.Logger {
@@ -211,6 +261,64 @@ func TestInitialSyncEventGateDeliversAfterRelease(t *testing.T) {
 	}
 	if handler.updated[0] != vip {
 		t.Fatalf("updated VIP = %#v, want VIP", handler.updated[0])
+	}
+}
+
+func TestInitialSyncEventGateReleaseQueuesConcurrentEvents(t *testing.T) {
+	handler := newBlockingAddResourceHandler("web")
+	gate := newInitialSyncEventGate(handler)
+	firstVIP := newWatcherTestVIP()
+	secondVIP := newWatcherTestVIP()
+	secondVIP.Name = "api"
+
+	gate.OnAdd(firstVIP, true)
+
+	releaseDone := make(chan struct{})
+	go func() {
+		gate.Release()
+		close(releaseDone)
+	}()
+
+	select {
+	case <-handler.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first buffered event delivery to start")
+	}
+
+	var unblockOnce sync.Once
+	unblock := func() {
+		unblockOnce.Do(func() {
+			close(handler.unblockFirst)
+		})
+	}
+	defer unblock()
+
+	enqueueDone := make(chan struct{})
+	go func() {
+		gate.OnAdd(secondVIP, false)
+		close(enqueueDone)
+	}()
+
+	select {
+	case <-enqueueDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for concurrent event enqueue")
+	}
+
+	unblock()
+
+	select {
+	case <-releaseDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for release to finish")
+	}
+
+	added := handler.addedNames()
+	if len(added) != 2 {
+		t.Fatalf("expected 2 added VIPs, got %d: %v", len(added), added)
+	}
+	if added[0] != "web" || added[1] != "api" {
+		t.Fatalf("added VIP order = %v, want [web api]", added)
 	}
 }
 

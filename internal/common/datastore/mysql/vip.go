@@ -11,12 +11,13 @@ import (
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // VIPRecord represents a VIP record in the database
 type VIPRecord struct {
 	ID        string    `gorm:"primaryKey;type:char(36)"`
-	VIP       string    `gorm:"type:varchar(45);not null"`
+	VIP       string    `gorm:"column:vip;type:varchar(45);not null"`
 	Port      int       `gorm:"not null"`
 	Protocol  string    `gorm:"type:enum('TCP','UDP');not null"`
 	LBMethod  string    `gorm:"type:enum('maglev');not null;default:'maglev'"`
@@ -34,7 +35,7 @@ func (VIPRecord) TableName() string {
 // HealthCheckRecord represents a health check record in the database
 type HealthCheckRecord struct {
 	ID          string          `gorm:"primaryKey;type:char(36)"`
-	VIPID       string          `gorm:"type:char(36);not null;uniqueIndex"`
+	VIPID       string          `gorm:"column:vip_id;type:char(36);not null;uniqueIndex"`
 	Type        string          `gorm:"type:enum('http','https','tcp','ping','tls-hello');not null"`
 	IntervalSec int             `gorm:"not null;default:5"`
 	TimeoutSec  int             `gorm:"not null;default:3"`
@@ -50,8 +51,91 @@ func (HealthCheckRecord) TableName() string {
 	return "health_checks"
 }
 
+func vipModelFromRecord(vipRecord VIPRecord) models.VIP {
+	vip := models.VIP{
+		ID:        vipRecord.ID,
+		VIP:       vipRecord.VIP,
+		Port:      vipRecord.Port,
+		Protocol:  models.Protocol(vipRecord.Protocol),
+		LBMethod:  models.LBMethod(vipRecord.LBMethod),
+		CreatedAt: vipRecord.CreatedAt,
+		UpdatedAt: vipRecord.UpdatedAt,
+	}
+	if vipRecord.EncapType != nil {
+		vip.EncapType = models.EncapType(*vipRecord.EncapType)
+	}
+	vip.DSCP = vipRecord.DSCP
+	return vip
+}
+
+func lockVIPRecordForUpdate(db *gorm.DB, id string) (VIPRecord, error) {
+	var record VIPRecord
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", id).
+		First(&record).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return VIPRecord{}, datastore.ErrNotFound
+		}
+		return VIPRecord{}, fmt.Errorf("failed to get VIP: %w", err)
+	}
+	return record, nil
+}
+
+func validateBackendRecordsForVIP(vip *models.VIP, records []BackendRecord) error {
+	backends := make([]models.Backend, 0, len(records))
+	for _, record := range records {
+		backends = append(backends, backendModelFromRecord(record))
+	}
+	return datastore.ValidateBackendFamiliesForVIP(vip, backends)
+}
+
+func healthCheckModelFromRecord(hcRecord HealthCheckRecord) (*models.HealthCheck, error) {
+	var hcConfig models.HCConfig
+	if len(hcRecord.Config) > 0 {
+		if err := json.Unmarshal(hcRecord.Config, &hcConfig); err != nil {
+			return nil, err
+		}
+	}
+
+	return &models.HealthCheck{
+		ID:          hcRecord.ID,
+		VIPID:       hcRecord.VIPID,
+		Type:        models.HCType(hcRecord.Type),
+		IntervalSec: hcRecord.IntervalSec,
+		TimeoutSec:  hcRecord.TimeoutSec,
+		RiseCount:   hcRecord.RiseCount,
+		FallCount:   hcRecord.FallCount,
+		Config:      hcConfig,
+		CreatedAt:   hcRecord.CreatedAt,
+		UpdatedAt:   hcRecord.UpdatedAt,
+	}, nil
+}
+
+func loadHealthChecksByVIPID(db *gorm.DB, vipIDs []string) (map[string]HealthCheckRecord, error) {
+	healthChecks := make(map[string]HealthCheckRecord, len(vipIDs))
+	if len(vipIDs) == 0 {
+		return healthChecks, nil
+	}
+
+	var hcRecords []HealthCheckRecord
+	if err := db.Where("vip_id IN ?", vipIDs).Find(&hcRecords).Error; err != nil {
+		return nil, err
+	}
+	for _, hcRecord := range hcRecords {
+		healthChecks[hcRecord.VIPID] = hcRecord
+	}
+	return healthChecks, nil
+}
+
 // CreateVIP creates a new VIP in MySQL
 func (ds *MySQLDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
+	}
+
 	// Generate UUID if not set
 	if vip.ID == "" {
 		vip.ID = uuid.New().String()
@@ -150,6 +234,10 @@ func (ds *MySQLDataStore) CreateVIP(ctx context.Context, vip *models.VIP) error 
 
 // GetVIP retrieves a VIP by ID from MySQL
 func (ds *MySQLDataStore) GetVIP(ctx context.Context, id string) (*models.VIP, error) {
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return nil, err
+	}
+
 	db := ds.db.WithContext(ctx)
 
 	var vipRecord VIPRecord
@@ -217,47 +305,24 @@ func (ds *MySQLDataStore) ListVIPs(ctx context.Context) ([]models.VIP, error) {
 	}
 
 	vips := make([]models.VIP, 0, len(vipRecords))
+	vipIDs := make([]string, 0, len(vipRecords))
 	for _, vipRecord := range vipRecords {
-		vip := models.VIP{
-			ID:        vipRecord.ID,
-			VIP:       vipRecord.VIP,
-			Port:      vipRecord.Port,
-			Protocol:  models.Protocol(vipRecord.Protocol),
-			LBMethod:  models.LBMethod(vipRecord.LBMethod),
-			CreatedAt: vipRecord.CreatedAt,
-			UpdatedAt: vipRecord.UpdatedAt,
-		}
-		if vipRecord.EncapType != nil {
-			vip.EncapType = models.EncapType(*vipRecord.EncapType)
-		}
-		vip.DSCP = vipRecord.DSCP
+		vipIDs = append(vipIDs, vipRecord.ID)
+	}
 
-		// Load health check
-		var hcRecord HealthCheckRecord
-		if err := db.Where("vip_id = ?", vipRecord.ID).First(&hcRecord).Error; err == nil {
-			var hcConfig models.HCConfig
-			if len(hcRecord.Config) > 0 {
-				if err := json.Unmarshal(hcRecord.Config, &hcConfig); err != nil {
-					// JSON 解析エラーは明示的に返す
-					return nil, fmt.Errorf("failed to unmarshal health check config for VIP %s: %w", vipRecord.ID, err)
-				}
-			}
+	healthChecks, err := loadHealthChecksByVIPID(db, vipIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list health checks: %w", err)
+	}
 
-			vip.HealthCheck = &models.HealthCheck{
-				ID:          hcRecord.ID,
-				VIPID:       hcRecord.VIPID,
-				Type:        models.HCType(hcRecord.Type),
-				IntervalSec: hcRecord.IntervalSec,
-				TimeoutSec:  hcRecord.TimeoutSec,
-				RiseCount:   hcRecord.RiseCount,
-				FallCount:   hcRecord.FallCount,
-				Config:      hcConfig,
-				CreatedAt:   hcRecord.CreatedAt,
-				UpdatedAt:   hcRecord.UpdatedAt,
+	for _, vipRecord := range vipRecords {
+		vip := vipModelFromRecord(vipRecord)
+		if hcRecord, ok := healthChecks[vipRecord.ID]; ok {
+			healthCheck, err := healthCheckModelFromRecord(hcRecord)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unmarshal health check config for VIP %s: %w", vipRecord.ID, err)
 			}
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			// HealthCheck 取得エラー（not found 以外）はエラーとして返す
-			return nil, fmt.Errorf("failed to get health check for VIP %s: %w", vipRecord.ID, err)
+			vip.HealthCheck = healthCheck
 		}
 
 		vips = append(vips, vip)
@@ -324,34 +389,48 @@ func vipUpdateValues(vip *models.VIP, fallback VIPRecord) map[string]interface{}
 
 // UpdateVIP updates an existing VIP in MySQL
 func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error {
-	if vip.ID == "" {
-		return fmt.Errorf("VIP ID is required")
+	if vip == nil {
+		return datastore.ErrInvalidInput
 	}
 
-	// Check if VIP exists
-	existing, err := ds.GetVIP(ctx, vip.ID)
-	if err != nil {
-		if errors.Is(err, datastore.ErrNotFound) {
-			return err
-		}
-		return fmt.Errorf("failed to get VIP: %w", err)
+	if err := datastore.ValidateResourceID("vip id", vip.ID); err != nil {
+		return err
 	}
-
-	// Preserve CreatedAt
-	vip.CreatedAt = existing.CreatedAt
-	vip.UpdatedAt = time.Now()
-
-	fallback := VIPRecord{
-		VIP:       existing.VIP,
-		Port:      existing.Port,
-		Protocol:  string(existing.Protocol),
-		LBMethod:  string(existing.LBMethod),
-		CreatedAt: existing.CreatedAt,
-		UpdatedAt: existing.UpdatedAt,
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
 	}
 
 	// Update VIP in transaction
-	err = ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		existing, err := lockVIPRecordForUpdate(tx, vip.ID)
+		if err != nil {
+			return err
+		}
+
+		// Preserve CreatedAt and use the locked row as the fallback for partial updates.
+		vip.CreatedAt = existing.CreatedAt
+		vip.UpdatedAt = time.Now()
+		var backendRecords []BackendRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("vip_id = ?", vip.ID).
+			Find(&backendRecords).Error; err != nil {
+			return normalizeError(fmt.Errorf("failed to list backends for VIP validation: %w", err))
+		}
+		if err := validateBackendRecordsForVIP(vip, backendRecords); err != nil {
+			return err
+		}
+
+		fallback := VIPRecord{
+			VIP:       existing.VIP,
+			Port:      existing.Port,
+			Protocol:  existing.Protocol,
+			LBMethod:  existing.LBMethod,
+			EncapType: existing.EncapType,
+			DSCP:      existing.DSCP,
+			CreatedAt: existing.CreatedAt,
+			UpdatedAt: existing.UpdatedAt,
+		}
+
 		// Update VIP
 		result := tx.Model(&VIPRecord{}).
 			Where("id = ?", vip.ID).
@@ -449,6 +528,10 @@ func (ds *MySQLDataStore) UpdateVIP(ctx context.Context, vip *models.VIP) error 
 
 // DeleteVIP deletes a VIP and its associated backends from MySQL
 func (ds *MySQLDataStore) DeleteVIP(ctx context.Context, id string) error {
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return err
+	}
+
 	// Delete VIP in transaction (CASCADE will handle backends and health checks)
 	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Delete VIP (CASCADE will delete health checks and backends)

@@ -11,6 +11,7 @@ import (
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ChangeEvent represents a change event to be logged
@@ -46,6 +47,13 @@ func (ds *MySQLDataStore) BeginTx(ctx context.Context) (datastore.Transaction, e
 
 // CreateVIP adds a VIP creation operation to the transaction
 func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) error {
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
+	}
+
 	db := tx.tx.WithContext(ctx)
 
 	// Generate UUID if not set
@@ -133,6 +141,13 @@ func (tx *MySQLTransaction) CreateVIP(ctx context.Context, vip *models.VIP) erro
 
 // AddBackend adds a backend creation operation to the transaction
 func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
+	}
+
 	db := tx.tx.WithContext(ctx)
 
 	// Generate UUID if not set
@@ -147,13 +162,13 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 	}
 	backend.UpdatedAt = now
 
-	// Verify VIP exists
-	var count int64
-	if err := db.Table("vips").Where("id = ?", backend.VIPID).Count(&count).Error; err != nil {
-		return fmt.Errorf("failed to verify VIP: %w", err)
+	vipRecord, err := lockVIPRecordForUpdate(db, backend.VIPID)
+	if err != nil {
+		return err
 	}
-	if count == 0 {
-		return datastore.ErrNotFound
+	vip := vipModelFromRecord(vipRecord)
+	if err := datastore.ValidateBackendAddressFamilyForVIP(&vip, backend); err != nil {
+		return err
 	}
 
 	// Convert to database record
@@ -182,23 +197,35 @@ func (tx *MySQLTransaction) AddBackend(ctx context.Context, backend *models.Back
 
 // UpdateVIP adds a VIP update operation to the transaction
 func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) error {
-	db := tx.tx.WithContext(ctx)
-
-	if vip.ID == "" {
-		return fmt.Errorf("VIP ID is required")
+	if vip == nil {
+		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateResourceID("vip id", vip.ID); err != nil {
+		return err
+	}
+	if err := datastore.ValidateVIPForWrite(vip); err != nil {
+		return err
 	}
 
+	db := tx.tx.WithContext(ctx)
+
 	// Check if VIP exists
-	var existingRecord VIPRecord
-	if err := db.Where("id = ?", vip.ID).First(&existingRecord).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return datastore.ErrNotFound
-		}
-		return normalizeError(fmt.Errorf("failed to check VIP: %w", err))
+	existingRecord, err := lockVIPRecordForUpdate(db, vip.ID)
+	if err != nil {
+		return err
 	}
 
 	vip.UpdatedAt = time.Now()
 	vip.CreatedAt = existingRecord.CreatedAt
+	var backendRecords []BackendRecord
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("vip_id = ?", vip.ID).
+		Find(&backendRecords).Error; err != nil {
+		return normalizeError(fmt.Errorf("failed to list backends for VIP validation: %w", err))
+	}
+	if err := validateBackendRecordsForVIP(vip, backendRecords); err != nil {
+		return err
+	}
 
 	// Update VIP
 	result := db.Model(&VIPRecord{}).
@@ -285,6 +312,10 @@ func (tx *MySQLTransaction) UpdateVIP(ctx context.Context, vip *models.VIP) erro
 
 // DeleteVIP adds a VIP deletion operation to the transaction
 func (tx *MySQLTransaction) DeleteVIP(ctx context.Context, id string) error {
+	if err := datastore.ValidateResourceID("vip id", id); err != nil {
+		return err
+	}
+
 	db := tx.tx.WithContext(ctx)
 
 	// Delete VIP (CASCADE will delete health checks and backends)

@@ -21,13 +21,13 @@ import (
 type Server struct {
 	config     *config.Config
 	grpcServer *grpc.Server
-	datastore  datastore.DataStore
+	datastore  datastore.ConfigSyncStore
 	logger     *logrus.Logger
 	listener   net.Listener
 }
 
 // NewServer creates a new gRPC server instance
-func NewServer(cfg *config.Config, ds datastore.DataStore, logger *logrus.Logger) *Server {
+func NewServer(cfg *config.Config, ds datastore.ConfigSyncStore, logger *logrus.Logger) *Server {
 	return &Server{
 		config:    cfg,
 		datastore: ds,
@@ -69,14 +69,30 @@ func (s *Server) initializeGRPCServer() error {
 
 	s.grpcServer = grpc.NewServer(opts...)
 
-	configSyncService := NewConfigSyncService(s.datastore, s.logger)
+	configSyncService := NewConfigSyncService(
+		s.datastore,
+		s.logger,
+		WithAgentIDClientCertAuthorization(s.config.GRPC.AuthorizeAgentIDWithClientCert),
+	)
 	pb.RegisterConfigSyncServer(s.grpcServer, configSyncService)
 	return nil
 }
 
 func (s *Server) grpcServerOptions() ([]grpc.ServerOption, error) {
+	opts := make([]grpc.ServerOption, 0, 3)
+
+	if s.config.GRPC.APIKey != "" {
+		if !s.config.GRPC.TLS {
+			return nil, fmt.Errorf("grpc.tls must be enabled when grpc.api_key is set")
+		}
+		opts = append(opts,
+			grpc.UnaryInterceptor(apiKeyUnaryServerInterceptor(s.config.GRPC.APIKey)),
+			grpc.StreamInterceptor(apiKeyStreamServerInterceptor(s.config.GRPC.APIKey)),
+		)
+	}
+
 	if !s.config.GRPC.TLS {
-		return nil, nil
+		return opts, nil
 	}
 
 	tlsConfig, err := s.loadTLSConfig()
@@ -84,9 +100,8 @@ func (s *Server) grpcServerOptions() ([]grpc.ServerOption, error) {
 		return nil, fmt.Errorf("failed to load gRPC TLS config: %w", err)
 	}
 
-	return []grpc.ServerOption{
-		grpc.Creds(credentials.NewTLS(tlsConfig)),
-	}, nil
+	opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+	return opts, nil
 }
 
 func (s *Server) loadTLSConfig() (*tls.Config, error) {

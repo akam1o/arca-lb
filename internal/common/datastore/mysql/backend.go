@@ -10,12 +10,13 @@ import (
 	"github.com/akam1o/arca-lb/internal/common/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // BackendRecord represents a backend record in the database
 type BackendRecord struct {
 	ID        string    `gorm:"primaryKey;type:char(36)"`
-	VIPID     string    `gorm:"type:char(36);not null;index"`
+	VIPID     string    `gorm:"column:vip_id;type:char(36);not null;index"`
 	IP        string    `gorm:"type:varchar(45);not null"`
 	Weight    int       `gorm:"not null;default:1"`
 	CreatedAt time.Time `gorm:"not null"`
@@ -27,8 +28,43 @@ func (BackendRecord) TableName() string {
 	return "backends"
 }
 
+func backendModelFromRecord(backendRecord BackendRecord) models.Backend {
+	return models.Backend{
+		ID:        backendRecord.ID,
+		VIPID:     backendRecord.VIPID,
+		IP:        backendRecord.IP,
+		Weight:    backendRecord.Weight,
+		CreatedAt: backendRecord.CreatedAt,
+		UpdatedAt: backendRecord.UpdatedAt,
+	}
+}
+
+func loadBackendsByVIPID(db *gorm.DB, vipIDs []string) (map[string][]models.Backend, error) {
+	backends := make(map[string][]models.Backend, len(vipIDs))
+	if len(vipIDs) == 0 {
+		return backends, nil
+	}
+
+	var backendRecords []BackendRecord
+	if err := db.Where("vip_id IN ?", vipIDs).Find(&backendRecords).Error; err != nil {
+		return nil, err
+	}
+	for _, backendRecord := range backendRecords {
+		backend := backendModelFromRecord(backendRecord)
+		backends[backend.VIPID] = append(backends[backend.VIPID], backend)
+	}
+	return backends, nil
+}
+
 // AddBackend adds a new backend to MySQL
 func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backend) error {
+	if backend == nil {
+		return datastore.ErrInvalidInput
+	}
+	if err := datastore.ValidateBackendForWrite(backend); err != nil {
+		return err
+	}
+
 	// Generate UUID if not set
 	if backend.ID == "" {
 		backend.ID = uuid.New().String()
@@ -53,13 +89,13 @@ func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backen
 
 	// Add backend in transaction
 	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Verify VIP exists
-		var count int64
-		if err := tx.Table("vips").Where("id = ?", backend.VIPID).Count(&count).Error; err != nil {
-			return fmt.Errorf("failed to verify VIP: %w", err)
+		vipRecord, err := lockVIPRecordForUpdate(tx, backend.VIPID)
+		if err != nil {
+			return err
 		}
-		if count == 0 {
-			return datastore.ErrNotFound
+		vip := vipModelFromRecord(vipRecord)
+		if err := datastore.ValidateBackendAddressFamilyForVIP(&vip, backend); err != nil {
+			return err
 		}
 
 		// Create backend
@@ -90,6 +126,10 @@ func (ds *MySQLDataStore) AddBackend(ctx context.Context, backend *models.Backen
 
 // GetBackend retrieves a backend by ID from MySQL
 func (ds *MySQLDataStore) GetBackend(ctx context.Context, id string) (*models.Backend, error) {
+	if err := datastore.ValidateResourceID("backend id", id); err != nil {
+		return nil, err
+	}
+
 	db := ds.db.WithContext(ctx)
 
 	var backendRecord BackendRecord
@@ -112,6 +152,10 @@ func (ds *MySQLDataStore) GetBackend(ctx context.Context, id string) (*models.Ba
 
 // ListBackends retrieves all backends for a VIP from MySQL
 func (ds *MySQLDataStore) ListBackends(ctx context.Context, vipID string) ([]models.Backend, error) {
+	if err := datastore.ValidateResourceID("backend vip_id", vipID); err != nil {
+		return nil, err
+	}
+
 	db := ds.db.WithContext(ctx)
 
 	var backendRecords []BackendRecord
@@ -136,36 +180,63 @@ func (ds *MySQLDataStore) ListBackends(ctx context.Context, vipID string) ([]mod
 
 // UpdateBackend updates an existing backend in MySQL
 func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Backend) error {
-	if backend.ID == "" {
-		return fmt.Errorf("backend ID is required")
+	if backend == nil {
+		return datastore.ErrInvalidInput
 	}
 
-	// Check if backend exists
-	existing, err := ds.GetBackend(ctx, backend.ID)
-	if err != nil {
-		if errors.Is(err, datastore.ErrNotFound) {
-			return err
-		}
-		return fmt.Errorf("failed to get backend: %w", err)
+	if err := datastore.ValidateResourceID("backend id", backend.ID); err != nil {
+		return err
 	}
-
-	// Preserve CreatedAt and VIPID
-	backend.CreatedAt = existing.CreatedAt
-	backend.VIPID = existing.VIPID
-	backend.UpdatedAt = time.Now()
-
-	// Convert to database record
-	backendRecord := BackendRecord{
-		ID:        backend.ID,
-		VIPID:     backend.VIPID,
-		IP:        backend.IP,
-		Weight:    backend.Weight,
-		CreatedAt: backend.CreatedAt,
-		UpdatedAt: backend.UpdatedAt,
+	if err := datastore.ValidateBackendFieldsForWrite(backend); err != nil {
+		return err
 	}
 
 	// Update backend in transaction
-	err = ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := ds.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing BackendRecord
+		if err := tx.Where("id = ?", backend.ID).
+			First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return datastore.ErrNotFound
+			}
+			return fmt.Errorf("failed to get backend: %w", err)
+		}
+
+		vipRecord, err := lockVIPRecordForUpdate(tx, existing.VIPID)
+		if err != nil {
+			return err
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", backend.ID).
+			First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return datastore.ErrNotFound
+			}
+			return fmt.Errorf("failed to get backend: %w", err)
+		}
+
+		// Preserve CreatedAt and VIPID from the locked row.
+		backend.CreatedAt = existing.CreatedAt
+		backend.VIPID = existing.VIPID
+		backend.UpdatedAt = time.Now()
+		if err := datastore.ValidateBackendForWrite(backend); err != nil {
+			return err
+		}
+		vip := vipModelFromRecord(vipRecord)
+		if err := datastore.ValidateBackendAddressFamilyForVIP(&vip, backend); err != nil {
+			return err
+		}
+
+		// Convert to database record
+		backendRecord := BackendRecord{
+			ID:        backend.ID,
+			VIPID:     backend.VIPID,
+			IP:        backend.IP,
+			Weight:    backend.Weight,
+			CreatedAt: backend.CreatedAt,
+			UpdatedAt: backend.UpdatedAt,
+		}
+
 		// Update backend
 		result := tx.Model(&BackendRecord{}).Where("id = ?", backend.ID).Updates(&backendRecord)
 		if result.Error != nil {
@@ -198,6 +269,10 @@ func (ds *MySQLDataStore) UpdateBackend(ctx context.Context, backend *models.Bac
 
 // DeleteBackend deletes a backend from MySQL
 func (ds *MySQLDataStore) DeleteBackend(ctx context.Context, id string) error {
+	if err := datastore.ValidateResourceID("backend id", id); err != nil {
+		return err
+	}
+
 	// Get backend to find VIP ID
 	backend, err := ds.GetBackend(ctx, id)
 	if err != nil {

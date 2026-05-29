@@ -1,0 +1,31 @@
+# arca-lb Controller Configuration
+#
+# Development default used by cmd/arcalb-controller when --config is omitted.
+
+server:
+  host: 127.0.0.1
+  port: 8080
+  tls: false
+  datastore_timeout: 5s
+  allowed_origins:
+    - http://localhost:3000
+
+datastore:
+  type: etcd
+  etcd:
+    endpoints:
+      - 127.0.0.1:2379
+    key_prefix: /arca-lb
+    dial_timeout: 5s
+    request_timeout: 5s
+
+grpc:
+  host: 127.0.0.1
+  port: 50051
+  tls: false
+  require_client_cert: false
+  authorize_agent_id_with_client_cert: false
+
+log:
+  level: info
+  format: json

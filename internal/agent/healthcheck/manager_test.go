@@ -354,7 +354,7 @@ func TestManager_PartialDegradation(t *testing.T) {
 		HealthCheck: &models.HealthCheck{
 			VIPID:       "vip-1",
 			Type:        models.HCTypeHTTP,
-			IntervalSec: 1, // Short interval for testing
+			IntervalSec: 2, // Short interval for testing
 			TimeoutSec:  1,
 			RiseCount:   2, // Low threshold for faster testing
 			FallCount:   2,

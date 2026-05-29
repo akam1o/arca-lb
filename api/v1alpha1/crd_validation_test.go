@@ -26,6 +26,10 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	if !containsString(stringSlice(t, http["required"]), "port") {
 		t.Fatalf("healthCheck.http.port is not required in CRD schema")
 	}
+	path := nestedMap(t, http, "properties", "path")
+	if got := path["pattern"]; got != "^/($|[^/].*)" {
+		t.Fatalf("healthCheck.http.path pattern = %v, want single-slash relative path pattern", got)
+	}
 	expectedCodes := nestedMap(t, http, "properties", "expectedCodes")
 	expectedCodeItems := nestedMap(t, expectedCodes, "items")
 	if got := expectedCodeItems["minimum"]; got != 100 {
@@ -45,6 +49,13 @@ func TestVirtualIPCRDEnforcesHealthCheckAdmissionValidation(t *testing.T) {
 	if !containsString(typeEnum, "tls-hello") {
 		t.Fatalf("healthCheck.type enum does not include tls-hello: %#v", typeEnum)
 	}
+
+	for _, field := range []string{"intervalSeconds", "timeoutSeconds", "riseCount", "fallCount"} {
+		fieldSchema := nestedMap(t, healthCheck, "properties", field)
+		if got := fieldSchema["maximum"]; got != 2147483647 {
+			t.Fatalf("healthCheck.%s maximum = %v, want 2147483647", field, got)
+		}
+	}
 }
 
 func TestVirtualIPCRDRequiresSpec(t *testing.T) {
@@ -53,6 +64,68 @@ func TestVirtualIPCRDRequiresSpec(t *testing.T) {
 
 	if !containsString(stringSlice(t, schema["required"]), "spec") {
 		t.Fatalf("spec is not required in CRD schema")
+	}
+}
+
+func TestVirtualIPCRDDefinesAdmissionDefaults(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+
+	spec := crdSchemaProperty(t, crd, "spec")
+	encapType := nestedMap(t, spec, "properties", "encapType")
+	if got := encapType["default"]; got != "L3DSR" {
+		t.Fatalf("spec.encapType default = %v, want L3DSR", got)
+	}
+
+	backends := crdSchemaProperty(t, crd, "spec", "backends")
+	backendWeight := nestedMap(t, backends, "items", "properties", "weight")
+	if got := backendWeight["default"]; got != 1 {
+		t.Fatalf("spec.backends[].weight default = %v, want 1", got)
+	}
+
+	healthCheck := crdSchemaProperty(t, crd, "spec", "healthCheck")
+	for field, want := range map[string]int{
+		"fallCount":       2,
+		"intervalSeconds": 5,
+		"riseCount":       3,
+		"timeoutSeconds":  3,
+	} {
+		fieldSchema := nestedMap(t, healthCheck, "properties", field)
+		if got := fieldSchema["default"]; got != want {
+			t.Fatalf("spec.healthCheck.%s default = %v, want %d", field, got, want)
+		}
+	}
+}
+
+func TestVirtualIPCRDConstrainsAgentStatusTTL(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	agentStatuses := crdSchemaProperty(t, crd, "status", "agentStatuses")
+	ttlSeconds := nestedMap(t, agentStatuses, "items", "properties", "ttlSeconds")
+
+	if got := ttlSeconds["minimum"]; got != 1 {
+		t.Fatalf("status.agentStatuses[].ttlSeconds minimum = %v, want 1", got)
+	}
+	if got := ttlSeconds["maximum"]; got != 3600 {
+		t.Fatalf("status.agentStatuses[].ttlSeconds maximum = %v, want 3600", got)
+	}
+}
+
+func TestVirtualIPCRDConstrainsStatusDetailArrays(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	status := crdSchemaProperty(t, crd, "status")
+
+	backends := nestedMap(t, status, "properties", "backends")
+	if got := backends["maxItems"]; got != MaxVirtualIPStatusBackends {
+		t.Fatalf("status.backends maxItems = %v, want %d", got, MaxVirtualIPStatusBackends)
+	}
+
+	agentStatuses := nestedMap(t, status, "properties", "agentStatuses")
+	if got := agentStatuses["maxItems"]; got != MaxVirtualIPStatusAgentStatuses {
+		t.Fatalf("status.agentStatuses maxItems = %v, want %d", got, MaxVirtualIPStatusAgentStatuses)
+	}
+
+	agentBackends := nestedMap(t, agentStatuses, "items", "properties", "backends")
+	if got := agentBackends["maxItems"]; got != MaxVirtualIPStatusBackends {
+		t.Fatalf("status.agentStatuses[].backends maxItems = %v, want %d", got, MaxVirtualIPStatusBackends)
 	}
 }
 
@@ -85,6 +158,45 @@ func TestVirtualIPCRDRejectsDuplicateBackendAddresses(t *testing.T) {
 		}
 	}
 	t.Fatalf("missing backend uniqueness validation in %#v", validations)
+}
+
+func TestVirtualIPCRDRejectsUnsupportedEncapAddressFamilies(t *testing.T) {
+	crd := loadVirtualIPCRD(t)
+	spec := crdSchemaProperty(t, crd, "spec")
+	validations := nestedSlice(t, spec, "x-kubernetes-validations")
+	ipv4Pattern := `^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$`
+
+	assertHasValidation(t, validations,
+		"spec.encapType L3DSR/NAT4 requires an IPv4 spec.address",
+		"!has(self.encapType) || (self.encapType != 'L3DSR' && self.encapType != 'NAT4') || self.address.matches('"+ipv4Pattern+"')",
+	)
+	assertHasValidation(t, validations,
+		"spec.encapType NAT6 requires an IPv6 spec.address",
+		"!has(self.encapType) || self.encapType != 'NAT6' || !self.address.matches('"+ipv4Pattern+"')",
+	)
+	assertHasValidation(t, validations,
+		"spec.backends addresses must be IPv4 for GRE4/L3DSR/NAT4 encapType",
+		"!has(self.encapType) || (self.encapType != 'GRE4' && self.encapType != 'L3DSR' && self.encapType != 'NAT4') || !has(self.backends) || self.backends.all(be, be.address.matches('"+ipv4Pattern+"'))",
+	)
+	assertHasValidation(t, validations,
+		"spec.backends addresses must be IPv6 for GRE6/NAT6 encapType",
+		"!has(self.encapType) || (self.encapType != 'GRE6' && self.encapType != 'NAT6') || !has(self.backends) || self.backends.all(be, !be.address.matches('"+ipv4Pattern+"'))",
+	)
+}
+
+func assertHasValidation(t *testing.T, validations []interface{}, wantMessage, wantRule string) {
+	t.Helper()
+
+	for _, raw := range validations {
+		validation, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Fatalf("validation item has type %T, want map[string]interface{}", raw)
+		}
+		if validation["message"] == wantMessage && validation["rule"] == wantRule {
+			return
+		}
+	}
+	t.Fatalf("missing CRD validation message %q and rule %q in %#v", wantMessage, wantRule, validations)
 }
 
 func loadVirtualIPCRD(t *testing.T) map[string]interface{} {

@@ -10,8 +10,10 @@ import (
 	"time"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	govppmock "go.fd.io/govpp/adapter/mock"
 	"go.fd.io/govpp/binapi/ip_types"
 	"go.fd.io/govpp/binapi/lb"
+	"go.fd.io/govpp/core"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -44,23 +46,108 @@ func testVPPConfig() VPPConfig {
 	}
 }
 
+func newMockConnectedVPP(t *testing.T) *VPP {
+	t.Helper()
+
+	conn, err := core.Connect(govppmock.NewVppAdapter())
+	if err != nil {
+		t.Fatalf("connect mock VPP: %v", err)
+	}
+	t.Cleanup(conn.Disconnect)
+
+	return &VPP{
+		config: testVPPConfig(),
+		conn:   conn,
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+	}
+}
+
 func vppDetailForTest(t *testing.T, vpp *VPP, vip *v1alpha1.VirtualIP) *lb.LbVipDetails {
 	t.Helper()
 	attrs, err := vpp.effectiveVIPAttributes(vip)
 	if err != nil {
 		t.Fatalf("effectiveVIPAttributes: %v", err)
 	}
+	encap, err := encapToAPI(attrs.encapType)
+	if err != nil {
+		t.Fatalf("encapToAPI: %v", err)
+	}
+	serviceType, err := serviceTypeToAPI(attrs.serviceType)
+	if err != nil {
+		t.Fatalf("serviceTypeToAPI: %v", err)
+	}
 	return &lb.LbVipDetails{
-		Encap:           encapToAPI(attrs.encapType),
+		Encap:           encap,
 		Dscp:            ip_types.IPDscp(attrs.dscp),
-		SrvType:         serviceTypeToAPI(attrs.serviceType),
+		SrvType:         serviceType,
 		TargetPort:      uint16(attrs.port),
 		FlowTableLength: uint16(attrs.newFlowsTableLength),
 	}
 }
 
+func TestVPPAPIHelpersHonorCanceledContext(t *testing.T) {
+	vpp := newMockConnectedVPP(t)
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	backend := vip.Spec.Backends[0]
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "lookup VIP",
+			call: func() error {
+				_, _, err := vpp.lookupVIPLocked(ctx, vip)
+				return err
+			},
+		},
+		{
+			name: "dump backends",
+			call: func() error {
+				_, err := vpp.dumpBackendsLocked(ctx, vip, vip.Spec.Backends)
+				return err
+			},
+		},
+		{name: "add VIP", call: func() error { return vpp.addVIPLocked(ctx, vip) }},
+		{name: "delete VIP", call: func() error { return vpp.deleteVIPLocked(ctx, vip) }},
+		{name: "add backend", call: func() error { return vpp.addBackendLocked(ctx, vip, backend) }},
+		{name: "remove backend", call: func() error { return vpp.removeBackendLocked(ctx, vip, backend) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
+func TestVPPAPIConversionsRejectUnsupportedValues(t *testing.T) {
+	if _, err := protocolNumber(v1alpha1.Protocol("SCTP")); err == nil {
+		t.Fatal("protocolNumber accepted unsupported protocol")
+	}
+	if _, err := encapToAPI("VXLAN"); err == nil {
+		t.Fatal("encapToAPI accepted unsupported encap type")
+	}
+	if _, err := serviceTypeToAPI("EXTERNAL"); err == nil {
+		t.Fatal("serviceTypeToAPI accepted unsupported service type")
+	}
+}
+
+func TestVPPCloseAllowsNilConnection(t *testing.T) {
+	vpp := &VPP{}
+	if err := vpp.Close(); err != nil {
+		t.Fatalf("Close returned error for nil connection: %v", err)
+	}
+}
+
 func TestNoopApplyAndRemoveVIP(t *testing.T) {
-	dp, err := New("noop", nil)
+	dp, err := New("noop", Config{})
 	if err != nil {
 		t.Fatalf("New noop: %v", err)
 	}
@@ -104,7 +191,7 @@ func TestNoopApplyAndRemoveVIP(t *testing.T) {
 }
 
 func TestNoopSetBackends(t *testing.T) {
-	dp, err := New("noop", nil)
+	dp, err := New("noop", Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +220,7 @@ func TestNoopSetBackends(t *testing.T) {
 }
 
 func TestNoopAddRemoveBackend(t *testing.T) {
-	dp, err := New("noop", nil)
+	dp, err := New("noop", Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,14 +254,14 @@ func TestNoopAddRemoveBackend(t *testing.T) {
 }
 
 func TestNewUnsupportedType(t *testing.T) {
-	_, err := New("invalid", nil)
+	_, err := New("invalid", Config{})
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
 }
 
 func TestNoopRemoveNonexistent(t *testing.T) {
-	dp, err := New("noop", nil)
+	dp, err := New("noop", Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,6 +624,140 @@ func TestVPPApplyVIPRejectsInvalidDesiredBeforeDeletingExisting(t *testing.T) {
 	}
 	if entry.vip.Spec.DSCP == nil || *entry.vip.Spec.DSCP != existingDSCP {
 		t.Fatalf("existing VIP was changed: dscp=%v", entry.vip.Spec.DSCP)
+	}
+}
+
+func TestVPPApplyVIPAllowsEmptyHealthyBackendsWhenFailClosedDisabled(t *testing.T) {
+	addVIPCalls := 0
+	vpp := &VPP{
+		config: testVPPConfig(),
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			addVIPCalls++
+			return nil
+		},
+		lookupVIPFn: func(context.Context, *v1alpha1.VirtualIP) (*lb.LbVipDetails, bool, error) {
+			return nil, false, nil
+		},
+		addBackendFn: func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error {
+			t.Fatal("addBackend should not be called with no healthy backends")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+
+	if err := vpp.ApplyVIP(context.Background(), vip, nil); err != nil {
+		t.Fatalf("ApplyVIP: %v", err)
+	}
+	if addVIPCalls != 1 {
+		t.Fatalf("add VIP calls = %d, want 1", addVIPCalls)
+	}
+	entry, ok := vpp.vips[key]
+	if !ok {
+		t.Fatal("VIP entry was not tracked")
+	}
+	if len(entry.backends) != 0 {
+		t.Fatalf("tracked backends = %d, want 0", len(entry.backends))
+	}
+}
+
+func TestVPPApplyVIPRejectsAllBackendsDownWhenFailClosedEnabled(t *testing.T) {
+	cfg := testVPPConfig()
+	cfg.FailOnAllBackendsDown = true
+	vpp := &VPP{
+		config: cfg,
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		addVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			t.Fatal("addVIP should not be called when all backends are down")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+
+	err := vpp.ApplyVIP(context.Background(), vip, nil)
+	if err == nil {
+		t.Fatal("expected all-backends-down failure")
+	}
+	if !strings.Contains(err.Error(), "all configured backends are down") {
+		t.Fatalf("ApplyVIP error = %q, want all backends down", err)
+	}
+	if _, ok := vpp.vips[key]; ok {
+		t.Fatal("VIP entry was tracked after rejected apply")
+	}
+}
+
+func TestVPPSetBackendsRejectsAllBackendsDownBeforeRemovingExisting(t *testing.T) {
+	cfg := testVPPConfig()
+	cfg.FailOnAllBackendsDown = true
+	vpp := &VPP{
+		config: cfg,
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		removeBackendFn: func(context.Context, *v1alpha1.VirtualIP, v1alpha1.BackendSpec) error {
+			t.Fatal("removeBackend should not be called when all backends are down")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+			"10.0.1.2": vip.Spec.Backends[1],
+		},
+	}
+
+	err := vpp.SetBackends(context.Background(), vip, nil)
+	if err == nil {
+		t.Fatal("expected all-backends-down failure")
+	}
+	if !strings.Contains(err.Error(), "all configured backends are down") {
+		t.Fatalf("SetBackends error = %q, want all backends down", err)
+	}
+	if got := len(vpp.vips[key].backends); got != 2 {
+		t.Fatalf("tracked backends = %d, want existing set preserved", got)
+	}
+}
+
+func TestVPPRecreateVIPRejectsAllBackendsDownBeforeDeletingExisting(t *testing.T) {
+	cfg := testVPPConfig()
+	cfg.FailOnAllBackendsDown = true
+	vpp := &VPP{
+		config: cfg,
+		logger: discardLogger(),
+		vips:   make(map[string]*vipEntry),
+		deleteVIPFn: func(context.Context, *v1alpha1.VirtualIP) error {
+			t.Fatal("deleteVIP should not be called when all backends are down")
+			return nil
+		},
+	}
+
+	vip := newTestVIP("test-vip", "203.0.113.1", 80)
+	key := vpp.vipKey(vip)
+	vpp.vips[key] = &vipEntry{
+		vip: vip.DeepCopy(),
+		backends: map[string]v1alpha1.BackendSpec{
+			"10.0.1.1": vip.Spec.Backends[0],
+		},
+	}
+
+	err := vpp.RecreateVIP(context.Background(), vip, nil)
+	if err == nil {
+		t.Fatal("expected all-backends-down failure")
+	}
+	if !strings.Contains(err.Error(), "all configured backends are down") {
+		t.Fatalf("RecreateVIP error = %q, want all backends down", err)
+	}
+	if got := len(vpp.vips[key].backends); got != 1 {
+		t.Fatalf("tracked backends = %d, want existing set preserved", got)
 	}
 }
 

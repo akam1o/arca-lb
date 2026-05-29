@@ -71,8 +71,8 @@ func newHTTPProberFromSpec(cfg *v1alpha1.HTTPHealthCheck, useTLS bool) (*httpPro
 		MaxIdleConns:    10,
 		IdleConnTimeout: 30 * time.Second,
 	}
-	if useTLS && cfg.SkipTLSVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // user-configured
+	if useTLS {
+		transport.TLSClientConfig = newHealthCheckTLSConfig(cfg.SkipTLSVerify)
 	}
 
 	method := cfg.Method
@@ -159,6 +159,9 @@ func (p *httpProber) Close() error {
 }
 
 func buildHTTPProbeURL(scheme, target string, port int, probePath string) (string, error) {
+	if err := validateProbeTarget(target); err != nil {
+		return "", err
+	}
 	if probePath == "" {
 		probePath = "/"
 	}
@@ -204,6 +207,9 @@ func newTCPProberFromSpec(cfg *v1alpha1.TCPHealthCheck) (*tcpProber, error) {
 
 func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
 	addr := tcpProbeAddress(target, p.port)
 
 	var d net.Dialer
@@ -221,9 +227,7 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 
 	if p.send != "" {
 		if _, err := conn.Write([]byte(p.send)); err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			}
+			err = tcpProbeContextError(ctx, err)
 			return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 		}
 	}
@@ -232,9 +236,7 @@ func (p *tcpProber) Probe(ctx context.Context, target string) V2ProbeResult {
 		buf := make([]byte, 4096)
 		n, err := conn.Read(buf)
 		if err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			}
+			err = tcpProbeContextError(ctx, err)
 			return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
 		}
 		if !strings.Contains(string(buf[:n]), p.expectedResponse) {
@@ -289,13 +291,14 @@ func newTLSHelloProberFromSpec(cfg *v1alpha1.TCPHealthCheck) (*tlsHelloProber, e
 
 func (p *tlsHelloProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
 	addr := tcpProbeAddress(target, p.port)
 
 	dialer := tls.Dialer{
 		NetDialer: &net.Dialer{},
-		Config: &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec // TLS-HELLO only verifies that the backend completes a TLS handshake.
-		},
+		Config:    newHealthCheckTLSConfig(true),
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -316,6 +319,10 @@ const defaultPingTimeout = 2 * time.Second
 
 func (p *pingProber) Probe(ctx context.Context, target string) V2ProbeResult {
 	start := time.Now()
+	if err := validateProbeTarget(target); err != nil {
+		return V2ProbeResult{Error: err, Latency: time.Since(start), Timestamp: start}
+	}
+
 	pingCtx, cancel := contextWithDefaultTimeout(ctx, defaultPingTimeout)
 	defer cancel()
 

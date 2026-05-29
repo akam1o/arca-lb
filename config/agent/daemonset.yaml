@@ -47,7 +47,7 @@ data:
       defaultTimeout: 3s
     metrics:
       enabled: true
-      address: ":9090"
+      address: "127.0.0.1:9090"
       path: /metrics
     log:
       level: info
@@ -69,10 +69,6 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: arca-lb-agent
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "9090"
-        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: arca-lb-agent
       hostNetwork: true
@@ -105,8 +101,16 @@ spec:
             httpGet:
               path: /health
               port: metrics
+              host: 127.0.0.1
             initialDelaySeconds: 10
             periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+              host: 127.0.0.1
+            periodSeconds: 10
+            failureThreshold: 3
           startupProbe:
             exec:
               command:

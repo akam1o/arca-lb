@@ -33,14 +33,14 @@ type VirtualIPReconciler struct {
 	AgentStatusRequeueAfter time.Duration
 }
 
-// +kubebuilder:rbac:groups=arca.io,resources=virtualips,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=arca.io,resources=virtualips,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=arca.io,resources=virtualips/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=arca.io,resources=virtualips/finalizers,verbs=update
 
 // Reconcile handles VirtualIP create/update/delete events.
 // The operator's role is to:
 // 1. Ensure the finalizer is present for cleanup
-// 2. Set default values and validate
+// 2. Validate configuration
 // 3. Update the status with backend count and conditions
 //
 // The actual data-plane programming is done by the Agent (watching the same CRDs).
@@ -77,17 +77,8 @@ func (r *VirtualIPReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.Update(ctx, &vip); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
-		// Requeue to continue reconciliation with the updated object
-		return ctrl.Result{Requeue: true}, nil
-	}
-
-	// Apply defaults
-	changed := applyDefaults(&vip)
-	if changed {
-		if err := r.Update(ctx, &vip); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to apply defaults: %w", err)
-		}
-		return ctrl.Result{Requeue: true}, nil
+		// Requeue to continue reconciliation with the updated object.
+		return ctrl.Result{RequeueAfter: time.Nanosecond}, nil
 	}
 
 	// Update status
@@ -137,6 +128,8 @@ func (r *VirtualIPReconciler) updateStatus(ctx context.Context, vip *v1alpha1.Vi
 		)
 		newStatus = aggregate.Status
 	}
+
+	newStatus = agentstatus.SanitizeVirtualIPStatus(newStatus)
 
 	// Set Ready condition based on configuration validity
 	readyCond := metav1.Condition{
@@ -193,43 +186,6 @@ func (r *VirtualIPReconciler) shouldRequeueAgentStatusPrune(vip *v1alpha1.Virtua
 		return false
 	}
 	return vip.Status.ObservedGeneration == vip.Generation && len(vip.Status.AgentStatuses) > 0
-}
-
-func applyDefaults(vip *v1alpha1.VirtualIP) bool {
-	changed := false
-
-	if vip.Spec.EncapType == "" {
-		vip.Spec.EncapType = v1alpha1.EncapTypeL3DSR
-		changed = true
-	}
-
-	for i := range vip.Spec.Backends {
-		if vip.Spec.Backends[i].Weight == 0 {
-			vip.Spec.Backends[i].Weight = v1alpha1.DefaultBackendWeight
-			changed = true
-		}
-	}
-
-	if hc := vip.Spec.HealthCheck; hc != nil {
-		if hc.IntervalSeconds == 0 {
-			hc.IntervalSeconds = 5
-			changed = true
-		}
-		if hc.TimeoutSeconds == 0 {
-			hc.TimeoutSeconds = 3
-			changed = true
-		}
-		if hc.RiseCount == 0 {
-			hc.RiseCount = 3
-			changed = true
-		}
-		if hc.FallCount == 0 {
-			hc.FallCount = 2
-			changed = true
-		}
-	}
-
-	return changed
 }
 
 func validateSpec(spec *v1alpha1.VirtualIPSpec) error {

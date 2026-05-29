@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -95,6 +96,213 @@ func TestUpdateVIPStatusWritesHealthAndPreservesConditions(t *testing.T) {
 	}
 	if got.Status.AgentStatuses[0].AgentID != "node-a" {
 		t.Fatalf("AgentStatus agentID = %q, want node-a", got.Status.AgentStatuses[0].AgentID)
+	}
+}
+
+func TestBuildBackendStatusesCapsStatusDetails(t *testing.T) {
+	backends := make([]v1alpha1.BackendSpec, 0, v1alpha1.MaxVirtualIPStatusBackends+1)
+	healthySet := make(map[string]struct{}, v1alpha1.MaxVirtualIPStatusBackends+1)
+	for i := 0; i <= v1alpha1.MaxVirtualIPStatusBackends; i++ {
+		address := fmt.Sprintf("10.0.%d.%d", i/256, i%256)
+		backends = append(backends, v1alpha1.BackendSpec{Address: address, Weight: 100})
+		healthySet[address] = struct{}{}
+	}
+
+	statuses := buildBackendStatuses(backends, healthySet)
+
+	if len(statuses) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("backend status count = %d, want %d", len(statuses), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+	if statuses[len(statuses)-1].Address != "10.0.3.255" {
+		t.Fatalf("last retained backend = %q, want 10.0.3.255", statuses[len(statuses)-1].Address)
+	}
+}
+
+func TestUpdateVIPStatusPreservesAggregateCountWhenBackendDetailsAreCapped(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	backends := make([]v1alpha1.BackendSpec, 0, v1alpha1.MaxVirtualIPStatusBackends+1)
+	for i := 0; i <= v1alpha1.MaxVirtualIPStatusBackends; i++ {
+		backends = append(backends, v1alpha1.BackendSpec{
+			Address: fmt.Sprintf("10.0.%d.%d", i/256, i%256),
+			Weight:  100,
+		})
+	}
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 3,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Backends: backends,
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	updater := &Updater{
+		client:  k8sClient,
+		agentID: "node-a",
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	if err := updater.UpdateVIPStatus(context.Background(), vip, backends); err != nil {
+		t.Fatalf("UpdateVIPStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	wantBackends := v1alpha1.MaxVirtualIPStatusBackends + 1
+	if got.Status.TotalBackends != wantBackends {
+		t.Fatalf("TotalBackends = %d, want %d", got.Status.TotalBackends, wantBackends)
+	}
+	if got.Status.HealthyBackends != wantBackends {
+		t.Fatalf("HealthyBackends = %d, want %d", got.Status.HealthyBackends, wantBackends)
+	}
+	if len(got.Status.Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("Backends = %d, want capped %d", len(got.Status.Backends), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+	if len(got.Status.AgentStatuses) != 1 {
+		t.Fatalf("AgentStatuses = %d, want 1", len(got.Status.AgentStatuses))
+	}
+	agentStatus := got.Status.AgentStatuses[0]
+	if agentStatus.HealthyBackends != wantBackends {
+		t.Fatalf("AgentStatus HealthyBackends = %d, want %d", agentStatus.HealthyBackends, wantBackends)
+	}
+	if len(agentStatus.Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("AgentStatus Backends = %d, want capped %d", len(agentStatus.Backends), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+	if agentStatus.HealthyBackendBitmap == "" {
+		t.Fatal("AgentStatus HealthyBackendBitmap is empty, want encoded full health set")
+	}
+}
+
+func TestSanitizeVirtualIPStatusCapsRetainedBackendDetails(t *testing.T) {
+	backends := make([]v1alpha1.BackendStatus, 0, v1alpha1.MaxVirtualIPStatusBackends+1)
+	for i := 0; i <= v1alpha1.MaxVirtualIPStatusBackends; i++ {
+		backends = append(backends, v1alpha1.BackendStatus{
+			Address: fmt.Sprintf("10.0.%d.%d", i/256, i%256),
+			Healthy: true,
+		})
+	}
+	status := v1alpha1.VirtualIPStatus{
+		Backends: backends,
+		AgentStatuses: []v1alpha1.AgentStatus{
+			{
+				AgentID:    "node-a",
+				Backends:   backends,
+				TTLSeconds: int64(DefaultAgentStatusTTL / time.Second),
+			},
+		},
+	}
+
+	got := SanitizeVirtualIPStatus(status)
+
+	if len(got.Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("status backend count = %d, want %d", len(got.Backends), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+	if len(got.AgentStatuses[0].Backends) != v1alpha1.MaxVirtualIPStatusBackends {
+		t.Fatalf("agent backend count = %d, want %d", len(got.AgentStatuses[0].Backends), v1alpha1.MaxVirtualIPStatusBackends)
+	}
+}
+
+func TestSanitizeAgentStatusesCapsNewestObservations(t *testing.T) {
+	base := time.Date(2026, time.May, 23, 12, 0, 0, 0, time.UTC)
+	statuses := make([]v1alpha1.AgentStatus, 0, v1alpha1.MaxVirtualIPStatusAgentStatuses+2)
+	for i := 0; i < v1alpha1.MaxVirtualIPStatusAgentStatuses+2; i++ {
+		updated := metav1.NewTime(base.Add(time.Duration(i) * time.Second))
+		statuses = append(statuses, v1alpha1.AgentStatus{
+			AgentID:        fmt.Sprintf("node-%03d", i),
+			LastUpdateTime: &updated,
+			TTLSeconds:     int64(DefaultAgentStatusTTL / time.Second),
+		})
+	}
+
+	got := SanitizeAgentStatuses(statuses)
+
+	if len(got) != v1alpha1.MaxVirtualIPStatusAgentStatuses {
+		t.Fatalf("agent status count = %d, want %d", len(got), v1alpha1.MaxVirtualIPStatusAgentStatuses)
+	}
+	if got[0].AgentID != "node-257" {
+		t.Fatalf("first retained agent = %q, want newest node-257", got[0].AgentID)
+	}
+	for _, status := range got {
+		if status.AgentID == "node-000" || status.AgentID == "node-001" {
+			t.Fatalf("retained old agent status %q, want oldest observations pruned", status.AgentID)
+		}
+	}
+}
+
+func TestUpdateVIPStatusCountsOnlyConfiguredHealthyBackends(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "default",
+			Name:       "web",
+			UID:        types.UID("vip-1"),
+			Generation: 3,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+				{Address: "10.0.0.2", Weight: 100},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.VirtualIP{}).
+		WithObjects(vip).
+		Build()
+	updater := &Updater{
+		client:  k8sClient,
+		agentID: "node-a",
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	if err := updater.UpdateVIPStatus(context.Background(), vip, []v1alpha1.BackendSpec{
+		{Address: "10.0.0.2", Weight: 100},
+		{Address: "10.0.0.2", Weight: 100},
+		{Address: "10.0.0.99", Weight: 100},
+	}); err != nil {
+		t.Fatalf("UpdateVIPStatus: %v", err)
+	}
+
+	var got v1alpha1.VirtualIP
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "web"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.Status.HealthyBackends != 1 {
+		t.Fatalf("HealthyBackends = %d, want only configured healthy backend count 1", got.Status.HealthyBackends)
+	}
+	if len(got.Status.AgentStatuses) != 1 {
+		t.Fatalf("AgentStatuses = %d, want 1", len(got.Status.AgentStatuses))
+	}
+	if got.Status.AgentStatuses[0].HealthyBackends != 1 {
+		t.Fatalf("AgentStatus HealthyBackends = %d, want only configured healthy backend count 1", got.Status.AgentStatuses[0].HealthyBackends)
+	}
+	if got.Status.Backends[0].Address != "10.0.0.1" || got.Status.Backends[0].Healthy {
+		t.Fatalf("first backend status = %+v, want unhealthy 10.0.0.1", got.Status.Backends[0])
+	}
+	if got.Status.Backends[1].Address != "10.0.0.2" || !got.Status.Backends[1].Healthy {
+		t.Fatalf("second backend status = %+v, want healthy 10.0.0.2", got.Status.Backends[1])
 	}
 }
 
@@ -492,6 +700,71 @@ func TestUpdateVIPStatusTreatsExpiredAgentStatusAsUnknown(t *testing.T) {
 	advertised := meta.FindStatusCondition(got.Status.Conditions, ConditionRouteAdvertised)
 	if advertised == nil || advertised.Status != metav1.ConditionUnknown || advertised.Reason != reasonAgentStatusExpired {
 		t.Fatalf("RouteAdvertised aggregate = %+v, want Unknown AgentStatusExpired", advertised)
+	}
+}
+
+func TestRefreshAggregateStatusCapsAgentReportedTTL(t *testing.T) {
+	now := time.Now()
+	stale := metav1.NewTime(now.Add(-2 * MaxAgentStatusTTL))
+	vip := &v1alpha1.VirtualIP{
+		ObjectMeta: metav1.ObjectMeta{
+			Generation: 3,
+		},
+		Spec: v1alpha1.VirtualIPSpec{
+			Address:  "203.0.113.10",
+			Port:     80,
+			Protocol: v1alpha1.ProtocolTCP,
+			Backends: []v1alpha1.BackendSpec{
+				{Address: "10.0.0.1", Weight: 100},
+			},
+		},
+		Status: v1alpha1.VirtualIPStatus{
+			AgentStatuses: []v1alpha1.AgentStatus{
+				{
+					AgentID:            "node-a",
+					ObservedGeneration: 3,
+					HealthyBackends:    1,
+					TotalBackends:      1,
+					LastUpdateTime:     &stale,
+					TTLSeconds:         int64((24 * time.Hour) / time.Second),
+					Backends: []v1alpha1.BackendStatus{
+						{Address: "10.0.0.1", Healthy: true},
+					},
+					Conditions: []metav1.Condition{
+						{Type: ConditionServing, Status: metav1.ConditionTrue, Reason: "BackendsHealthy"},
+						{Type: ConditionRouteAdvertised, Status: metav1.ConditionTrue, Reason: "Advertised"},
+					},
+				},
+			},
+		},
+	}
+
+	RefreshAggregateStatus(vip, 3, now, time.Minute)
+
+	if len(vip.Status.AgentStatuses) != 1 {
+		t.Fatalf("AgentStatuses = %#v, want capped expired status retained for diagnostics", vip.Status.AgentStatuses)
+	}
+	if got, want := vip.Status.AgentStatuses[0].TTLSeconds, int64(MaxAgentStatusTTL/time.Second); got != want {
+		t.Fatalf("TTLSeconds = %d, want sanitized %d", got, want)
+	}
+	if vip.Status.HealthyBackends != 0 {
+		t.Fatalf("HealthyBackends = %d, want capped stale status excluded", vip.Status.HealthyBackends)
+	}
+	serving := meta.FindStatusCondition(vip.Status.Conditions, ConditionServing)
+	if serving == nil || serving.Status != metav1.ConditionUnknown || serving.Reason != reasonAgentStatusExpired {
+		t.Fatalf("Serving aggregate = %+v, want Unknown AgentStatusExpired", serving)
+	}
+	advertised := meta.FindStatusCondition(vip.Status.Conditions, ConditionRouteAdvertised)
+	if advertised == nil || advertised.Status != metav1.ConditionUnknown || advertised.Reason != reasonAgentStatusExpired {
+		t.Fatalf("RouteAdvertised aggregate = %+v, want Unknown AgentStatusExpired", advertised)
+	}
+}
+
+func TestDurationSecondsCapsConfiguredAgentStatusTTL(t *testing.T) {
+	got := durationSeconds(24 * time.Hour)
+	want := int64(MaxAgentStatusTTL / time.Second)
+	if got != want {
+		t.Fatalf("durationSeconds(24h) = %d, want capped %d", got, want)
 	}
 }
 

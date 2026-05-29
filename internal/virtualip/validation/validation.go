@@ -4,9 +4,13 @@ package validation
 
 import (
 	"fmt"
-	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
 
 	v1alpha1 "github.com/akam1o/arca-lb/api/v1alpha1"
+	"github.com/akam1o/arca-lb/internal/common/models"
 )
 
 // Validate validates a VirtualIP object.
@@ -65,7 +69,7 @@ func validateCoreSpec(spec *v1alpha1.VirtualIPSpec) error {
 		return fmt.Errorf("spec is nil")
 	}
 
-	if ip := net.ParseIP(spec.Address); ip == nil {
+	if _, err := netip.ParseAddr(spec.Address); err != nil {
 		return fmt.Errorf("spec.address %q is not a valid IP address", spec.Address)
 	}
 
@@ -87,12 +91,12 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 		return fmt.Errorf("spec is nil")
 	}
 
-	switch spec.EncapType {
-	case v1alpha1.EncapTypeGRE4, v1alpha1.EncapTypeGRE6,
-		v1alpha1.EncapTypeL3DSR, v1alpha1.EncapTypeNAT4, v1alpha1.EncapTypeNAT6,
-		"": // empty is allowed before defaults are applied
-	default:
+	if spec.EncapType != "" && !models.IsValidEncapType(models.EncapType(spec.EncapType)) {
 		return fmt.Errorf("spec.encapType %q is not valid", spec.EncapType)
+	}
+
+	if err := validateEncapAddressFamily(spec.Address, spec.EncapType); err != nil {
+		return err
 	}
 
 	if spec.EncapType == v1alpha1.EncapTypeL3DSR && spec.DSCP != nil {
@@ -103,11 +107,15 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 
 	seen := make(map[string]bool)
 	for i, be := range spec.Backends {
-		if ip := net.ParseIP(be.Address); ip == nil {
+		ip, err := netip.ParseAddr(be.Address)
+		if err != nil {
 			return fmt.Errorf("spec.backends[%d].address %q is not a valid IP", i, be.Address)
 		}
+		if err := validateBackendAddressFamily(i, be.Address, ip, spec.EncapType); err != nil {
+			return err
+		}
 		if be.MonitorAddress != "" {
-			if ip := net.ParseIP(be.MonitorAddress); ip == nil {
+			if _, err := netip.ParseAddr(be.MonitorAddress); err != nil {
 				return fmt.Errorf("spec.backends[%d].monitorAddress %q is not a valid IP", i, be.MonitorAddress)
 			}
 		}
@@ -118,6 +126,53 @@ func validateDataPlaneSpec(spec *v1alpha1.VirtualIPSpec) error {
 
 		if be.Weight < 1 || be.Weight > 100 {
 			return fmt.Errorf("spec.backends[%d].weight must be 1-100, got %d", i, be.Weight)
+		}
+	}
+
+	return nil
+}
+
+func validateBackendAddressFamily(index int, address string, ip netip.Addr, encapType v1alpha1.EncapType) error {
+	if encapType == "" {
+		return nil
+	}
+
+	isIPv4 := ip.Is4()
+	modelEncapType := models.EncapType(encapType)
+	switch {
+	case models.EncapRequiresIPv4Backend(modelEncapType):
+		if !isIPv4 {
+			return fmt.Errorf("spec.backends[%d].address %q must be IPv4 for encapType %q", index, address, encapType)
+		}
+	case models.EncapRequiresIPv6Backend(modelEncapType):
+		if isIPv4 {
+			return fmt.Errorf("spec.backends[%d].address %q must be IPv6 for encapType %q", index, address, encapType)
+		}
+	}
+
+	return nil
+}
+
+func validateEncapAddressFamily(address string, encapType v1alpha1.EncapType) error {
+	if encapType == "" {
+		return nil
+	}
+
+	ip, err := netip.ParseAddr(address)
+	if err != nil {
+		return nil
+	}
+
+	isIPv4 := ip.Is4()
+	modelEncapType := models.EncapType(encapType)
+	switch {
+	case models.EncapRequiresIPv4VIP(modelEncapType):
+		if !isIPv4 {
+			return fmt.Errorf("spec.encapType %q requires an IPv4 spec.address", encapType)
+		}
+	case models.EncapRequiresIPv6VIP(modelEncapType):
+		if isIPv4 {
+			return fmt.Errorf("spec.encapType %q requires an IPv6 spec.address", encapType)
 		}
 	}
 
@@ -136,6 +191,29 @@ func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
 		}
 		if hc.HTTP.Port < 1 || hc.HTTP.Port > 65535 {
 			return fmt.Errorf("spec.healthCheck.http.port must be 1-65535")
+		}
+		switch hc.HTTP.Method {
+		case "", http.MethodGet, http.MethodHead, http.MethodPost:
+		default:
+			return fmt.Errorf("spec.healthCheck.http.method must be one of GET, HEAD, POST, got %q", hc.HTTP.Method)
+		}
+		if hc.HTTP.Path != "" {
+			if !strings.HasPrefix(hc.HTTP.Path, "/") || strings.HasPrefix(hc.HTTP.Path, "//") {
+				return fmt.Errorf("spec.healthCheck.http.path must be relative and start with a single slash, got %q", hc.HTTP.Path)
+			}
+			parsedPath, err := url.Parse(hc.HTTP.Path)
+			if err != nil {
+				return fmt.Errorf("spec.healthCheck.http.path %q is not valid: %w", hc.HTTP.Path, err)
+			}
+			if parsedPath.IsAbs() || parsedPath.Host != "" {
+				return fmt.Errorf("spec.healthCheck.http.path must be relative, got %q", hc.HTTP.Path)
+			}
+		}
+		if err := models.ValidateHTTPHostHeader(hc.HTTP.Host); err != nil {
+			return fmt.Errorf("spec.healthCheck.http.host %w", err)
+		}
+		if err := models.ValidateHTTPHeaders(hc.HTTP.Headers); err != nil {
+			return fmt.Errorf("spec.healthCheck.http.headers: %w", err)
 		}
 		for i, code := range hc.HTTP.ExpectedCodes {
 			if code < 100 || code > 599 {
@@ -157,11 +235,23 @@ func validateHealthCheckSpec(hc *v1alpha1.HealthCheckSpec) error {
 	if hc.IntervalSeconds < 1 {
 		return fmt.Errorf("spec.healthCheck.intervalSeconds must be >= 1")
 	}
+	if hc.IntervalSeconds > models.MaxHealthCheckSeconds {
+		return fmt.Errorf("spec.healthCheck.intervalSeconds must be <= %d", models.MaxHealthCheckSeconds)
+	}
 	if hc.TimeoutSeconds < 1 {
 		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be >= 1")
 	}
+	if hc.TimeoutSeconds > models.MaxHealthCheckSeconds {
+		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be <= %d", models.MaxHealthCheckSeconds)
+	}
 	if hc.TimeoutSeconds >= hc.IntervalSeconds {
 		return fmt.Errorf("spec.healthCheck.timeoutSeconds must be less than intervalSeconds")
+	}
+	if hc.RiseCount > models.MaxHealthCheckCount {
+		return fmt.Errorf("spec.healthCheck.riseCount must be <= %d", models.MaxHealthCheckCount)
+	}
+	if hc.FallCount > models.MaxHealthCheckCount {
+		return fmt.Errorf("spec.healthCheck.fallCount must be <= %d", models.MaxHealthCheckCount)
 	}
 
 	return nil

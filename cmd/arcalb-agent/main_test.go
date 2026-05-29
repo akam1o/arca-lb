@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,12 +27,97 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func TestRunReturnsErrorWhenConfigMissing(t *testing.T) {
+	restore := setAgentArgs(t, "arcalb-agent", "-config", filepath.Join(t.TempDir(), "missing-agent.yaml"))
+	defer restore()
+
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stderr: %v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = stderrWriter
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = stderrReader.Close()
+		_ = stderrWriter.Close()
+	})
+
+	if code := run(); code != 1 {
+		t.Fatalf("run exit code = %d, want 1", code)
+	}
+	if err := stderrWriter.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	output, err := io.ReadAll(stderrReader)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if !strings.Contains(string(output), "failed to load config") {
+		t.Fatalf("stderr = %q, want failed config load message", output)
+	}
+}
+
+func TestRunReturnsErrorWhenStoreCannotOpen(t *testing.T) {
+	storePath := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "agent.yaml")
+	cfg := "agent:\n" +
+		"  id: test-agent\n" +
+		"  storePath: " + storePath + "\n" +
+		"dataplane:\n" +
+		"  type: noop\n" +
+		"routing:\n" +
+		"  type: noop\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	restore := setAgentArgs(t, "arcalb-agent", "-config", cfgPath)
+	defer restore()
+	defaultLogger := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(defaultLogger)
+	})
+
+	if code := run(); code != 1 {
+		t.Fatalf("run exit code = %d, want 1", code)
+	}
+}
+
+func setAgentArgs(t *testing.T, args ...string) func() {
+	t.Helper()
+	oldArgs := os.Args
+	oldCommandLine := flag.CommandLine
+	os.Args = args
+	flag.CommandLine = flag.NewFlagSet("arcalb-agent", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(io.Discard)
+	return func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCommandLine
+	}
+}
+
+func TestRetainedVIPTuningDriftConfigUsesTypedVPPSettings(t *testing.T) {
+	cfg := retainedVIPTuningDriftConfig(agentconfig.VPPDataPlaneConfig{
+		RetainedVIPTuningDriftPolicy: reconciler.TuningDriftPolicyPreserve,
+		RetainedVIPTuningDriftDrain:  2 * time.Second,
+		RollingRecreateDrain:         3 * time.Second,
+	})
+
+	if cfg.Policy != reconciler.TuningDriftPolicyPreserve {
+		t.Fatalf("Policy = %q, want %q", cfg.Policy, reconciler.TuningDriftPolicyPreserve)
+	}
+	if cfg.DrainDuration != 2*time.Second {
+		t.Fatalf("DrainDuration = %s, want 2s", cfg.DrainDuration)
+	}
+}
+
 func TestAgentHTTPMuxServesHealthWhenMetricsDisabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := newAgentHTTPMux(agentconfig.MetricsSettings{
 		Enabled: false,
 		Path:    "/metrics",
-	}, logger)
+	}, logger, newAgentHTTPHealthState())
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -50,12 +139,56 @@ func TestAgentHTTPMuxServesHealthWhenMetricsDisabled(t *testing.T) {
 	}
 }
 
+func TestAgentHTTPMuxReportsReadinessAfterInitialSync(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	healthState := newAgentHTTPHealthState()
+	handler := newAgentHTTPMux(agentconfig.MetricsSettings{
+		Enabled: false,
+		Path:    "/metrics",
+	}, logger, healthState)
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz status before sync = %d, want %d", resp.Code, http.StatusServiceUnavailable)
+	}
+	if body := resp.Body.String(); body != "not ready" {
+		t.Fatalf("/readyz body before sync = %q, want not ready", body)
+	}
+
+	healthState.SetReady(true)
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("/readyz status after sync = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if body := resp.Body.String(); body != "ok" {
+		t.Fatalf("/readyz body after sync = %q, want ok", body)
+	}
+
+	resp = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/livez", nil)
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("/livez status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if body := resp.Body.String(); body != "ok" {
+		t.Fatalf("/livez body = %q, want ok", body)
+	}
+}
+
 func TestAgentHTTPMuxServesMetricsWhenEnabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := newAgentHTTPMux(agentconfig.MetricsSettings{
 		Enabled: true,
 		Path:    "/metrics",
-	}, logger)
+	}, logger, newAgentHTTPHealthState())
 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -63,6 +196,53 @@ func TestAgentHTTPMuxServesMetricsWhenEnabled(t *testing.T) {
 
 	if resp.Code != http.StatusOK {
 		t.Fatalf("/metrics status = %d, want %d", resp.Code, http.StatusOK)
+	}
+}
+
+func TestStartAgentHTTPServerReportsListenError(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	cfg := agentconfig.MetricsSettings{
+		Enabled: false,
+		Address: ln.Addr().String(),
+		Path:    "/metrics",
+	}
+	server := newAgentHTTPServer(cfg, logger, newAgentHTTPHealthState())
+	errCh := startAgentHTTPServer(server, cfg, logger)
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("server error = nil, want listen error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for listen error")
+	}
+}
+
+func TestNewAgentHTTPServerSetsDefensiveTimeouts(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := newAgentHTTPServer(agentconfig.MetricsSettings{
+		Address: "127.0.0.1:0",
+		Path:    "/metrics",
+	}, logger, newAgentHTTPHealthState())
+
+	if server.ReadTimeout != agentHTTPReadTimeout {
+		t.Fatalf("ReadTimeout = %s, want %s", server.ReadTimeout, agentHTTPReadTimeout)
+	}
+	if server.ReadHeaderTimeout != agentHTTPReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %s, want %s", server.ReadHeaderTimeout, agentHTTPReadHeaderTimeout)
+	}
+	if server.WriteTimeout != agentHTTPWriteTimeout {
+		t.Fatalf("WriteTimeout = %s, want %s", server.WriteTimeout, agentHTTPWriteTimeout)
+	}
+	if server.IdleTimeout != agentHTTPIdleTimeout {
+		t.Fatalf("IdleTimeout = %s, want %s", server.IdleTimeout, agentHTTPIdleTimeout)
 	}
 }
 

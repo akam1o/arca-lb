@@ -2,13 +2,17 @@ package rollout
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	controllerclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -234,6 +238,63 @@ func TestCoordinatorSerializesSameConfiguredHolderIdentity(t *testing.T) {
 	}
 }
 
+func TestCoordinatorReportsInFlightRenewalErrorAfterFunctionReturns(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := coordinationv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	k8sClient := &blockingRenewUpdateClient{
+		Client:       fake.NewClientBuilder().WithScheme(scheme).Build(),
+		renewStarted: make(chan struct{}),
+		allowRenew:   make(chan struct{}),
+		renewErr:     errors.New("renew failed"),
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	c := NewWithClient(k8sClient, Config{
+		Namespace:      "arca-lb-system",
+		HolderIdentity: "node-a",
+		LeaseDuration:  30 * time.Millisecond,
+		RetryInterval:  5 * time.Millisecond,
+		ReleaseTimeout: time.Second,
+	}, logger)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	fnReturned := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- c.RunExclusive(ctx, "vip-address/203.0.113.10", func(ctx context.Context) error {
+			select {
+			case <-k8sClient.renewStarted:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			close(fnReturned)
+			return nil
+		})
+	}()
+
+	select {
+	case <-fnReturned:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for exclusive function to return")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	close(k8sClient.allowRenew)
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "renew failed") {
+			t.Fatalf("RunExclusive error = %v, want renewal failure", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunExclusive")
+	}
+}
+
 func TestLeaseNameIsStableAndDNSLabelSized(t *testing.T) {
 	name := LeaseName("virtualip/default/web")
 	if name != LeaseName("virtualip/default/web") {
@@ -242,4 +303,26 @@ func TestLeaseNameIsStableAndDNSLabelSized(t *testing.T) {
 	if len(name) > 63 {
 		t.Fatalf("lease name length = %d, want <= 63", len(name))
 	}
+}
+
+type blockingRenewUpdateClient struct {
+	controllerclient.Client
+
+	updateCalls  atomic.Int32
+	renewStarted chan struct{}
+	allowRenew   chan struct{}
+	renewErr     error
+}
+
+func (c *blockingRenewUpdateClient) Update(ctx context.Context, obj controllerclient.Object, opts ...controllerclient.UpdateOption) error {
+	if _, ok := obj.(*coordinationv1.Lease); ok && c.updateCalls.Add(1) == 1 {
+		close(c.renewStarted)
+		select {
+		case <-c.allowRenew:
+			return c.renewErr
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return c.Client.Update(ctx, obj, opts...)
 }

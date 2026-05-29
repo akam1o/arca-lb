@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"testing"
@@ -110,6 +111,77 @@ func TestNewHTTPProber(t *testing.T) {
 	}
 }
 
+func TestNewHTTPProberUsesTLS12MinimumForHTTPS(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	prober, err := NewHTTPProber(&models.HealthCheck{
+		Type:       models.HCTypeHTTPS,
+		TimeoutSec: 5,
+		Config: models.HCConfig{
+			"port": 443,
+		},
+	}, true, logger)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, prober.Close()) }()
+
+	transport, ok := prober.client.Transport.(*http.Transport)
+	require.True(t, ok, "transport type = %T", prober.client.Transport)
+	require.NotNil(t, transport.TLSClientConfig)
+	assert.Equal(t, uint16(tls.VersionTLS12), transport.TLSClientConfig.MinVersion)
+}
+
+func TestNewHTTPProberRejectsInvalidRuntimeConfig(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	tests := []struct {
+		name   string
+		config models.HCConfig
+	}{
+		{
+			name: "fractional port",
+			config: models.HCConfig{
+				"port": 80.5,
+			},
+		},
+		{
+			name: "out of range port",
+			config: models.HCConfig{
+				"port": 70000,
+			},
+		},
+		{
+			name: "absolute path",
+			config: models.HCConfig{
+				"port": 80,
+				"path": "https://example.test/healthz",
+			},
+		},
+		{
+			name: "invalid expected code",
+			config: models.HCConfig{
+				"port":           80,
+				"expected_codes": []interface{}{99},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prober, err := NewHTTPProber(&models.HealthCheck{
+				Type:       models.HCTypeHTTP,
+				TimeoutSec: 5,
+				Config:     tt.config,
+			}, false, logger)
+
+			require.Error(t, err)
+			assert.Nil(t, prober)
+			assert.Contains(t, err.Error(), "invalid HTTP health check config")
+		})
+	}
+}
+
 func TestHTTPProber_Probe(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel)
@@ -190,7 +262,7 @@ func TestHTTPProber_Probe(t *testing.T) {
 			if tt.serverHandler != nil {
 				listener = startBufferedHTTPServer(t, tt.serverHandler)
 				port = 8080
-				target = "buffered-server"
+				target = "127.0.0.1"
 
 				// Update HC config with actual port
 				tt.hc.Config["port"] = port
@@ -271,10 +343,55 @@ func TestHTTPProber_Probe_WithCustomHeaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := prober.Probe(ctx, "buffered-server")
+	result := prober.Probe(ctx, "127.0.0.1")
 
 	assert.True(t, result.Success, "Expected success with custom header")
 	assert.Equal(t, 200, result.StatusCode)
+	assert.NoError(t, result.Error)
+}
+
+func TestHTTPProber_Probe_WithValidatedRuntimeConfigShapes(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	listener := startBufferedHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Custom-Header") != "test-value" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	hc := &models.HealthCheck{
+		Type:        models.HCTypeHTTP,
+		IntervalSec: 10,
+		TimeoutSec:  5,
+		Config: models.HCConfig{
+			"port": 8082,
+			"headers": map[string]string{
+				"X-Custom-Header": "test-value",
+			},
+			"expected_codes": []int{http.StatusNoContent},
+		},
+	}
+
+	prober, err := NewHTTPProber(hc, false, logger)
+	require.NoError(t, err)
+
+	prober.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		},
+	}
+	defer func() { require.NoError(t, prober.Close()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := prober.Probe(ctx, "127.0.0.1")
+
+	assert.True(t, result.Success, "Expected success with runtime config shapes: %v", result.Error)
+	assert.Equal(t, http.StatusNoContent, result.StatusCode)
 	assert.NoError(t, result.Error)
 }
 

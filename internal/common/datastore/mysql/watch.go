@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -36,7 +37,10 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 	go func() {
 		defer close(eventChan)
 
-		pollInterval := 100 * time.Millisecond
+		pollInterval := ds.watchPollInterval
+		if pollInterval <= 0 {
+			pollInterval = DefaultWatchPollInterval
+		}
 
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
@@ -53,9 +57,11 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 					Order("id ASC").
 					Limit(100).
 					Find(&changes).Error; err != nil {
-					eventChan <- datastore.WatchEvent{
+					if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 						Type:  datastore.EventTypeError,
 						Error: fmt.Errorf("failed to poll changes: %w", err),
+					}) {
+						return
 					}
 					continue
 				}
@@ -64,16 +70,20 @@ func (ds *MySQLDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEven
 				for _, change := range changes {
 					event, err := ds.buildWatchEvent(ctx, change)
 					if err != nil {
-						eventChan <- datastore.WatchEvent{
+						lastID = change.ID
+						if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 							Type:  datastore.EventTypeError,
 							Error: fmt.Errorf("failed to build watch event: %w", err),
+						}) {
+							return
 						}
-						lastID = change.ID
 						continue
 					}
 
 					if event != nil {
-						eventChan <- *event
+						if !datastore.SendWatchEvent(ctx, eventChan, *event) {
+							return
+						}
 					}
 
 					lastID = change.ID
@@ -108,6 +118,9 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 		if change.VIPID != nil {
 			vip, err := ds.GetVIP(ctx, *change.VIPID)
 			if err != nil {
+				if errors.Is(err, datastore.ErrNotFound) {
+					return nil, nil
+				}
 				return nil, fmt.Errorf("failed to get VIP: %w", err)
 			}
 			event.VIP = vip
@@ -118,6 +131,9 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 		if change.VIPID != nil {
 			vip, err := ds.GetVIP(ctx, *change.VIPID)
 			if err != nil {
+				if errors.Is(err, datastore.ErrNotFound) {
+					return nil, nil
+				}
 				return nil, fmt.Errorf("failed to get VIP: %w", err)
 			}
 			event.VIP = vip
@@ -134,6 +150,9 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 		if change.BackendID != nil {
 			backend, err := ds.GetBackend(ctx, *change.BackendID)
 			if err != nil {
+				if errors.Is(err, datastore.ErrNotFound) {
+					return nil, nil
+				}
 				return nil, fmt.Errorf("failed to get backend: %w", err)
 			}
 			event.Backend = backend
@@ -144,6 +163,9 @@ func (ds *MySQLDataStore) buildWatchEvent(ctx context.Context, change ChangeLogR
 		if change.BackendID != nil {
 			backend, err := ds.GetBackend(ctx, *change.BackendID)
 			if err != nil {
+				if errors.Is(err, datastore.ErrNotFound) {
+					return nil, nil
+				}
 				return nil, fmt.Errorf("failed to get backend: %w", err)
 			}
 			event.Backend = backend

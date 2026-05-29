@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,8 +26,11 @@ import (
 	pb "github.com/akam1o/arca-lb/pkg/grpc"
 	"github.com/sirupsen/logrus"
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func TestServerStartReturnsNilAfterGracefulStop(t *testing.T) {
@@ -153,6 +157,109 @@ func TestServerStopForcesStopWhenWatchConfigStreamIsActive(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for gRPC server to stop after forced stop")
+	}
+}
+
+func TestServerRequiresAPIKeyWhenConfigured(t *testing.T) {
+	const apiKey = "controller-grpc-secret"
+
+	certFile, keyFile, certPEM := writeSelfSignedServerCert(t)
+	mockDS := testutil.NewMockDataStore()
+	mockDS.SetConfig(&models.Config{
+		Revision: 1,
+		VIPs:     []models.VIPConfig{},
+	})
+
+	port := freeTCPPort(t)
+	server := newTestServerWithDatastore(port, controllerconfig.GRPCConfig{
+		APIKey:   apiKey,
+		TLS:      true,
+		CertFile: certFile,
+		KeyFile:  keyFile,
+	}, mockDS)
+	errCh := startServer(t, server, port)
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := server.Stop(stopCtx); err != nil {
+			t.Fatalf("Stop returned error after API key test: %v", err)
+		}
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("Start returned error after API key test: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for API key gRPC server to stop")
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		t.Fatal("failed to append test server cert")
+	}
+	conn, err := googlegrpc.DialContext(ctx, fmt.Sprintf("127.0.0.1:%d", port), // nolint:staticcheck // DialContext is adequate for this server auth test.
+		googlegrpc.WithBlock(), // nolint:staticcheck // WithBlock keeps this grpc 1.x DialContext test bounded by ctx.
+		googlegrpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+			RootCAs:    roots,
+			ServerName: "localhost",
+			MinVersion: tls.VersionTLS12,
+		})),
+	)
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Fatalf("close API key test connection: %v", err)
+		}
+	}()
+
+	client := pb.NewConfigSyncClient(conn)
+	registerReq := &pb.RegisterAgentRequest{AgentId: "agent-1"}
+	if _, err := client.RegisterAgent(ctx, registerReq); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("RegisterAgent without API key error = %v, want unauthenticated", err)
+	}
+
+	authCtx := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+apiKey)
+	resp, err := client.RegisterAgent(authCtx, registerReq)
+	if err != nil {
+		t.Fatalf("RegisterAgent with API key: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("RegisterAgent success = false, message = %q", resp.Message)
+	}
+
+	streamCtx, streamCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer streamCancel()
+	stream, err := client.WatchConfig(streamCtx, &pb.WatchConfigRequest{AgentId: "agent-1"})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("WatchConfig without API key error = %v, want unauthenticated", err)
+	}
+
+	authStreamCtx := metadata.AppendToOutgoingContext(streamCtx, "authorization", "Bearer "+apiKey)
+	authStream, err := client.WatchConfig(authStreamCtx, &pb.WatchConfigRequest{AgentId: "agent-1"})
+	if err != nil {
+		t.Fatalf("WatchConfig with API key: %v", err)
+	}
+	if _, err := authStream.Recv(); err != nil {
+		t.Fatalf("receive authenticated initial config: %v", err)
+	}
+}
+
+func TestServerRejectsAPIKeyWithoutTLS(t *testing.T) {
+	server := newTestServer(freeTCPPort(t), controllerconfig.GRPCConfig{
+		APIKey: "controller-grpc-secret",
+	})
+
+	err := server.initializeGRPCServer()
+	if err == nil || !strings.Contains(err.Error(), "grpc.tls must be enabled when grpc.api_key is set") {
+		t.Fatalf("initializeGRPCServer error = %v, want API key TLS validation error", err)
 	}
 }
 

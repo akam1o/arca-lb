@@ -25,6 +25,9 @@ service ConfigSync {
 message GetConfigRequest {
   // Optional: request only if revision is newer than this
   int64 current_revision = 1;
+
+  // Agent ID
+  string agent_id = 2;
 }
 
 // GetConfigResponse returns the current configuration snapshot

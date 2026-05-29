@@ -1,11 +1,14 @@
 package mysql
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/akam1o/arca-lb/internal/common/datastore"
 	"github.com/akam1o/arca-lb/internal/common/models"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -67,6 +70,73 @@ func TestVIPUpdateValuesUsesNullableValuesWhenPresent(t *testing.T) {
 	}
 	if got := updates["dscp"]; got != uint8(20) {
 		t.Fatalf("dscp update = %#v, want 20", got)
+	}
+}
+
+func TestUpdateVIPReturnsNotFoundWhenLockedRowMissing(t *testing.T) {
+	db, mock, cleanup := newMockGORMDB(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT \\* FROM `vips` WHERE id = \\? ORDER BY `vips`\\.`id` LIMIT \\? FOR UPDATE").
+		WithArgs("vip-1", 1).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"vip",
+			"port",
+			"protocol",
+			"lb_method",
+			"encap_type",
+			"dscp",
+			"created_at",
+			"updated_at",
+		}))
+	mock.ExpectRollback()
+
+	ds := &MySQLDataStore{db: db}
+	err := ds.UpdateVIP(context.Background(), &models.VIP{
+		ID:       "vip-1",
+		VIP:      "192.0.2.10",
+		Port:     80,
+		Protocol: models.ProtocolTCP,
+	})
+	if !errors.Is(err, datastore.ErrNotFound) {
+		t.Fatalf("UpdateVIP error = %v, want ErrNotFound", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestUpdateBackendReturnsNotFoundWhenLockedRowMissing(t *testing.T) {
+	db, mock, cleanup := newMockGORMDB(t)
+	defer cleanup()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT \\* FROM `backends` WHERE id = \\? ORDER BY `backends`\\.`id` LIMIT \\?").
+		WithArgs("backend-1", 1).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"vip_id",
+			"ip",
+			"weight",
+			"created_at",
+			"updated_at",
+		}))
+	mock.ExpectRollback()
+
+	ds := &MySQLDataStore{db: db}
+	err := ds.UpdateBackend(context.Background(), &models.Backend{
+		ID:     "backend-1",
+		VIPID:  "vip-1",
+		IP:     "10.0.0.1",
+		Weight: 1,
+	})
+	if !errors.Is(err, datastore.ErrNotFound) {
+		t.Fatalf("UpdateBackend error = %v, want ErrNotFound", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
 	}
 }
 

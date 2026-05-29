@@ -14,6 +14,34 @@
 | Short Name | `vip` |
 | Scope | Namespaced |
 
+### API バージョンとストレージ移行
+
+現在の CRD は `arca.io/v1alpha1` のみを公開しており、このバージョンが
+served version かつ Kubernetes storage version です。後継バージョンを
+導入するまでは、`v1alpha1` を現在のストレージ契約として扱います。
+
+beta または stable API を公開する前に、バージョン進化は次の方針に従います：
+
+- サポート対象クラスタに `v1alpha1` object が残る可能性がある間は、
+  `v1alpha1` を served のまま維持します。
+- 次の API バージョンは `served: true` として追加し、storage version に
+  する前に明示的な conversion test を追加します。
+- schema または意味論の変更を lossless defaulting だけで扱えない場合は、
+  conversion webhook を使用します。
+- 既存フィールドの削除または rename は、deprecation period、conversion
+  coverage、移行影響を説明する release note なしには行いません。
+- `storage: true` を変更するのは、conversion path をデプロイし、storage
+  migration 手順を文書化・検証した後に限定します。
+
+### 用語
+
+`VirtualIP` は Kubernetes リソース名としての正規名称です。この API では
+`spec.address` が仮想 IP アドレス、backend の `address` が実サーバーの
+アドレスを表します。`vip` kubectl short name、REST/legacy surface、
+Octavia の `vip_address` は、同じ仮想 IP アドレスの概念を指します。
+`monitorAddress` は別フィールドで、backend のヘルスチェック先としてのみ
+使います。
+
 ### kubectl 使用例
 
 ```bash

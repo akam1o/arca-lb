@@ -30,52 +30,68 @@ func (ds *EtcdDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEvent
 
 			case watchResp, ok := <-vipWatchChan:
 				if !ok {
-					eventChan <- datastore.WatchEvent{
+					datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 						Type:  datastore.EventTypeError,
 						Error: fmt.Errorf("VIP watch channel closed"),
-					}
+					})
 					return
 				}
 
 				if watchResp.Err() != nil {
-					eventChan <- datastore.WatchEvent{
+					if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 						Type:  datastore.EventTypeError,
 						Error: fmt.Errorf("VIP watch error: %w", watchResp.Err()),
+					}) {
+						return
 					}
 					continue
 				}
 
 				for _, event := range watchResp.Events {
-					if err := ds.handleVIPEvent(event, eventChan); err != nil {
-						eventChan <- datastore.WatchEvent{
+					ok, err := ds.handleVIPEvent(ctx, event, eventChan)
+					if !ok {
+						return
+					}
+					if err != nil {
+						if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 							Type:  datastore.EventTypeError,
 							Error: fmt.Errorf("failed to handle VIP event: %w", err),
+						}) {
+							return
 						}
 					}
 				}
 
 			case watchResp, ok := <-backendWatchChan:
 				if !ok {
-					eventChan <- datastore.WatchEvent{
+					datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 						Type:  datastore.EventTypeError,
 						Error: fmt.Errorf("backend watch channel closed"),
-					}
+					})
 					return
 				}
 
 				if watchResp.Err() != nil {
-					eventChan <- datastore.WatchEvent{
+					if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 						Type:  datastore.EventTypeError,
 						Error: fmt.Errorf("backend watch error: %w", watchResp.Err()),
+					}) {
+						return
 					}
 					continue
 				}
 
 				for _, event := range watchResp.Events {
-					if err := ds.handleBackendEvent(event, eventChan); err != nil {
-						eventChan <- datastore.WatchEvent{
+					ok, err := ds.handleBackendEvent(ctx, event, eventChan)
+					if !ok {
+						return
+					}
+					if err != nil {
+						if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 							Type:  datastore.EventTypeError,
 							Error: fmt.Errorf("failed to handle backend event: %w", err),
+						}) {
+							return
 						}
 					}
 				}
@@ -87,13 +103,13 @@ func (ds *EtcdDataStore) Watch(ctx context.Context) (<-chan datastore.WatchEvent
 }
 
 // handleVIPEvent handles VIP watch events
-func (ds *EtcdDataStore) handleVIPEvent(event *clientv3.Event, eventChan chan<- datastore.WatchEvent) error {
+func (ds *EtcdDataStore) handleVIPEvent(ctx context.Context, event *clientv3.Event, eventChan chan<- datastore.WatchEvent) (bool, error) {
 	var vip models.VIP
 
 	switch event.Type {
 	case clientv3.EventTypePut:
 		if err := json.Unmarshal(event.Kv.Value, &vip); err != nil {
-			return fmt.Errorf("failed to unmarshal VIP: %w", err)
+			return true, fmt.Errorf("failed to unmarshal VIP: %w", err)
 		}
 
 		// Determine if it's a create or update by checking if it's a new key
@@ -103,12 +119,17 @@ func (ds *EtcdDataStore) handleVIPEvent(event *clientv3.Event, eventChan chan<- 
 		}
 
 		// Get current revision
-		revision, _ := ds.GetRevision(context.Background())
+		revision, err := ds.GetRevision(ctx)
+		if err != nil {
+			return true, fmt.Errorf("failed to get revision: %w", err)
+		}
 
-		eventChan <- datastore.WatchEvent{
+		if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 			Type:     eventType,
 			Revision: revision,
 			VIP:      &vip,
+		}) {
+			return false, nil
 		}
 
 	case clientv3.EventTypeDelete:
@@ -116,26 +137,31 @@ func (ds *EtcdDataStore) handleVIPEvent(event *clientv3.Event, eventChan chan<- 
 		vipID := extractVIPIDFromKey(string(event.Kv.Key), ds.vipPrefix())
 
 		// Get current revision
-		revision, _ := ds.GetRevision(context.Background())
+		revision, err := ds.GetRevision(ctx)
+		if err != nil {
+			return true, fmt.Errorf("failed to get revision: %w", err)
+		}
 
-		eventChan <- datastore.WatchEvent{
+		if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 			Type:     datastore.EventTypeVIPDeleted,
 			Revision: revision,
 			VIP:      &models.VIP{ID: vipID},
+		}) {
+			return false, nil
 		}
 	}
 
-	return nil
+	return true, nil
 }
 
 // handleBackendEvent handles Backend watch events
-func (ds *EtcdDataStore) handleBackendEvent(event *clientv3.Event, eventChan chan<- datastore.WatchEvent) error {
+func (ds *EtcdDataStore) handleBackendEvent(ctx context.Context, event *clientv3.Event, eventChan chan<- datastore.WatchEvent) (bool, error) {
 	var backend models.Backend
 
 	switch event.Type {
 	case clientv3.EventTypePut:
 		if err := json.Unmarshal(event.Kv.Value, &backend); err != nil {
-			return fmt.Errorf("failed to unmarshal backend: %w", err)
+			return true, fmt.Errorf("failed to unmarshal backend: %w", err)
 		}
 
 		// Determine if it's an add or update
@@ -145,12 +171,17 @@ func (ds *EtcdDataStore) handleBackendEvent(event *clientv3.Event, eventChan cha
 		}
 
 		// Get current revision
-		revision, _ := ds.GetRevision(context.Background())
+		revision, err := ds.GetRevision(ctx)
+		if err != nil {
+			return true, fmt.Errorf("failed to get revision: %w", err)
+		}
 
-		eventChan <- datastore.WatchEvent{
+		if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 			Type:     eventType,
 			Revision: revision,
 			Backend:  &backend,
+		}) {
+			return false, nil
 		}
 
 	case clientv3.EventTypeDelete:
@@ -158,16 +189,21 @@ func (ds *EtcdDataStore) handleBackendEvent(event *clientv3.Event, eventChan cha
 		vipID, backendID := extractBackendIDsFromKey(string(event.Kv.Key), ds.keyPrefix)
 
 		// Get current revision
-		revision, _ := ds.GetRevision(context.Background())
+		revision, err := ds.GetRevision(ctx)
+		if err != nil {
+			return true, fmt.Errorf("failed to get revision: %w", err)
+		}
 
-		eventChan <- datastore.WatchEvent{
+		if !datastore.SendWatchEvent(ctx, eventChan, datastore.WatchEvent{
 			Type:     datastore.EventTypeBackendDeleted,
 			Revision: revision,
 			Backend:  &models.Backend{ID: backendID, VIPID: vipID},
+		}) {
+			return false, nil
 		}
 	}
 
-	return nil
+	return true, nil
 }
 
 // extractVIPIDFromKey extracts VIP ID from etcd key

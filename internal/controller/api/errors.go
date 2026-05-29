@@ -15,8 +15,15 @@ func handleDataStoreError(c *gin.Context, err error, resource string) {
 	} else if errors.Is(err, datastore.ErrConflict) {
 		c.JSON(http.StatusConflict, gin.H{"error": resource + " already exists"})
 	} else if errors.Is(err, datastore.ErrInvalidInput) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidInputMessage(err)})
 	} else {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 	}
+}
+
+func invalidInputMessage(err error) string {
+	if err == nil || err.Error() == datastore.ErrInvalidInput.Error() {
+		return "invalid input"
+	}
+	return err.Error()
 }

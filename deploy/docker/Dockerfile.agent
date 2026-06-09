@@ -1,7 +1,7 @@
 # Multi-stage build for the arca-lb agent.
 # The image includes vtysh; VPP and FRR runtimes are provided by the node.
 
-FROM golang:1.26.3-alpine AS builder
+FROM golang:1.26.4-alpine AS builder
 
 RUN apk add --no-cache ca-certificates gcc git musl-dev
 

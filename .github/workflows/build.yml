@@ -9,7 +9,7 @@ on:
     types: [ published ]
 
 env:
-  GO_VERSION: '1.26.3'
+  GO_VERSION: '1.26.4'
   PYTHON_VERSION: '3.12'
   DOCKER_BUILDKIT: 1
 
@@ -367,7 +367,8 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
-          version: '3.20.3'
+          version: '35.0'
+          repo-token: ${{ github.token }}
 
       - name: Install protoc-gen-go
         run: |

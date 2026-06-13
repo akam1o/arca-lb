@@ -21,7 +21,7 @@ RUN if [ -n "$TARGETOS" ]; then export GOOS="$TARGETOS"; fi; \
     -o /build/bin/arcalb-operator \
     ./cmd/operator
 
-FROM alpine:3.23
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -g 1000 arcalb && \

@@ -29,7 +29,7 @@ dev = [
     "mypy>=1.18.0,<2.0.0",
     "pytest>=8.0.0",
     "pytest-cov>=7.0.0",
-    "ruff>=0.15.16",
+    "ruff>=0.16.1",
 ]
 
 [project.entry-points."octavia.api.drivers"]
